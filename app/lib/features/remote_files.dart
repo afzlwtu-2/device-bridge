@@ -28,15 +28,43 @@ class DeviceDetail extends StatefulWidget {
   State<DeviceDetail> createState() => _DeviceDetailState();
 }
 
+class _ReachablePath {
+  const _ReachablePath({
+    required this.transport,
+    required this.label,
+    required this.endpoint,
+    this.interfaceName,
+    this.cidr,
+    this.kind,
+    this.rttMs,
+    this.pathKind,
+    this.remoteApproved = false,
+  });
+
+  final String transport;
+  final String label;
+  final String endpoint;
+  final String? interfaceName;
+  final String? cidr;
+  final String? kind;
+  final double? rttMs;
+  final String? pathKind;
+  final bool remoteApproved;
+
+  String get id => '$transport:${interfaceName ?? ''}:$endpoint';
+}
+
 class _DeviceDetailState extends State<DeviceDetail> {
   bool busy = true;
+  bool probingPaths = false;
   String? offlineNote;
-  String? testingTransport, testedTransport, testMessage;
+  String? testingTransport, testingPathId, testedTransport, testedPathId, testMessage;
   bool? testSuccess;
   double? testPingMs;
   List<dynamic> roots = [];
   List<dynamic> tailnetNodes = [];
   List<dynamic> wgPeers = [];
+  List<_ReachablePath> reachablePaths = [];
   bool tailnetRunning = false;
   Map<String, dynamic>? route;
   Map<String, dynamic>? connectionCfg;
@@ -85,6 +113,8 @@ class _DeviceDetailState extends State<DeviceDetail> {
     if (widget.peer['status'] == 'revoked') {
       route = null;
       roots = [];
+      reachablePaths = [];
+      probingPaths = false;
       offlineNote =
           'This device is revoked. Remove it or re-pair from an active device to reconnect.';
       if (mounted) {
@@ -104,12 +134,281 @@ class _DeviceDetailState extends State<DeviceDetail> {
       offlineNote = _friendlyError(e);
     }
     if (mounted) {
-      setState(() => busy = false);
+      setState(() {
+        busy = false;
+        probingPaths = true;
+      });
     }
+    final probed = await _probeReachablePaths();
+    if (mounted) {
+      setState(() {
+        reachablePaths = probed;
+        probingPaths = false;
+      });
+    }
+  }
+
+  String _lanLabel(String? iface, String? kind) {
+    final i = iface ?? '';
+    final k = kind ?? '';
+    if (k == 'wifi_direct' || i.startsWith('p2p')) {
+      return 'Wi-Fi Direct';
+    }
+    if (k == 'hotspot' ||
+        i.startsWith('ap') ||
+        i.startsWith('swlan') ||
+        i.startsWith('rndis')) {
+      return 'Mobile Hotspot';
+    }
+    return 'Direct Wi-Fi LAN';
+  }
+
+  _ReachablePath _pathFromResolve(
+    String transport,
+    Map<String, dynamic> r, {
+    String? interfaceName,
+    String? cidr,
+    String? kind,
+    bool remoteApproved = false,
+  }) {
+    final iface = interfaceName ?? r['interface'] as String?;
+    final rttNs = r['rtt'] as num? ?? 0;
+    final ms = rttNs > 0 ? rttNs / 1000000.0 : null;
+    final label = transport == 'lan'
+        ? _lanLabel(iface, kind)
+        : _methodLabel(transport);
+    return _ReachablePath(
+      transport: transport,
+      label: label,
+      endpoint: '${r['endpoint'] ?? ''}',
+      interfaceName: iface,
+      cidr: cidr,
+      kind: kind,
+      rttMs: ms,
+      pathKind: r['path_kind'] as String?,
+      remoteApproved: remoteApproved,
+    );
+  }
+
+  Future<Map<String, dynamic>?> _probeOne(List<String> args) async {
+    try {
+      final raw = await widget.core.run(args);
+      if (raw is Map) {
+        return Map<String, dynamic>.from(raw);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<List<_ReachablePath>> _probeReachablePaths() async {
+    final peerId = widget.peer['id'] as String;
+    final activeTransport = connectionCfg?['transport'] as String? ?? 'lan';
+    final addresses = widget.peer['addresses'] as List? ?? const [];
+    final adbEp = connectionCfg?['adb_endpoint'] as String?;
+    final sshEp = connectionCfg?['ssh_endpoint'] as String?;
+    final wgEp = connectionCfg?['wireguard_endpoint'] as String?;
+    final found = <_ReachablePath>[];
+    final seen = <String>{};
+
+    void addPath(_ReachablePath path) {
+      if (path.endpoint.isEmpty || !seen.add(path.id)) {
+        return;
+      }
+      found.add(path);
+    }
+
+    // 1. Active approved network (Wi-Fi LAN, Hotspot, or Wi-Fi Direct).
+    if (activeTransport == 'lan' && route != null) {
+      addPath(
+        _pathFromResolve(
+          'lan',
+          route!,
+          interfaceName: widget.core.network?['interface'] as String?,
+          cidr: widget.core.network?['cidr'] as String?,
+          kind: widget.core.network?['kind'] as String?,
+        ),
+      );
+    } else if (widget.core.network != null) {
+      final r = await _probeOne(['--transport', 'lan', 'resolve', peerId]);
+      if (r != null) {
+        addPath(
+          _pathFromResolve(
+            'lan',
+            r,
+            interfaceName: widget.core.network?['interface'] as String?,
+            cidr: widget.core.network?['cidr'] as String?,
+            kind: widget.core.network?['kind'] as String?,
+          ),
+        );
+      }
+    }
+
+    // 2. Additional active local links (e.g. Wi-Fi Direct / Hotspot alongside Wi-Fi).
+    try {
+      final localNets = await widget.core.networks();
+      for (final net in localNets) {
+        final iface = '${net['interface'] ?? ''}';
+        final cidr = '${net['cidr'] ?? ''}';
+        final kind = '${net['kind'] ?? ''}';
+        if (iface.isEmpty ||
+            cidr.isEmpty ||
+            iface == widget.core.network?['interface']) {
+          continue;
+        }
+        final r = await _probeOne([
+          '--interface',
+          iface,
+          '--lan-cidr',
+          cidr,
+          '--transport',
+          'lan',
+          'resolve',
+          peerId,
+        ]);
+        if (r != null) {
+          addPath(
+            _pathFromResolve(
+              'lan',
+              r,
+              interfaceName: iface,
+              cidr: cidr,
+              kind: kind,
+            ),
+          );
+        }
+      }
+    } catch (_) {}
+
+    // 3. Tailscale (only if a matching online node responds to mTLS).
+    if (activeTransport == 'tailnet' && route != null) {
+      addPath(_pathFromResolve('tailnet', route!, remoteApproved: true));
+    } else if (tailnetRunning) {
+      final peerLower = '${widget.peer['name'] ?? ''}'.trim().toLowerCase();
+      final tsCandidates = <String>[];
+      final fallbackTs = <String>[];
+      if ('${connectionCfg?['endpoint'] ?? ''}'.isNotEmpty &&
+          activeTransport == 'tailnet') {
+        tsCandidates.add(connectionCfg!['endpoint'] as String);
+      }
+      for (final node in tailnetNodes) {
+        if (node['online'] != true) {
+          continue;
+        }
+        final ips = (node['ips'] as List? ?? const [])
+            .whereType<String>()
+            .where((ip) => !ip.contains(':'));
+        if (ips.isEmpty) {
+          continue;
+        }
+        final ep = '${ips.first}:8731';
+        final nodeName = '${node['name'] ?? ''}'.trim().toLowerCase();
+        if (peerLower.isNotEmpty &&
+            nodeName.isNotEmpty &&
+            (nodeName == peerLower ||
+                nodeName.contains(peerLower) ||
+                peerLower.contains(nodeName))) {
+          tsCandidates.add(ep);
+        } else {
+          fallbackTs.add(ep);
+        }
+      }
+      if (tsCandidates.isEmpty) {
+        tsCandidates.addAll(fallbackTs.take(3));
+      }
+      for (final ep in tsCandidates.toSet()) {
+        final r = await _probeOne([
+          '--transport',
+          'tailnet',
+          '--endpoint',
+          ep,
+          '--approve-remote',
+          'resolve',
+          peerId,
+        ]);
+        if (r != null) {
+          addPath(_pathFromResolve('tailnet', r, remoteApproved: true));
+          break;
+        }
+      }
+    }
+
+    // 4. WireGuard (only if configured peer actually responds to mTLS).
+    if (activeTransport == 'wireguard' && route != null) {
+      addPath(_pathFromResolve('wireguard', route!));
+    } else {
+      final wgCandidates = <String>{
+        if (wgEp != null && wgEp.isNotEmpty) wgEp,
+        for (final p in wgPeers)
+          if ('${p['endpoint'] ?? p['tunnel_ip'] ?? ''}'.trim().isNotEmpty)
+            '${p['endpoint'] ?? p['tunnel_ip']}'.contains(':')
+                ? '${p['endpoint'] ?? p['tunnel_ip']}'.trim()
+                : '${'${p['endpoint'] ?? p['tunnel_ip']}'.trim()}:8731',
+      };
+      for (final ep in wgCandidates) {
+        final r = await _probeOne([
+          '--transport',
+          'wireguard',
+          '--endpoint',
+          ep,
+          'resolve',
+          peerId,
+        ]);
+        if (r != null) {
+          addPath(_pathFromResolve('wireguard', r));
+          break;
+        }
+      }
+    }
+
+    // 5. USB / Wireless ADB loopback tunnel.
+    if (activeTransport == 'adb' && route != null) {
+      addPath(_pathFromResolve('adb', route!));
+    } else {
+      final adbCandidates = <String>{
+        if (adbEp != null && adbEp.isNotEmpty) adbEp,
+        for (final addr in addresses)
+          if ('${addr['endpoint'] ?? ''}'.startsWith('127.0.0.1:'))
+            '${addr['endpoint']}',
+      };
+      for (final ep in adbCandidates) {
+        final r = await _probeOne([
+          '--transport',
+          'adb',
+          '--endpoint',
+          ep,
+          'resolve',
+          peerId,
+        ]);
+        if (r != null) {
+          addPath(_pathFromResolve('adb', r));
+          break;
+        }
+      }
+    }
+
+    // 6. SSH loopback tunnel.
+    if (activeTransport == 'ssh' && route != null) {
+      addPath(_pathFromResolve('ssh', route!));
+    } else if (sshEp != null && sshEp.isNotEmpty) {
+      final r = await _probeOne([
+        '--transport',
+        'ssh',
+        '--endpoint',
+        sshEp,
+        'resolve',
+        peerId,
+      ]);
+      if (r != null) {
+        addPath(_pathFromResolve('ssh', r));
+      }
+    }
+
+    return found;
   }
 
   Future<void> selectConnection(
     String transport, {
+    String? pathId,
     String? endpoint,
     bool? remoteApproved,
   }) async {
@@ -117,6 +416,7 @@ class _DeviceDetailState extends State<DeviceDetail> {
       busy = true;
       offlineNote = null;
       testingTransport = transport;
+      testingPathId = pathId;
       testSuccess = null;
       testPingMs = null;
       testMessage = 'Testing ${_methodLabel(transport)}…';
@@ -143,7 +443,9 @@ class _DeviceDetailState extends State<DeviceDetail> {
     }
     setState(() {
       testingTransport = null;
+      testingPathId = null;
       testedTransport = transport;
+      testedPathId = pathId;
       if (route != null) {
         final rttNs = route!['rtt'] as num? ?? 0;
         final ms = rttNs > 0
@@ -162,15 +464,21 @@ class _DeviceDetailState extends State<DeviceDetail> {
     });
   }
 
-  Widget? _connectionTrailing(String id) {
-    if (testingTransport == id) {
+  Widget? _connectionTrailing(_ReachablePath path) {
+    final matchesTesting = testingPathId != null
+        ? testingPathId == path.id
+        : testingTransport == path.transport;
+    final matchesTested = testedPathId != null
+        ? testedPathId == path.id
+        : testedTransport == path.transport;
+    if (matchesTesting) {
       return const SizedBox(
         width: 18,
         height: 18,
         child: CircularProgressIndicator(strokeWidth: 2),
       );
     }
-    if (testedTransport == id && testSuccess == true && testPingMs != null) {
+    if (matchesTested && testSuccess == true && testPingMs != null) {
       return Text(
         '${testPingMs!.toStringAsFixed(1)} ms',
         style: TextStyle(
@@ -179,7 +487,7 @@ class _DeviceDetailState extends State<DeviceDetail> {
         ),
       );
     }
-    if (testedTransport == id && testSuccess == false) {
+    if (matchesTested && testSuccess == false) {
       return Text(
         'Failed',
         style: TextStyle(
@@ -259,59 +567,10 @@ class _DeviceDetailState extends State<DeviceDetail> {
         (route?['transport'] as String?) ?? activeTransport;
     final addresses = widget.peer['addresses'] as List? ?? const [];
     final isRevoked = widget.peer['status'] == 'revoked';
-    final adbEp = connectionCfg?['adb_endpoint'] as String?;
-    final sshEp = connectionCfg?['ssh_endpoint'] as String?;
-    final wgEp = connectionCfg?['wireguard_endpoint'] as String?;
     final fallbacks = (connectionCfg?['fallback_transports'] as List? ?? const [])
         .whereType<String>()
         .toList();
-    final peerLower = '${widget.peer['name'] ?? ''}'.trim().toLowerCase();
-    String? tailnetEp;
-    if (tailnetRunning) {
-      String? fallbackTailnetEp;
-      for (final node in tailnetNodes) {
-        if (node['online'] != true) {
-          continue;
-        }
-        final ips = (node['ips'] as List? ?? const [])
-            .whereType<String>()
-            .where((ip) => !ip.contains(':'));
-        if (ips.isEmpty) {
-          continue;
-        }
-        final ep = '${ips.first}:8731';
-        final nodeName = '${node['name'] ?? ''}'.trim().toLowerCase();
-        if (peerLower.isNotEmpty &&
-            nodeName.isNotEmpty &&
-            (nodeName == peerLower ||
-                nodeName.contains(peerLower) ||
-                peerLower.contains(nodeName))) {
-          tailnetEp = ep;
-          break;
-        }
-        fallbackTailnetEp ??= ep;
-      }
-      if (tailnetEp == null &&
-          tailnetNodes.where((n) => n['online'] == true).length == 1) {
-        tailnetEp = fallbackTailnetEp;
-      }
-    }
-    if (tailnetEp == null &&
-        activeTransport == 'tailnet' &&
-        '${connectionCfg?['endpoint'] ?? ''}'.isNotEmpty) {
-      tailnetEp = connectionCfg!['endpoint'] as String;
-    }
-    String? wgPeerEp;
-    for (final p in wgPeers) {
-      final ep = '${p['endpoint'] ?? p['tunnel_ip'] ?? ''}'.trim();
-      if (ep.isNotEmpty) {
-        wgPeerEp = ep.contains(':') ? ep : '$ep:8731';
-        break;
-      }
-    }
-    final localIface = '${widget.core.network?['interface'] ?? ''}';
     final localCidr = widget.core.network?['cidr'] as String?;
-    final localKind = '${widget.core.network?['kind'] ?? ''}';
     String? discoveredLanEp;
     for (final v in widget.candidates) {
       if (v['device_id'] == widget.peer['id']) {
@@ -323,47 +582,12 @@ class _DeviceDetailState extends State<DeviceDetail> {
       }
     }
     String? currentSubnetSavedEp;
-    String? loopbackEp;
     for (final addr in addresses) {
       final ep = '${addr['endpoint'] ?? ''}'.trim();
-      if (ep.startsWith('127.0.0.1:')) {
-        loopbackEp ??= ep;
-      } else if (ep.isNotEmpty && _inSameSubnet(ep, localCidr)) {
+      if (!ep.startsWith('127.0.0.1:') && _inSameSubnet(ep, localCidr)) {
         currentSubnetSavedEp ??= ep;
       }
     }
-    final lanTitle = (localKind == 'wifi_direct' || localIface.startsWith('p2p'))
-        ? 'Wi-Fi Direct'
-        : ((localKind == 'hotspot' ||
-                  localIface.startsWith('ap') ||
-                  localIface.startsWith('swlan') ||
-                  localIface.startsWith('rndis'))
-              ? 'Mobile Hotspot'
-              : 'Direct Wi-Fi LAN');
-    final lanTargetIp =
-        (route?['transport'] == 'direct-lan-v1'
-            ? route!['endpoint'] as String?
-            : null) ??
-        discoveredLanEp ??
-        currentSubnetSavedEp ??
-        'Not seen on current Wi-Fi';
-    final canLan = !isRevoked &&
-        (widget.core.network != null ||
-            discoveredLanEp != null ||
-            currentSubnetSavedEp != null ||
-            activeTransport == 'lan');
-    final canTailscale =
-        !isRevoked && (tailnetEp != null || activeTransport == 'tailnet');
-    final effectiveWgEp = (wgEp != null && wgEp.isNotEmpty) ? wgEp : wgPeerEp;
-    final canWireguard =
-        !isRevoked && (effectiveWgEp != null || activeTransport == 'wireguard');
-    final effectiveAdbEp = (adbEp != null && adbEp.isNotEmpty)
-        ? adbEp
-        : loopbackEp;
-    final canAdb =
-        !isRevoked && (effectiveAdbEp != null || activeTransport == 'adb');
-    final canSsh =
-        !isRevoked && ((sshEp != null && sshEp.isNotEmpty) || activeTransport == 'ssh');
     final activeEndpoint =
         (route?['endpoint'] as String?) ??
         (activeTransport != 'lan'
@@ -373,8 +597,15 @@ class _DeviceDetailState extends State<DeviceDetail> {
         currentSubnetSavedEp;
     String? defaultHost = _hostFromEndpoint(route?['endpoint']) ??
         _hostFromEndpoint(discoveredLanEp) ??
-        _hostFromEndpoint(currentSubnetSavedEp) ??
-        _hostFromEndpoint(tailnetEp);
+        _hostFromEndpoint(currentSubnetSavedEp);
+    if (defaultHost == null) {
+      for (final p in reachablePaths) {
+        defaultHost = _hostFromEndpoint(p.endpoint);
+        if (defaultHost != null) {
+          break;
+        }
+      }
+    }
     if (defaultHost == null) {
       for (final addr in addresses) {
         defaultHost = _hostFromEndpoint(addr['endpoint']);
@@ -559,7 +790,7 @@ class _DeviceDetailState extends State<DeviceDetail> {
                       ],
                     ),
                   ),
-                  if (testingTransport != null)
+                  if (testingTransport != null || probingPaths)
                     const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 16),
                       child: LinearProgressIndicator(),
@@ -592,100 +823,67 @@ class _DeviceDetailState extends State<DeviceDetail> {
                         ],
                       ),
                     ),
-                  if (canLan)
+                  for (final path in reachablePaths)
                     ListTile(
                       leading: Icon(
-                        activeTransport == 'lan'
+                        activeTransport == path.transport &&
+                                (path.interfaceName == null ||
+                                    widget.core.network?['interface'] ==
+                                        path.interfaceName)
                             ? Icons.radio_button_checked
                             : Icons.radio_button_unchecked,
                       ),
-                      title: Text(lanTitle),
-                      subtitle: Text(lanTargetIp),
-                      trailing: _connectionTrailing('lan'),
-                      onTap: busy ? null : () => selectConnection('lan'),
-                    ),
-                  if (canTailscale)
-                    ListTile(
-                      leading: Icon(
-                        activeTransport == 'tailnet'
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_unchecked,
-                      ),
-                      title: const Text('Tailscale'),
+                      title: Text(path.label),
                       subtitle: Text(
-                        tailnetEp ?? 'Tailscale peer unavailable',
+                        '${path.endpoint}'
+                        '${path.pathKind != null && path.pathKind!.isNotEmpty ? ' · ${path.pathKind}' : ''}'
+                        '${path.interfaceName != null && path.interfaceName!.isNotEmpty ? ' · ${path.interfaceName}' : ''}',
                       ),
-                      trailing: _connectionTrailing('tailnet'),
-                      onTap: busy || tailnetEp == null
+                      trailing: _connectionTrailing(path) ??
+                          (path.rttMs != null
+                              ? Text(
+                                  '${path.rttMs!.toStringAsFixed(1)} ms',
+                                  style: TextStyle(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .primary,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                )
+                              : null),
+                      onTap: busy
                           ? null
-                          : () => selectConnection(
-                              'tailnet',
-                              endpoint: tailnetEp,
-                              remoteApproved: true,
-                            ),
+                          : () async {
+                              if (path.transport == 'lan' &&
+                                  path.interfaceName != null &&
+                                  path.cidr != null &&
+                                  widget.core.network?['interface'] !=
+                                      path.interfaceName) {
+                                await widget.core.approveNetwork({
+                                  'interface': path.interfaceName,
+                                  'cidr': path.cidr,
+                                  if (path.kind != null) 'kind': path.kind,
+                                });
+                              }
+                              await selectConnection(
+                                path.transport,
+                                pathId: path.id,
+                                endpoint: path.transport == 'lan'
+                                    ? null
+                                    : path.endpoint,
+                                remoteApproved: path.remoteApproved
+                                    ? true
+                                    : null,
+                              );
+                            },
                     ),
-                  if (canWireguard)
-                    ListTile(
-                      leading: Icon(
-                        activeTransport == 'wireguard'
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_unchecked,
-                      ),
-                      title: const Text('WireGuard'),
-                      subtitle: Text(effectiveWgEp ?? 'Configured tunnel'),
-                      trailing: _connectionTrailing('wireguard'),
-                      onTap: busy || effectiveWgEp == null
-                          ? null
-                          : () => selectConnection(
-                              'wireguard',
-                              endpoint: effectiveWgEp,
-                            ),
-                    ),
-                  if (canAdb)
-                    ListTile(
-                      leading: Icon(
-                        activeTransport == 'adb'
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_unchecked,
-                      ),
-                      title: const Text('USB / Wireless ADB'),
-                      subtitle: Text(effectiveAdbEp ?? 'ADB loopback tunnel'),
-                      trailing: _connectionTrailing('adb'),
-                      onTap: busy || effectiveAdbEp == null
-                          ? null
-                          : () => selectConnection(
-                              'adb',
-                              endpoint: effectiveAdbEp,
-                            ),
-                    ),
-                  if (canSsh)
-                    ListTile(
-                      leading: Icon(
-                        activeTransport == 'ssh'
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_unchecked,
-                      ),
-                      title: const Text('SSH tunnel'),
-                      subtitle: Text(sshEp ?? 'Configured SSH tunnel'),
-                      trailing: _connectionTrailing('ssh'),
-                      onTap: busy || sshEp == null
-                          ? null
-                          : () => selectConnection(
-                              'ssh',
-                              endpoint: sshEp,
-                            ),
-                    ),
-                  if (!canLan &&
-                      !canTailscale &&
-                      !canWireguard &&
-                      !canAdb &&
-                      !canSsh)
+                  if (reachablePaths.isEmpty && !busy && !probingPaths)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
                       child: Text(
                         isRevoked
                             ? 'Device is revoked — remove or re-pair to use connections.'
-                            : 'No active connection path detected. Use Custom… to configure a tunnel.',
+                            : 'No reachable paths found right now. Ensure Wi-Fi, Wi-Fi Direct, Tailscale, or WireGuard is connected, or use Custom…',
                       ),
                     ),
                 ],

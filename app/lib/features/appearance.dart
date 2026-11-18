@@ -68,21 +68,16 @@ class MatteArtItem {
 }
 
 List<MatteArtItem> defaultMatteItems() => const [
-  // Topbar flowers
-  MatteArtItem(kind: 'flower', x: 0.54, y: 0.060, scale: 0.66, tilt: 0, color: 0xfff7f3dd, foreground: false),
-  MatteArtItem(kind: 'flower', x: 0.62, y: 0.073, scale: 0.50, tilt: 0, color: 0xffe5b93c, foreground: false),
-  // One side-edge flower
-  MatteArtItem(kind: 'flower', x: 0.95, y: 0.360, scale: 0.90, tilt: 0, color: 0xfff7f3dd, foreground: false),
-  // Horizontal center flower
-  MatteArtItem(kind: 'flower', x: 0.50, y: 0.480, scale: 1.00, tilt: 0, color: 0xffe5b93c, foreground: false),
-  // Bigger bird centered horizontally above the bottom bar, surrounded by flowers
-  MatteArtItem(kind: 'flower', x: 0.16, y: 0.845, scale: 0.96, tilt: 0, color: 0xfff7f3dd, foreground: false),
-  MatteArtItem(kind: 'flower', x: 0.29, y: 0.858, scale: 0.74, tilt: 0, color: 0xffe5b93c, foreground: false),
-  MatteArtItem(kind: 'bird', x: 0.50, y: 0.850, scale: 1.00, tilt: 0, color: 0xff20231c, foreground: false),
-  MatteArtItem(kind: 'flower', x: 0.71, y: 0.856, scale: 0.78, tilt: 0, color: 0xfff7f3dd, foreground: false),
-  MatteArtItem(kind: 'flower', x: 0.84, y: 0.845, scale: 0.94, tilt: 0, color: 0xffe5b93c, foreground: false),
-  // Single larger flower at the bottom, tilted 45 degrees
-  MatteArtItem(kind: 'flower', x: 0.45, y: 0.952, scale: 1.18, tilt: math.pi / 4, color: 0xfff7f3dd, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.54, y: 0.06, scale: 0.66, tilt: 0.0, color: 0xfff7f3dd, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.62, y: 0.073, scale: 0.5, tilt: 0.0, color: 0xffe5b93c, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.95, y: 0.36, scale: 0.9, tilt: 0.0, color: 0xfff7f3dd, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.14307681224385246, y: 0.4393474146262887, scale: 1.3821195913461535, tilt: -0.6678527555774365, color: 0xffe5b93c, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.4108910732581967, y: 0.276371662013173, scale: 0.96, tilt: 0.0, color: 0xfff7f3dd, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.22770315701844263, y: 0.8566131067439863, scale: 0.74, tilt: 0.0, color: 0xffe5b93c, foreground: false),
+  MatteArtItem(kind: 'bird', x: 0.8029817174692623, y: 0.6783882132373998, scale: 1.0, tilt: 0.0, color: 0xff20231c, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.8140464907786885, y: 0.7160809528923254, scale: 0.78, tilt: 0.0, color: 0xfff7f3dd, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.6890528944672131, y: 0.6667908344072165, scale: 0.94, tilt: 0.0, color: 0xffe5b93c, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.7372574602971311, y: 0.9576274788802979, scale: 1.18, tilt: 0.7853981633974483, color: 0xfff7f3dd, foreground: false),
 ];
 
 List<MatteArtItem> decodeMatteItems(String? raw) {

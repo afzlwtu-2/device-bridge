@@ -91,6 +91,31 @@ class FakeCore implements CoreBridge {
 
   final calls = <List<String>>[];
   List<dynamic> peerActions = [];
+  bool tailnetReachable = false;
+  bool wifiDirectReachable = false;
+
+  String _cliCmd(List<String> args) {
+    var i = 0;
+    while (i < args.length) {
+      final a = args[i];
+      if (a == '--approve-remote' || a == '--allow-route-fallback') {
+        i += 1;
+      } else if (a.startsWith('--')) {
+        i += 2;
+      } else {
+        return a;
+      }
+    }
+    return args.isEmpty ? '' : args.first;
+  }
+
+  String? _flagVal(List<String> args, String flag) {
+    final idx = args.indexOf(flag);
+    if (idx >= 0 && idx + 1 < args.length) {
+      return args[idx + 1];
+    }
+    return null;
+  }
   @override
   String get downloads => '/private/downloads';
   @override
@@ -109,11 +134,54 @@ class FakeCore implements CoreBridge {
   @override
   Future<String?> saveDownload(String path) async => path;
   @override
-  Future<List<Map<String, dynamic>>> networks() async => [];
+  Future<List<Map<String, dynamic>>> networks() async => [
+    if (wifiDirectReachable)
+      {
+        'interface': 'p2p-wlan0-0',
+        'cidr': '192.168.49.1/24',
+        'kind': 'wifi_direct',
+      },
+  ];
   @override
   Future<dynamic> run(List<String> arguments, {String? input}) async {
     calls.add(arguments);
-    return switch (arguments.first) {
+    final cmd = _cliCmd(arguments);
+    final tr = _flagVal(arguments, '--transport');
+    final iface = _flagVal(arguments, '--interface');
+    if (cmd == 'resolve') {
+      if (tr == 'tailnet') {
+        if (!tailnetReachable) {
+          throw StateError('tailnet peer unreachable');
+        }
+        return {
+          'transport': 'tailnet',
+          'endpoint': _flagVal(arguments, '--endpoint') ?? '100.64.0.9:8731',
+          'path_kind': 'direct',
+          'rtt': 8500000,
+          'mib_per_second': 14.0,
+        };
+      }
+      if (tr == 'wireguard' || tr == 'adb' || tr == 'ssh') {
+        throw StateError('$tr unreachable');
+      }
+      if (iface == 'p2p-wlan0-0') {
+        return {
+          'transport': 'direct-lan-v1',
+          'endpoint': '192.168.49.15:8731',
+          'interface': 'p2p-wlan0-0',
+          'rtt': 2200000,
+          'mib_per_second': 35.0,
+        };
+      }
+      return {
+        'transport': 'direct-lan-v1',
+        'endpoint': '192.168.50.3:8731',
+        'interface': 'test0',
+        'rtt': 1000000,
+        'mib_per_second': 42.5,
+      };
+    }
+    return switch (cmd) {
       'connection' => {'transport': 'lan'},
       'wireguard' => {
         'backend': 'userspace',
@@ -145,7 +213,20 @@ class FakeCore implements CoreBridge {
         }
         return peerActions;
       }(),
-      'tailnet' => {'mode': 'app', 'state': 'Stopped', 'ips': []},
+      'tailnet' => tailnetReachable
+          ? {
+              'mode': 'app',
+              'state': 'Running',
+              'ips': ['100.64.0.2'],
+              'peers': [
+                {
+                  'name': 'Laptop',
+                  'online': true,
+                  'ips': ['100.64.0.9'],
+                },
+              ],
+            }
+          : {'mode': 'app', 'state': 'Stopped', 'ips': []},
       'theme' => {'theme': arguments.length > 1 ? arguments[1] : 'system'},
       'export' => {'status': 'export_registered'},
       'identity' => {'id': 'phone', 'name': 'Phone'},
@@ -499,7 +580,9 @@ void main() {
   testWidgets(
     'Device details filters usable connections, shows connection details, toggles, and target SSH commands',
     (tester) async {
-      final core = FakeCore();
+      final core = FakeCore()
+        ..tailnetReachable = true
+        ..wifiDirectReachable = true;
       await tester.pumpWidget(DeviceBridgeApp(core: core));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Devices').last);
@@ -513,8 +596,14 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Direct Wi-Fi LAN'), findsOneWidget);
+      expect(find.text('Wi-Fi Direct'), findsOneWidget);
+      expect(find.text('Tailscale'), findsOneWidget);
       expect(find.textContaining('192.168.50.2/24'), findsNothing);
-      expect(find.text('192.168.50.3:8731'), findsOneWidget);
+      expect(find.textContaining('192.168.50.3:8731'), findsWidgets);
+      expect(find.textContaining('192.168.49.15:8731'), findsOneWidget);
+      expect(find.textContaining('100.64.0.9:8731'), findsOneWidget);
+      expect(find.text('2.2 ms'), findsOneWidget);
+      expect(find.text('8.5 ms'), findsOneWidget);
       expect(find.text('WireGuard'), findsNothing);
       expect(find.text('USB / Wireless ADB'), findsNothing);
       expect(find.text('SSH tunnel'), findsNothing);

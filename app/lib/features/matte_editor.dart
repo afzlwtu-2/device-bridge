@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'appearance.dart';
@@ -113,6 +114,40 @@ class _MatteThemeEditorState extends State<MatteThemeEditor> {
             tooltip: 'Add bird',
             onPressed: saving ? null : () => _addItem('bird'),
             icon: const Icon(Icons.flutter_dash_outlined),
+          ),
+          IconButton(
+            tooltip: 'Export preset',
+            onPressed: saving
+                ? null
+                : () {
+                    final encoded = encodeMatteItems(items);
+                    showDialog<void>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('Matte preset'),
+                        content: SizedBox(
+                          width: 420,
+                          child: SingleChildScrollView(
+                            child: SelectableText(encoded),
+                          ),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: encoded));
+                              Navigator.pop(ctx);
+                            },
+                            child: const Text('Copy'),
+                          ),
+                          FilledButton(
+                            onPressed: () => Navigator.pop(ctx),
+                            child: const Text('Close'),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+            icon: const Icon(Icons.code),
           ),
           IconButton(
             tooltip: 'Reset default art',
