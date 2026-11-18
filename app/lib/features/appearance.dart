@@ -43,9 +43,9 @@ class MatteMeadowFooter extends StatelessWidget {
   const MatteMeadowFooter({super.key});
   @override
   Widget build(BuildContext context) => const Padding(
-    padding: EdgeInsets.only(top: 16),
+    padding: EdgeInsets.only(top: 8),
     child: SizedBox(
-      height: 112,
+      height: 104,
       width: double.infinity,
       child: CustomPaint(painter: _MatteMeadowPainter()),
     ),
@@ -124,13 +124,21 @@ class _EdgeGlow extends CustomPainter {
 
 ThemeData amoledTheme(String appearance) {
   final isRed = appearance == 'amoled-red';
-  final accent = isRed ? const Color(0xffff3b5c) : const Color(0xff1be86c);
+  final neon = isRed ? const Color(0xffff1738) : const Color(0xff1cff68);
   final scheme = ColorScheme.fromSeed(
-    seedColor: accent,
+    seedColor: neon,
     brightness: Brightness.dark,
   ).copyWith(
-    primary: accent,
+    primary: neon,
     onPrimary: Colors.black,
+    primaryContainer: neon.withValues(alpha: 0.22),
+    onPrimaryContainer: neon,
+    secondary: neon,
+    onSecondary: Colors.black,
+    secondaryContainer: neon,
+    onSecondaryContainer: Colors.black,
+    tertiary: neon,
+    onTertiary: Colors.black,
     surface: Colors.black,
     surfaceContainer: Colors.black,
     surfaceContainerLow: Colors.black,
@@ -145,9 +153,67 @@ ThemeData amoledTheme(String appearance) {
       backgroundColor: Colors.black,
       surfaceTintColor: Colors.transparent,
     ),
-    navigationBarTheme: const NavigationBarThemeData(
+    navigationBarTheme: NavigationBarThemeData(
       backgroundColor: Colors.black,
+      indicatorColor: neon,
+      iconTheme: WidgetStateProperty.resolveWith(
+        (states) => IconThemeData(
+          color: states.contains(WidgetState.selected)
+              ? Colors.black
+              : Colors.white70,
+        ),
+      ),
       surfaceTintColor: Colors.transparent,
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: neon,
+        foregroundColor: Colors.black,
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: neon,
+        side: BorderSide(color: neon.withValues(alpha: 0.55)),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(foregroundColor: neon),
+    ),
+    checkboxTheme: CheckboxThemeData(
+      fillColor: WidgetStateProperty.resolveWith(
+        (s) => s.contains(WidgetState.selected) ? neon : Colors.transparent,
+      ),
+      checkColor: WidgetStateProperty.all(Colors.black),
+      side: BorderSide(color: neon, width: 1.8),
+    ),
+    switchTheme: SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith(
+        (s) => s.contains(WidgetState.selected) ? Colors.black : Colors.white70,
+      ),
+      trackColor: WidgetStateProperty.resolveWith(
+        (s) => s.contains(WidgetState.selected)
+            ? neon
+            : const Color(0xff1a1a1a),
+      ),
+    ),
+    radioTheme: RadioThemeData(
+      fillColor: WidgetStateProperty.resolveWith(
+        (s) => s.contains(WidgetState.selected) ? neon : Colors.white70,
+      ),
+    ),
+    listTileTheme: ListTileThemeData(
+      selectedColor: neon,
+      selectedTileColor: neon.withValues(alpha: 0.14),
+    ),
+    progressIndicatorTheme: ProgressIndicatorThemeData(
+      color: neon,
+      linearTrackColor: const Color(0xff141414),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      focusedBorder: OutlineInputBorder(
+        borderSide: BorderSide(color: neon, width: 2.0),
+      ),
     ),
     cardTheme: const CardThemeData(
       color: Color(0xff060606),
@@ -195,9 +261,6 @@ class _MattePaperArt extends CustomPainter {
       final y = value / 2147483647 * size.height;
       canvas.drawLine(Offset(x, y), Offset(x + 0.9, y + 0.15), grain);
     }
-
-    // Playful comic ink rays in the upper-right open margin away from titles.
-    _drawComicRays(canvas, Offset(size.width * 0.89, size.height * 0.14), 0.35);
   }
 
   @override
@@ -444,6 +507,7 @@ ThemeData mattePaperTheme() {
     appBarTheme: const AppBarTheme(
       backgroundColor: Colors.transparent,
       foregroundColor: ink,
+      actionsIconTheme: IconThemeData(color: cream),
       surfaceTintColor: Colors.transparent,
       elevation: 0,
       scrolledUnderElevation: 0,

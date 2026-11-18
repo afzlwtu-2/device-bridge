@@ -42,11 +42,11 @@ Flutter uses this same Go core through subprocess/platform channels. Android pac
 | Flutter analyzer/widget regression tests | `flutter-analyze-3.log`, `flutter-widget-tests-4.log`: PASS |
 | Linux actual GUI startup | `linux-ui-smoke.log`: bundled core initialized, app survived bounded startup and was stopped; cursor-theme warning only |
 | Optimized Linux/Android builds | `flutter-linux-build-final.log`, `flutter-android-release-final.log`: PASS |
-| APK signatures and bundled core hash | `android-release-final-signature.log`, `android-release-final-verification.json`, plus latest `apksigner verify` on `d3896bb252...`: PASS |
+| APK signatures and bundled core hash | `android-release-final-signature.log`, `android-release-final-verification.json`, plus latest `apksigner verify` on `c45a322ecb...`: PASS |
 | Go known-vulnerability scan | `govulncheck.log`: no known vulnerabilities; not an external audit |
 | Two-way LAN mDNS discovery & Linux → Android pull | Standalone Android UID `u0_a408` discovered at `10.100.102.33:33715`; Android UI discovered Linux at `10.100.102.69:8731`; Linux paired/approved/pulled 8 files (`8,389,711` bytes): PASS (no UFW edit) |
 | Streaming tar + adaptive gzip & live MiB/s | `internal/transfer/tar_test.go`, `TestStreamingTarPullOverMTLS`, `tar-speed-cli-verify.json` (24 files, `mode: "tar"`, `2.23 MiB/s`, persisted `rate.<peer>`): PASS |
-| Matte paper & AMOLED Neon Green/Red themes | `flutter test` (3/3) + `flutter analyze` (0 issues): PASS; earlier hardware screenshots inspected; final white-pill olive nav bar + saturated neon center peaks built into latest APK (pending foreground visual check) |
+| Matte paper & AMOLED Neon Green/Red themes | `flutter test` (3/3) + `flutter analyze` (0 issues): PASS; verified visually on WayDroid `x86_64` (unified Matte paper with white/cream right-side AppBar icons & active nav pill; AMOLED Neon Green/Red edge lines matching active tab pill & buttons) |
 
 Failures were retained: initial Linux fixture permissions, laptop UFW denial, lost single mDNS packet, outdated APK core caught by hash comparison, a real Flutter dialog/controller lifecycle assertion, `TextStyle` `inherit` mismatch during theme animation, and `package_artifacts.py` catching a stale debug APK. Fixes have targeted regression tests and passing follow-up evidence. No failed run is presented as successful.
 
@@ -54,7 +54,7 @@ The physical CLI folder command transferred 4,194,335 bytes in 4.098625 seconds 
 
 ## Artifacts and cleanup
 
-- Development-signed release APK: `artifacts/android-arm64/devicebridge.apk`, 24,064,449 bytes, SHA-256 `d3896bb252f60e0fefed5b4aa42f0a91b8b038bec8ce71e377d782eb7c109240` (includes `libbridge_cli.so`, `libbridge_agent.so`, and `libbridge_tailnet.so`). Debug APK: `artifacts/android-arm64/devicebridge-debug.apk`. Latest APK awaits user-safe foreground install/visual check.
+- Development-signed release APK: `artifacts/android-arm64/devicebridge.apk`, 24,066,321 bytes, SHA-256 `c45a322ecb1213211ecab4d56b5d68808fbe58a59db6345ba9f4e003a2915e96` (includes `libbridge_cli.so`, `libbridge_agent.so`, and `libbridge_tailnet.so`). Debug APK: `artifacts/android-arm64/devicebridge-debug.apk`. Latest arm64 release APK awaits physical phone return for install; `x86_64` debug build verified visually on WayDroid (`192.168.240.112:5555`) with other WayDroid apps/settings left untouched.
 - Linux GUI bundle: `app/build/linux/x64/release/bundle/`; packaged archive: `artifacts/linux/devicebridge-linux-x64.tar.gz`; Linux and Termux Go binaries in `artifacts/linux/` and `artifacts/termux-arm64/`. `artifacts/MANIFEST.json` and `docs/test-evidence/artifact-manifest.json` record hashes.
 - All experiment-owned laptop agents stopped. All temporary wlan0 TCP8731 rules (phone10.100.102.33 → laptop10.100.102.69 only) were deleted after baseline tests; no UFW rules were added in this session. No persistent device service was installed.
 - SAF retained only the test folder `DeviceBridge-Test-20261118T064118Z` with verified sample copies. Owned temporary UI XML is removed. Private test identities/state remain in ignored `.work/` and disposable phone snapshots for reproducibility.

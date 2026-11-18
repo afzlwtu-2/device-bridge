@@ -1,0 +1,14 @@
+{
+  "run": "20261118T082414Z",
+  "files": 24,
+  "agent": {
+    "approved_lan": "10.100.102.0/24",
+    "discovery": true,
+    "discovery_error": "",
+    "endpoint": "10.100.102.69:8731",
+    "id": "12706392a095a0272039d1dd2d87da6c463cb69cffb0db496806e43e5479ecdb",
+    "interface": "wlan0",
+    "name": "Laptop Tar E2E",
+    "transport": "direct-lan-v1"
+  }
+}
