@@ -367,8 +367,25 @@ void main() {
       await tester.tap(find.text('Laptop'));
       await tester.pumpAndSettle();
       expect(find.text('Authenticated direct LAN'), findsOneWidget);
+      final detailScroll = find.descendant(
+        of: find.byType(ListView).last,
+        matching: find.byType(Scrollable),
+      ).first;
+      await tester.scrollUntilVisible(
+        find.textContaining('10.0.0.5:8731'),
+        200,
+        scrollable: detailScroll,
+      );
       expect(find.textContaining('10.0.0.5:8731'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Remove device'),
+        200,
+        scrollable: detailScroll,
+      );
       expect(find.text('Remove device'), findsOneWidget);
+      await tester.drag(detailScroll, const Offset(0, 600));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Approved'));
       await tester.tap(find.text('Approved'));
       await tester.pumpAndSettle();
       expect(find.text('hello.txt'), findsOneWidget);

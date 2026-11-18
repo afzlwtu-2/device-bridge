@@ -379,9 +379,53 @@ ThemeData amoledTheme(String appearance) {
       color: neon,
       linearTrackColor: const Color(0xff141414),
     ),
+    canvasColor: const Color(0xff0a0a0a),
     inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: const Color(0xff060606),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: BorderSide(color: neon.withValues(alpha: 0.45), width: 1.0),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: BorderSide(color: neon.withValues(alpha: 0.45), width: 1.0),
+      ),
       focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
         borderSide: BorderSide(color: neon, width: 2.0),
+      ),
+    ),
+    popupMenuTheme: PopupMenuThemeData(
+      color: const Color(0xff0a0a0a),
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: neon.withValues(alpha: 0.7), width: 1.2),
+      ),
+    ),
+    menuTheme: MenuThemeData(
+      style: MenuStyle(
+        backgroundColor: const WidgetStatePropertyAll(Color(0xff0a0a0a)),
+        surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: neon.withValues(alpha: 0.7), width: 1.2),
+          ),
+        ),
+      ),
+    ),
+    dropdownMenuTheme: DropdownMenuThemeData(
+      menuStyle: MenuStyle(
+        backgroundColor: const WidgetStatePropertyAll(Color(0xff0a0a0a)),
+        surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: neon.withValues(alpha: 0.7), width: 1.2),
+          ),
+        ),
       ),
     ),
     cardTheme: const CardThemeData(
@@ -706,6 +750,7 @@ ThemeData mattePaperTheme() {
   return ThemeData(
     colorScheme: scheme,
     useMaterial3: true,
+    canvasColor: cream,
     scaffoldBackgroundColor: Colors.transparent,
     // The paper art lives behind Navigator. Android's default route fade
     // otherwise paints ColorScheme.surface (cream) across it during a push/pop.
@@ -817,6 +862,39 @@ ThemeData mattePaperTheme() {
         side: border,
       ),
       behavior: SnackBarBehavior.floating,
+    ),
+    popupMenuTheme: PopupMenuThemeData(
+      color: cream,
+      surfaceTintColor: Colors.transparent,
+      elevation: 4,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: border,
+      ),
+    ),
+    menuTheme: MenuThemeData(
+      style: MenuStyle(
+        backgroundColor: const WidgetStatePropertyAll(cream),
+        surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: border,
+          ),
+        ),
+      ),
+    ),
+    dropdownMenuTheme: DropdownMenuThemeData(
+      menuStyle: MenuStyle(
+        backgroundColor: const WidgetStatePropertyAll(cream),
+        surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: border,
+          ),
+        ),
+      ),
     ),
     dividerColor: const Color(0xff7f8a36),
   );

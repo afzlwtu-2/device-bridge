@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:material_ui/material_ui.dart';
 
 import '../core/bridge.dart';
+import 'connection_picker.dart';
 import 'folder_exclusions.dart';
 import 'folder_name_dialog.dart';
 import 'termux_tools.dart';
@@ -405,6 +406,8 @@ class _PhoneFilesState extends State<PhoneFiles> with WidgetsBindingObserver {
                   DropdownButtonFormField<String>(
                     isExpanded: true,
                     initialValue: pane.device,
+                    dropdownColor: Theme.of(context).canvasColor,
+                    borderRadius: BorderRadius.circular(16),
                     decoration: InputDecoration(
                       labelText: index == 0 ? 'Left device' : 'Right device',
                       isDense: true,
@@ -437,6 +440,8 @@ class _PhoneFilesState extends State<PhoneFiles> with WidgetsBindingObserver {
                   DropdownButtonFormField<String>(
                     key: ValueKey('${pane.device}:${pane.root}'),
                     isExpanded: true,
+                    dropdownColor: Theme.of(context).canvasColor,
+                    borderRadius: BorderRadius.circular(16),
                     initialValue: pane.roots.any((r) => r['id'] == pane.root)
                         ? pane.root
                         : null,
@@ -494,6 +499,25 @@ class _PhoneFilesState extends State<PhoneFiles> with WidgetsBindingObserver {
                       Icons.create_new_folder_outlined,
                       size: 18,
                     ),
+                  )
+                else
+                  IconButton(
+                    tooltip: 'Connection method',
+                    onPressed: transferring
+                        ? null
+                        : () async {
+                            final changed = await showDialog<bool>(
+                              context: context,
+                              builder: (_) => ConnectionPicker(
+                                core: widget.core,
+                                peer: pane.device,
+                              ),
+                            );
+                            if (changed == true && mounted) {
+                              await load(pane, roots: true);
+                            }
+                          },
+                    icon: const Icon(Icons.settings_ethernet, size: 18),
                   ),
                 IconButton(
                   tooltip: 'Refresh pane',

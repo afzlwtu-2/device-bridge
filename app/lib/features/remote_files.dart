@@ -27,16 +27,45 @@ class DeviceDetail extends StatefulWidget {
 
 class _DeviceDetailState extends State<DeviceDetail> {
   bool busy = true;
-  String? error;
+  String? offlineNote;
   List<dynamic> roots = [];
+  List<dynamic> tailnetNodes = [];
   Map<String, dynamic>? route;
+  Map<String, dynamic>? connectionCfg;
   @override
   void initState() {
     super.initState();
     load();
   }
 
+  String _friendlyError(Object e) {
+    final s = e.toString();
+    if (s.contains('device not discovered on the approved LAN')) {
+      return 'Not currently discovered on the approved LAN.';
+    }
+    final match = RegExp(r'"message":"([^"]+)"').firstMatch(s);
+    if (match != null) {
+      return match.group(1)!;
+    }
+    return s;
+  }
+
   Future<void> load() async {
+    offlineNote = null;
+    try {
+      connectionCfg = Map<String, dynamic>.from(
+        await widget.core.run(['connection', widget.peer['id'] as String])
+            as Map,
+      );
+    } catch (_) {
+      connectionCfg = null;
+    }
+    try {
+      final st = await widget.core.run(['tailnet', 'status']) as Map;
+      tailnetNodes = st['peers'] as List? ?? [];
+    } catch (_) {
+      tailnetNodes = [];
+    }
     try {
       route = Map<String, dynamic>.from(
         await widget.core.run(['resolve', widget.peer['id'] as String]) as Map,
@@ -44,11 +73,39 @@ class _DeviceDetailState extends State<DeviceDetail> {
       roots =
           await widget.core.run(['roots', widget.peer['id'] as String]) as List;
     } catch (e) {
-      error = e.toString();
+      route = null;
+      roots = [];
+      offlineNote = _friendlyError(e);
     }
     if (mounted) {
       setState(() => busy = false);
     }
+  }
+
+  Future<void> selectConnection(
+    String transport, {
+    String? endpoint,
+    bool? remoteApproved,
+  }) async {
+    setState(() {
+      busy = true;
+      offlineNote = null;
+    });
+    try {
+      final current = connectionCfg ?? <String, dynamic>{};
+      await widget.core.run(
+        ['connection', widget.peer['id'] as String, '-'],
+        input: jsonEncode({
+          ...current,
+          'transport': transport,
+          'endpoint': ?endpoint,
+          'remote_approved': ?remoteApproved,
+        }),
+      );
+    } catch (e) {
+      offlineNote = _friendlyError(e);
+    }
+    await load();
   }
 
   String routeTitle(String? transport) => switch (transport) {
@@ -61,129 +118,287 @@ class _DeviceDetailState extends State<DeviceDetail> {
   };
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text('${widget.peer['name']}'),
-      actions: [
-        IconButton(
-          tooltip: 'Choose connection',
-          onPressed: () async {
-            final changed = await showDialog<bool>(
-              context: context,
-              builder: (_) => ConnectionPicker(
-                core: widget.core,
-                peer: widget.peer['id'] as String,
-              ),
-            );
-            if (changed == true) {
-              setState(() {
-                busy = true;
-                error = null;
-              });
-              await load();
-            }
-          },
-          icon: const Icon(Icons.settings_ethernet),
-        ),
-      ],
-    ),
-    body: ListView(
-      padding: const EdgeInsets.all(24),
-      children: [
-        if (busy) const LinearProgressIndicator(),
-        if (error != null) SelectableText(error!),
-        if (route != null)
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.verified_user_outlined),
-              title: Text(routeTitle(route!['transport'] as String?)),
-              subtitle: Text(
-                '${route!['endpoint']} · ${route!['interface'] ?? ''}\nHandshake ${((route!['rtt'] as num) / 1000000).toStringAsFixed(1)} ms\nTransfer speed: ${((route!['mib_per_second'] as num? ?? 0) > 0) ? '${(route!['mib_per_second'] as num).toStringAsFixed(2)} MiB/s' : '— MiB/s (measure during a transfer)'}',
-              ),
-            ),
+  Widget build(BuildContext context) {
+    final activeTransport = connectionCfg?['transport'] as String? ?? 'lan';
+    final addresses = widget.peer['addresses'] as List? ?? const [];
+    final adbEp = connectionCfg?['adb_endpoint'] as String?;
+    final sshEp = connectionCfg?['ssh_endpoint'] as String?;
+    final wgEp = connectionCfg?['wireguard_endpoint'] as String?;
+    String? tailnetEp;
+    for (final node in tailnetNodes) {
+      final ips = (node['ips'] as List? ?? const [])
+          .whereType<String>()
+          .where((ip) => !ip.contains(':'));
+      if (ips.isNotEmpty) {
+        tailnetEp = '${ips.first}:8731';
+        break;
+      }
+    }
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('${widget.peer['name']}'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh device',
+            onPressed: busy
+                ? null
+                : () {
+                    setState(() {
+                      busy = true;
+                      offlineNote = null;
+                    });
+                    load();
+                  },
+            icon: const Icon(Icons.refresh),
           ),
-        const SizedBox(height: 16),
-        Text('Approved folders', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 12),
-        if (!busy && roots.isEmpty && error == null)
-          const Text('This device has not granted access to any folders.'),
-        for (final feature in widget.registry.available(
-          roots.isEmpty ? [] : ['remote-files-v1'],
-        ))
-          for (final root in roots)
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          if (busy) const LinearProgressIndicator(),
+          if (route != null)
             Card(
               child: ListTile(
-                leading: Icon(feature.icon),
-                title: Text('${root['name']}'),
-                subtitle: Text(feature.label),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: busy
-                    ? null
-                    : () async {
-                        await Navigator.push(
-                          context,
-                          MaterialPageRoute<void>(
-                            builder: (_) => FileBrowser(
-                              core: widget.core,
-                              peer: widget.peer,
-                              root: root['id'] as String,
-                              path: '.',
-                            ),
-                          ),
-                        );
-                        if (mounted) {
-                          await load();
-                        }
-                      },
+                leading: const Icon(Icons.verified_user_outlined),
+                title: Text(routeTitle(route!['transport'] as String?)),
+                subtitle: Text(
+                  '${route!['endpoint']}${route!['interface'] != null && '${route!['interface']}'.isNotEmpty ? ' · ${route!['interface']}' : ''}\nHandshake ${((route!['rtt'] as num) / 1000000).toStringAsFixed(1)} ms · Speed ${((route!['mib_per_second'] as num? ?? 0) > 0) ? '${(route!['mib_per_second'] as num).toStringAsFixed(2)} MiB/s' : '—'}',
+                ),
+              ),
+            )
+          else if (!busy)
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.wifi_off_outlined),
+                title: const Text('Device not currently reachable'),
+                subtitle: Text(
+                  offlineNote ?? 'Not currently reachable on the selected connection.',
+                ),
+                trailing: TextButton(
+                  onPressed: () {
+                    setState(() => busy = true);
+                    load();
+                  },
+                  child: const Text('Retry'),
+                ),
               ),
             ),
-        const SizedBox(height: 24),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Device & IP history',
-                  style: Theme.of(context).textTheme.titleMedium,
+          if (roots.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Text('Folders', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            for (final feature in widget.registry.available(['remote-files-v1']))
+              for (final root in roots)
+                Card(
+                  child: ListTile(
+                    leading: Icon(feature.icon),
+                    title: Text('${root['name']}'),
+                    subtitle: Text(feature.label),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: busy
+                        ? null
+                        : () async {
+                            await Navigator.push(
+                              context,
+                              MaterialPageRoute<void>(
+                                builder: (_) => FileBrowser(
+                                  core: widget.core,
+                                  peer: widget.peer,
+                                  root: root['id'] as String,
+                                  path: '.',
+                                ),
+                              ),
+                            );
+                            if (mounted) {
+                              await load();
+                            }
+                          },
+                  ),
                 ),
-                const SizedBox(height: 8),
-                SelectableText('Status: ${widget.peer['status']}'),
-                const SizedBox(height: 6),
-                for (final addr in (widget.peer['addresses'] as List? ?? const []))
+          ],
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: SelectableText(
-                      'LAN ${addr['endpoint']} · saved authenticated address',
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Available connections',
+                            style: Theme.of(context).textTheme.titleMedium,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: busy
+                              ? null
+                              : () async {
+                                  final changed = await showDialog<bool>(
+                                    context: context,
+                                    builder: (_) => ConnectionPicker(
+                                      core: widget.core,
+                                      peer: widget.peer['id'] as String,
+                                    ),
+                                  );
+                                  if (changed == true) {
+                                    setState(() => busy = true);
+                                    await load();
+                                  }
+                                },
+                          child: const Text('Custom…'),
+                        ),
+                      ],
                     ),
                   ),
-                if ((widget.peer['addresses'] as List? ?? const []).isEmpty)
-                  const Text('No saved previous addresses.'),
-                const SizedBox(height: 8),
-                SelectableText('Device fingerprint\n${widget.peer['id']}'),
-              ],
+                  ListTile(
+                    leading: Icon(
+                      activeTransport == 'lan'
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_unchecked,
+                    ),
+                    title: const Text('Direct Wi-Fi LAN'),
+                    subtitle: Text(
+                      widget.core.network == null
+                          ? 'Approve a Wi-Fi network first'
+                          : '${widget.core.network!['interface']} · ${widget.core.network!['cidr']}',
+                    ),
+                    onTap: busy ? null : () => selectConnection('lan'),
+                  ),
+                  if (tailnetNodes.isNotEmpty || activeTransport == 'tailnet')
+                    ListTile(
+                      leading: Icon(
+                        activeTransport == 'tailnet'
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                      ),
+                      title: const Text('Tailscale'),
+                      subtitle: Text(
+                        tailnetEp ?? 'Connected node',
+                      ),
+                      onTap: busy || tailnetEp == null
+                          ? null
+                          : () => selectConnection(
+                              'tailnet',
+                              endpoint: tailnetEp,
+                              remoteApproved: true,
+                            ),
+                    ),
+                  ListTile(
+                    leading: Icon(
+                      activeTransport == 'wireguard'
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_unchecked,
+                    ),
+                    title: const Text('WireGuard'),
+                    subtitle: Text(wgEp ?? '10.77.0.1:8731'),
+                    onTap: busy
+                        ? null
+                        : () => selectConnection(
+                            'wireguard',
+                            endpoint: wgEp ?? '10.77.0.1:8731',
+                          ),
+                  ),
+                  ListTile(
+                    leading: Icon(
+                      activeTransport == 'adb'
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_unchecked,
+                    ),
+                    title: const Text('USB / Wireless ADB'),
+                    subtitle: Text(adbEp ?? '127.0.0.1:8731'),
+                    onTap: busy
+                        ? null
+                        : () => selectConnection(
+                            'adb',
+                            endpoint: adbEp ?? '127.0.0.1:8731',
+                          ),
+                  ),
+                  ListTile(
+                    leading: Icon(
+                      activeTransport == 'ssh'
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_unchecked,
+                    ),
+                    title: const Text('SSH tunnel'),
+                    subtitle: Text(sshEp ?? '127.0.0.1:8731'),
+                    onTap: busy
+                        ? null
+                        : () => selectConnection(
+                            'ssh',
+                            endpoint: sshEp ?? '127.0.0.1:8731',
+                          ),
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
-        const SizedBox(height: 24),
-        Wrap(
-          spacing: 12,
-          runSpacing: 12,
-          children: [
-            OutlinedButton(
-              onPressed: busy ? null : revoke,
-              child: const Text('Revoke device'),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Saved addresses',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 8),
+                  for (final addr in addresses)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: SelectableText('LAN ${addr['endpoint']}'),
+                    ),
+                  if (addresses.isEmpty)
+                    const Text('No saved addresses yet.'),
+                ],
+              ),
             ),
-            OutlinedButton(
-              onPressed: busy ? null : remove,
-              child: const Text('Remove device'),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Device identity',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 8),
+                  SelectableText('Status: ${widget.peer['status']}'),
+                  const SizedBox(height: 6),
+                  SelectableText('Fingerprint\n${widget.peer['id']}'),
+                ],
+              ),
             ),
-          ],
-        ),
-      ],
-    ),
-  );
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              OutlinedButton(
+                onPressed: busy ? null : revoke,
+                child: const Text('Revoke device'),
+              ),
+              OutlinedButton(
+                onPressed: busy ? null : remove,
+                child: const Text('Remove device'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 
   Future<void> remove() async {
     final approved = await showDialog<bool>(
@@ -213,7 +428,7 @@ class _DeviceDetailState extends State<DeviceDetail> {
         }
       } catch (e) {
         if (mounted) {
-          setState(() => error = e.toString());
+          setState(() => offlineNote = _friendlyError(e));
         }
       }
     }
@@ -245,7 +460,7 @@ class _DeviceDetailState extends State<DeviceDetail> {
         }
       } catch (e) {
         if (mounted) {
-          setState(() => error = e.toString());
+          setState(() => offlineNote = _friendlyError(e));
         }
       }
     }

@@ -92,14 +92,16 @@ class _ConnectionPickerState extends State<ConnectionPicker> {
           children: [
             if (busy) const LinearProgressIndicator(),
             const Text(
-              'Choose the primary route and optionally approve alternate routes for automatic resume if a transfer is disrupted.',
+              'Choose how to connect to this device, and optionally allow auto-switching across approved routes if a transfer is disrupted.',
             ),
             const SizedBox(height: 16),
             DropdownButtonFormField<String>(
               initialValue: mode,
               isExpanded: true,
+              dropdownColor: Theme.of(context).canvasColor,
+              borderRadius: BorderRadius.circular(16),
               decoration: const InputDecoration(
-                labelText: 'Primary connection',
+                labelText: 'Connection method',
               ),
               items: const [
                 DropdownMenuItem(
@@ -204,6 +206,8 @@ class _ConnectionPickerState extends State<ConnectionPicker> {
                       ? endpoint
                       : null,
                   isExpanded: true,
+                  dropdownColor: Theme.of(context).canvasColor,
+                  borderRadius: BorderRadius.circular(16),
                   decoration: const InputDecoration(
                     labelText: 'Tailnet device',
                   ),
