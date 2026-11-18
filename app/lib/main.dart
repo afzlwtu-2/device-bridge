@@ -627,13 +627,6 @@ class _BridgeHomeState extends State<BridgeHome> {
         ),
       ),
       const SizedBox(height: 24),
-      Text(
-        '${peers.where((p) => p['status'] == 'paired').length} paired devices',
-        style: Theme.of(context).textTheme.titleMedium,
-      ),
-      const SizedBox(height: 8),
-      ...peerCards(),
-      const SizedBox(height: 24),
       const Text(
         'Pulls are one-time downloads. They never register a folder for synchronization.',
       ),
@@ -717,33 +710,8 @@ class _BridgeHomeState extends State<BridgeHome> {
                         await widget.core.run(['finish', p['id'] as String]);
                         await refreshPeers();
                       });
-                    } else if (p['status'] == 'revoked') {
-                      final remove = await showDialog<bool>(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          title: Text('Remove ${p['name']}?'),
-                          content: const Text(
-                            'This device is revoked. Remove it from your device list?',
-                          ),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(context, false),
-                              child: const Text('Cancel'),
-                            ),
-                            FilledButton(
-                              onPressed: () => Navigator.pop(context, true),
-                              child: const Text('Remove'),
-                            ),
-                          ],
-                        ),
-                      );
-                      if (remove == true) {
-                        await task(() async {
-                          await widget.core.run(['remove', p['id'] as String]);
-                          await refreshPeers();
-                        });
-                      }
-                    } else if (p['status'] == 'paired') {
+                    } else if (p['status'] == 'paired' ||
+                        p['status'] == 'revoked') {
                       await Navigator.push(
                         context,
                         MaterialPageRoute<void>(

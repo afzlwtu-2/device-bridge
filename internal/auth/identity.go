@@ -61,6 +61,11 @@ func Load(s *storage.Store, name string) (*Identity, error) {
 		savedName = name
 	} else if err != nil {
 		return nil, err
+	} else if savedName == "Android phone" && name != "" && name != "Android phone" && len(name) <= 128 {
+		if _, err = s.DB.Exec("UPDATE identity SET name=? WHERE singleton=1", name); err != nil {
+			return nil, err
+		}
+		savedName = name
 	}
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {

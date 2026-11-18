@@ -332,7 +332,7 @@ func (s *Store) RemovePeer(id string) error {
 			return err
 		}
 	}
-	if _, err = tx.Exec("DELETE FROM preferences WHERE key IN (?,?)", "connection."+id, "rate."+id); err != nil {
+	if _, err = tx.Exec("DELETE FROM preferences WHERE key IN (?,?,?)", "connection."+id, "rate."+id, "actions."+id); err != nil {
 		return err
 	}
 	res, err := tx.Exec("DELETE FROM peers WHERE id=?", id)

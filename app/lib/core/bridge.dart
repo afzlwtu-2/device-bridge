@@ -259,12 +259,14 @@ class LocalCore implements CoreBridge {
 
   @override
   Future<void> initialize() async {
+    String? androidDeviceName;
     if (Platform.isAndroid) {
       final config = Map<String, dynamic>.from(
         await channel.invokeMethod('configuration') as Map,
       );
       _state = config['state'] as String;
       _binary = config['binary'] as String;
+      androidDeviceName = config['device_name'] as String?;
     } else {
       final parent = File(Platform.resolvedExecutable).parent.path;
       _binary =
@@ -275,7 +277,11 @@ class LocalCore implements CoreBridge {
     }
     await run([
       'init',
-      Platform.isAndroid ? 'Android phone' : Platform.localHostname,
+      Platform.isAndroid
+          ? (androidDeviceName?.trim().isNotEmpty == true
+                ? androidDeviceName!.trim()
+                : 'Android phone')
+          : Platform.localHostname,
     ]);
     await Directory(downloads).create(recursive: true);
     await run(['export', 'downloads', downloads]);

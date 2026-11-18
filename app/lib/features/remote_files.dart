@@ -7,6 +7,7 @@ import 'package:material_ui/material_ui.dart';
 import '../core/bridge.dart';
 import 'registry.dart';
 import 'connection_picker.dart';
+import 'device_commands.dart';
 import 'phone_files.dart';
 import 'folder_exclusions.dart';
 import 'folder_name_dialog.dart';
@@ -66,6 +67,16 @@ class _DeviceDetailState extends State<DeviceDetail> {
     } catch (_) {
       tailnetNodes = [];
     }
+    if (widget.peer['status'] == 'revoked') {
+      route = null;
+      roots = [];
+      offlineNote =
+          'This device is revoked. Remove it or re-pair from an active device to reconnect.';
+      if (mounted) {
+        setState(() => busy = false);
+      }
+      return;
+    }
     try {
       route = Map<String, dynamic>.from(
         await widget.core.run(['resolve', widget.peer['id'] as String]) as Map,
@@ -117,13 +128,53 @@ class _DeviceDetailState extends State<DeviceDetail> {
     _ => 'Tailscale · ${route!['path_kind'] ?? 'unknown'}',
   };
 
+  String _methodLabel(String transport) => switch (transport) {
+    'direct-lan-v1' || 'lan' => 'Direct Wi-Fi LAN',
+    'tailnet' => 'Tailscale',
+    'wireguard' || 'wireguard-v1' => 'WireGuard',
+    'adb' => 'USB / Wireless ADB',
+    'ssh' => 'SSH tunnel',
+    _ => transport,
+  };
+
+  String _layer4Summary(String transport) => switch (transport) {
+    'direct-lan-v1' || 'lan' =>
+      'TCP (TLS 1.3 mTLS) · UDP 8732 (mDNS discovery)',
+    'tailnet' =>
+      'UDP (WireGuard tsnet/Tailscale) + TCP (TLS 1.3 mTLS)',
+    'wireguard' || 'wireguard-v1' =>
+      'UDP 51820 (WireGuard) + TCP (TLS 1.3 mTLS)',
+    'adb' => 'TCP loopback (ADB forward · TLS 1.3 mTLS)',
+    'ssh' => 'TCP/22 (SSH port-forward) + TCP (TLS 1.3 mTLS)',
+    _ => 'TCP (TLS 1.3 mTLS)',
+  };
+
+  String? _hostFromEndpoint(Object? raw) {
+    final ep = '${raw ?? ''}'.trim();
+    if (ep.isEmpty) {
+      return null;
+    }
+    final colon = ep.lastIndexOf(':');
+    if (colon > 0 && !ep.contains(']')) {
+      final host = ep.substring(0, colon);
+      return host == '127.0.0.1' ? null : host;
+    }
+    return ep == '127.0.0.1' ? null : ep;
+  }
+
   @override
   Widget build(BuildContext context) {
     final activeTransport = connectionCfg?['transport'] as String? ?? 'lan';
+    final effectiveTransport =
+        (route?['transport'] as String?) ?? activeTransport;
     final addresses = widget.peer['addresses'] as List? ?? const [];
+    final isRevoked = widget.peer['status'] == 'revoked';
     final adbEp = connectionCfg?['adb_endpoint'] as String?;
     final sshEp = connectionCfg?['ssh_endpoint'] as String?;
     final wgEp = connectionCfg?['wireguard_endpoint'] as String?;
+    final fallbacks = (connectionCfg?['fallback_transports'] as List? ?? const [])
+        .whereType<String>()
+        .toList();
     String? tailnetEp;
     for (final node in tailnetNodes) {
       final ips = (node['ips'] as List? ?? const [])
@@ -134,6 +185,25 @@ class _DeviceDetailState extends State<DeviceDetail> {
         break;
       }
     }
+    final activeEndpoint =
+        (route?['endpoint'] as String?) ??
+        (connectionCfg?['endpoint'] as String?) ??
+        (addresses.isNotEmpty ? '${addresses.first['endpoint']}' : null);
+    String? defaultHost = _hostFromEndpoint(route?['endpoint']);
+    if (defaultHost == null) {
+      for (final addr in addresses) {
+        defaultHost = _hostFromEndpoint(addr['endpoint']);
+        if (defaultHost != null) {
+          break;
+        }
+      }
+    }
+    defaultHost ??= _hostFromEndpoint(tailnetEp);
+    final recordedSpeed =
+        (route?['mib_per_second'] as num?) ??
+        (connectionCfg?['last_mib_per_second'] as num?) ??
+        0;
+    final caps = widget.registry.available(['remote-files-v1']).toList();
     return Scaffold(
       appBar: AppBar(
         title: Text('${widget.peer['name']}'),
@@ -157,30 +227,77 @@ class _DeviceDetailState extends State<DeviceDetail> {
         padding: const EdgeInsets.all(20),
         children: [
           if (busy) const LinearProgressIndicator(),
-          if (route != null)
+          if (route != null || !busy)
             Card(
-              child: ListTile(
-                leading: const Icon(Icons.verified_user_outlined),
-                title: Text(routeTitle(route!['transport'] as String?)),
-                subtitle: Text(
-                  '${route!['endpoint']}${route!['interface'] != null && '${route!['interface']}'.isNotEmpty ? ' · ${route!['interface']}' : ''}\nHandshake ${((route!['rtt'] as num) / 1000000).toStringAsFixed(1)} ms · Speed ${((route!['mib_per_second'] as num? ?? 0) > 0) ? '${(route!['mib_per_second'] as num).toStringAsFixed(2)} MiB/s' : '—'}',
-                ),
-              ),
-            )
-          else if (!busy)
-            Card(
-              child: ListTile(
-                leading: const Icon(Icons.wifi_off_outlined),
-                title: const Text('Device not currently reachable'),
-                subtitle: Text(
-                  offlineNote ?? 'Not currently reachable on the selected connection.',
-                ),
-                trailing: TextButton(
-                  onPressed: () {
-                    setState(() => busy = true);
-                    load();
-                  },
-                  child: const Text('Retry'),
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ListTile(
+                      leading: Icon(
+                        route != null
+                            ? Icons.verified_user_outlined
+                            : (isRevoked
+                                  ? Icons.block_outlined
+                                  : Icons.wifi_off_outlined),
+                      ),
+                      title: Text(
+                        route != null
+                            ? routeTitle(route!['transport'] as String?)
+                            : (isRevoked
+                                  ? 'Device revoked'
+                                  : 'Device not currently reachable'),
+                      ),
+                      subtitle: Text(
+                        route != null
+                            ? '${route!['endpoint']}${route!['interface'] != null && '${route!['interface']}'.isNotEmpty ? ' · ${route!['interface']}' : ''}\nHandshake ${((route!['rtt'] as num) / 1000000).toStringAsFixed(1)} ms · Speed ${recordedSpeed > 0 ? '${recordedSpeed.toStringAsFixed(2)} MiB/s' : '—'}'
+                            : (offlineNote ??
+                                  'Not currently reachable on the selected connection.'),
+                      ),
+                      trailing: route == null && !isRevoked
+                          ? TextButton(
+                              onPressed: () {
+                                setState(() => busy = true);
+                                load();
+                              },
+                              child: const Text('Retry'),
+                            )
+                          : null,
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Connection & OSI Layer 4',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 6),
+                          SelectableText(
+                            'Method: ${_methodLabel(effectiveTransport)}',
+                          ),
+                          SelectableText(
+                            'OSI Layer 4: ${_layer4Summary(effectiveTransport)}',
+                          ),
+                          if (activeEndpoint != null &&
+                              activeEndpoint.isNotEmpty)
+                            SelectableText('Endpoint: $activeEndpoint'),
+                          if (route?['path_kind'] != null)
+                            SelectableText('Path: ${route!['path_kind']}'),
+                          if (recordedSpeed > 0 && route == null)
+                            SelectableText(
+                              'Last speed: ${recordedSpeed.toStringAsFixed(2)} MiB/s',
+                            ),
+                          if (fallbacks.isNotEmpty)
+                            SelectableText(
+                              'Fallbacks: ${fallbacks.map(_methodLabel).join(', ')}',
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -339,6 +456,12 @@ class _DeviceDetailState extends State<DeviceDetail> {
             ),
           ),
           const SizedBox(height: 12),
+          DeviceCommandsSection(
+            core: widget.core,
+            peer: widget.peer,
+            defaultHost: defaultHost,
+          ),
+          const SizedBox(height: 12),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -369,11 +492,17 @@ class _DeviceDetailState extends State<DeviceDetail> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Device identity',
+                    'Device details',
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   const SizedBox(height: 8),
+                  SelectableText('Name: ${widget.peer['name']}'),
+                  const SizedBox(height: 4),
                   SelectableText('Status: ${widget.peer['status']}'),
+                  const SizedBox(height: 4),
+                  SelectableText(
+                    'Capabilities: ${caps.isEmpty ? 'remote-files-v1' : caps.map((c) => '${c.label} (${c.id})').join(', ')}',
+                  ),
                   const SizedBox(height: 6),
                   SelectableText('Fingerprint\n${widget.peer['id']}'),
                 ],
@@ -385,10 +514,11 @@ class _DeviceDetailState extends State<DeviceDetail> {
             spacing: 12,
             runSpacing: 12,
             children: [
-              OutlinedButton(
-                onPressed: busy ? null : revoke,
-                child: const Text('Revoke device'),
-              ),
+              if (widget.peer['status'] != 'revoked')
+                OutlinedButton(
+                  onPressed: busy ? null : revoke,
+                  child: const Text('Revoke device'),
+                ),
               OutlinedButton(
                 onPressed: busy ? null : remove,
                 child: const Text('Remove device'),

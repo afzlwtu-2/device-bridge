@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ui' as ui;
 
 import 'package:flutter/rendering.dart';
@@ -89,6 +90,7 @@ class FakeCore implements CoreBridge {
   }
 
   final calls = <List<String>>[];
+  List<dynamic> peerActions = [];
   @override
   String get downloads => '/private/downloads';
   @override
@@ -126,6 +128,23 @@ class FakeCore implements CoreBridge {
         'host_key_sha256': 'SHA256:mockhostkey',
         'key_type': 'ssh-ed25519',
       },
+      'ssh-run' => () {
+        final req = jsonDecode(input ?? '{}') as Map;
+        return {
+          'host': req['host'],
+          'port': req['port'] ?? 22,
+          'host_key_sha256': 'SHA256:mockhostkey',
+          'exit_code': 0,
+          'stdout': 'ran:${req['command']}',
+          'stderr': '',
+        };
+      }(),
+      'peer-actions' => () {
+        if (arguments.length == 3 && arguments[2] == '-') {
+          peerActions = List<dynamic>.from(jsonDecode(input ?? '[]') as List);
+        }
+        return peerActions;
+      }(),
       'tailnet' => {'mode': 'app', 'state': 'Stopped', 'ips': []},
       'theme' => {'theme': arguments.length > 1 ? arguments[1] : 'system'},
       'export' => {'status': 'export_registered'},
@@ -243,6 +262,8 @@ void main() {
         });
       }
 
+      await tester.tap(find.text('Devices').last);
+      await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Laptop'));
       await tester.tap(find.text('Laptop'));
       await tester.pump();
@@ -352,6 +373,7 @@ void main() {
       }
       expect(find.text('Terminal'), findsNothing);
       expect(find.text('File manager'), findsNothing);
+      expect(find.text('Laptop'), findsNothing);
       expect(find.textContaining('10.0.0.5:8731'), findsNothing);
       expect(core.calls.any((c) => c.first == 'list'), isFalse);
 
@@ -361,7 +383,7 @@ void main() {
       expect(find.byType(NavigationBar), findsOneWidget);
       expect(find.text('Left device'), findsOneWidget);
 
-      await tester.tap(find.text('Home').last);
+      await tester.tap(find.text('Devices').last);
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Laptop'));
       await tester.pumpAndSettle();
@@ -384,8 +406,11 @@ void main() {
         scrollable: detailScroll,
       );
       expect(find.text('Remove device'), findsOneWidget);
-      await tester.drag(detailScroll, const Offset(0, 600));
-      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Approved'),
+        -200,
+        scrollable: detailScroll,
+      );
       await tester.ensureVisible(find.text('Approved'));
       await tester.tap(find.text('Approved'));
       await tester.pumpAndSettle();
@@ -421,6 +446,120 @@ void main() {
         findsOneWidget,
       );
       expect(find.textContaining('42.50 MiB/s'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Revoked device in Devices opens DeviceDetail without intercepting dialog',
+    (tester) async {
+      final core = _RevokedPeerCore();
+      await tester.pumpWidget(DeviceBridgeApp(core: core));
+      await tester.pumpAndSettle();
+      expect(find.text('arch-laptop'), findsNothing);
+      await tester.tap(find.text('Devices').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('arch-laptop'));
+      await tester.pumpAndSettle();
+      expect(find.text('Remove arch-laptop?'), findsNothing);
+      expect(find.textContaining('This device is revoked'), findsOneWidget);
+      expect(find.text('Revoke device'), findsNothing);
+      final detailScroll = find.descendant(
+        of: find.byType(ListView).last,
+        matching: find.byType(Scrollable),
+      ).first;
+      await tester.scrollUntilVisible(
+        find.text('Remove device'),
+        200,
+        scrollable: detailScroll,
+      );
+      expect(find.text('Remove device'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Device details shows OSI Layer 4, device info, toggles, and target SSH commands',
+    (tester) async {
+      final core = FakeCore();
+      await tester.pumpWidget(DeviceBridgeApp(core: core));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Devices').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Laptop'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Connection & OSI Layer 4'), findsOneWidget);
+      expect(
+        find.textContaining('TCP (TLS 1.3 mTLS) · UDP 8732 (mDNS discovery)'),
+        findsOneWidget,
+      );
+
+      final detailScroll = find.descendant(
+        of: find.byType(ListView).last,
+        matching: find.byType(Scrollable),
+      ).first;
+      await tester.scrollUntilVisible(
+        find.text('Device details'),
+        200,
+        scrollable: detailScroll,
+      );
+      expect(find.text('Name: Laptop'), findsOneWidget);
+      expect(
+        find.textContaining('Browse files (remote-files-v1)'),
+        findsOneWidget,
+      );
+
+      await tester.scrollUntilVisible(
+        find.text('Toggles & target commands'),
+        -200,
+        scrollable: detailScroll,
+      );
+      await tester.ensureVisible(find.text('Create toggle'));
+      await tester.tap(find.text('Create toggle'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Label'),
+        'Agent',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Enable (ON) command'),
+        'agent-on',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Disable (OFF) command'),
+        'agent-off',
+      );
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+      expect(find.text('Agent'), findsOneWidget);
+
+      await tester.ensureVisible(find.text('Run'));
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Run command on target'),
+        'uptime -p',
+      );
+      await tester.tap(find.text('Run'));
+      await tester.pumpAndSettle();
+      // First run asks for verified SSH session (credentials in memory only)
+      expect(find.text('SSH target session'), findsOneWidget);
+      await tester.tap(find.text('Probe key'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Username'),
+        'afzl',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Password (optional if key set)'),
+        'pw',
+      );
+      await tester.tap(find.text('Use session'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('ran:uptime -p'), findsOneWidget);
+
+      // Flipping the toggle uses the active in-memory SSH session directly.
+      await tester.ensureVisible(find.byType(SwitchListTile));
+      await tester.tap(find.byType(SwitchListTile));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('ran:agent-on'), findsOneWidget);
     },
   );
 
@@ -499,6 +638,8 @@ void main() {
       final core = _InterruptibleCore();
       await tester.pumpWidget(DeviceBridgeApp(core: core));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Devices').last);
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Laptop'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Approved'));
@@ -574,6 +715,25 @@ class _InterruptibleCore extends FakeCore {
         'transport': activeTransport,
         'mib_per_second': 18.2,
       };
+    }
+    return super.run(arguments, input: input);
+  }
+}
+
+class _RevokedPeerCore extends FakeCore {
+  @override
+  Future<dynamic> run(List<String> arguments, {String? input}) async {
+    if (arguments.first == 'peers') {
+      return [
+        {
+          'id': 'revoked-laptop',
+          'name': 'arch-laptop',
+          'status': 'revoked',
+          'addresses': [
+            {'endpoint': '192.168.1.23:8731'},
+          ],
+        },
+      ];
     }
     return super.run(arguments, input: input);
   }

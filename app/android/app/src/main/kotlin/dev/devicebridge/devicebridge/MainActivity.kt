@@ -165,10 +165,18 @@ class MainActivity : FlutterActivity() {
                     deviceSettings.update(call.arguments as? Map<String, Any?> ?: emptyMap(), result)
                     applyAwakeSetting()
                 }
-                "configuration" -> result.success(mapOf(
-                    "state" to File(filesDir, "devicebridge").path,
-                    "binary" to File(applicationInfo.nativeLibraryDir, "libbridge_cli.so").path
-                ))
+                "configuration" -> {
+                    val deviceName = (try {
+                        Settings.Global.getString(contentResolver, Settings.Global.DEVICE_NAME)
+                    } catch (_: Exception) {
+                        null
+                    } ?: "").trim().ifEmpty { (Build.MODEL ?: "").trim().ifEmpty { "Android phone" } }
+                    result.success(mapOf(
+                        "state" to File(filesDir, "devicebridge").path,
+                        "binary" to File(applicationInfo.nativeLibraryDir, "libbridge_cli.so").path,
+                        "device_name" to deviceName
+                    ))
+                }
                 "refreshExports" -> { lan.refreshExports(); result.success(null) }
                 "networks" -> result.success(lan.networks())
                 "activateLan" -> { lan.activate(call.argument<Map<String, Any?>>("network")); result.success(null) }

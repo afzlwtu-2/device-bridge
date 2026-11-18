@@ -73,17 +73,36 @@ func hostKeyFingerprint(k ssh.PublicKey) string {
 	return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:])
 }
 
-func sshAuthMethods(req Request) ([]ssh.AuthMethod, error) {
+type ExecRequest struct {
+	Host            string `json:"host"`
+	Port            int    `json:"port"`
+	User            string `json:"user"`
+	Password        string `json:"password,omitempty"`
+	PrivateKeyPEM   string `json:"private_key_pem,omitempty"`
+	ExpectedHostKey string `json:"expected_host_key,omitempty"`
+	Command         string `json:"command"`
+}
+
+type ExecResult struct {
+	Host          string `json:"host"`
+	Port          int    `json:"port"`
+	HostKeySHA256 string `json:"host_key_sha256"`
+	ExitCode      int    `json:"exit_code"`
+	Stdout        string `json:"stdout"`
+	Stderr        string `json:"stderr"`
+}
+
+func sshAuthMethods(password, privateKeyPEM string) ([]ssh.AuthMethod, error) {
 	var methods []ssh.AuthMethod
-	if strings.TrimSpace(req.PrivateKeyPEM) != "" {
-		signer, err := ssh.ParsePrivateKey([]byte(req.PrivateKeyPEM))
+	if strings.TrimSpace(privateKeyPEM) != "" {
+		signer, err := ssh.ParsePrivateKey([]byte(privateKeyPEM))
 		if err != nil {
 			return nil, fmt.Errorf("invalid private key: %w", err)
 		}
 		methods = append(methods, ssh.PublicKeys(signer))
 	}
-	if req.Password != "" {
-		pw := req.Password
+	if password != "" {
+		pw := password
 		methods = append(methods, ssh.Password(pw), ssh.KeyboardInteractive(func(_, _ string, q []string, _ []bool) ([]string, error) {
 			ans := make([]string, len(q))
 			for i := range q {
@@ -132,32 +151,32 @@ func InspectHost(ctx context.Context, host string, port int) (HostProbe, error) 
 	return probe, err
 }
 
-func dialSSH(ctx context.Context, req Request) (*ssh.Client, string, error) {
-	if req.Port <= 0 {
-		req.Port = 22
+func dialSSHParams(ctx context.Context, host string, port int, user, password, privateKeyPEM, expectedHostKey string) (*ssh.Client, string, error) {
+	if port <= 0 {
+		port = 22
 	}
-	methods, err := sshAuthMethods(req)
+	methods, err := sshAuthMethods(password, privateKeyPEM)
 	if err != nil {
 		return nil, "", err
 	}
-	if strings.TrimSpace(req.ExpectedHostKey) == "" {
+	if strings.TrimSpace(expectedHostKey) == "" {
 		return nil, "", errors.New("expected SSH host key fingerprint confirmation required")
 	}
 	var actual string
 	d := net.Dialer{Timeout: 10 * time.Second}
-	addr := net.JoinHostPort(req.Host, strconv.Itoa(req.Port))
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	raw, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, "", err
 	}
 	cfg := &ssh.ClientConfig{
-		User:    req.User,
+		User:    user,
 		Auth:    methods,
 		Timeout: 12 * time.Second,
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
 			actual = hostKeyFingerprint(key)
-			if subtle.ConstantTimeCompare([]byte(actual), []byte(req.ExpectedHostKey)) != 1 {
-				return fmt.Errorf("SSH host key mismatch: got %s, expected %s", actual, req.ExpectedHostKey)
+			if subtle.ConstantTimeCompare([]byte(actual), []byte(expectedHostKey)) != 1 {
+				return fmt.Errorf("SSH host key mismatch: got %s, expected %s", actual, expectedHostKey)
 			}
 			return nil
 		},
@@ -168,6 +187,43 @@ func dialSSH(ctx context.Context, req Request) (*ssh.Client, string, error) {
 		return nil, actual, err
 	}
 	return ssh.NewClient(conn, chans, reqs), actual, nil
+}
+
+func dialSSH(ctx context.Context, req Request) (*ssh.Client, string, error) {
+	return dialSSHParams(ctx, req.Host, req.Port, req.User, req.Password, req.PrivateKeyPEM, req.ExpectedHostKey)
+}
+
+// RunCommand executes one explicit user-authorized shell command over verified SSH.
+func RunCommand(ctx context.Context, req ExecRequest) (ExecResult, error) {
+	if req.Port <= 0 {
+		req.Port = 22
+	}
+	if strings.TrimSpace(req.Command) == "" {
+		return ExecResult{}, errors.New("command required")
+	}
+	cl, fp, err := dialSSHParams(ctx, req.Host, req.Port, req.User, req.Password, req.PrivateKeyPEM, req.ExpectedHostKey)
+	if err != nil {
+		return ExecResult{Host: req.Host, Port: req.Port, HostKeySHA256: fp}, err
+	}
+	defer cl.Close()
+	stdout, stderr, err := runSSH(cl, req.Command, "")
+	res := ExecResult{
+		Host:          req.Host,
+		Port:          req.Port,
+		HostKeySHA256: fp,
+		ExitCode:      0,
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}
+	if err != nil {
+		var exitErr *ssh.ExitError
+		if errors.As(err, &exitErr) {
+			res.ExitCode = exitErr.ExitStatus()
+			return res, nil
+		}
+		return res, err
+	}
+	return res, nil
 }
 
 func runSSH(cl *ssh.Client, cmd string, stdin string) (string, string, error) {

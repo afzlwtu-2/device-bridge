@@ -470,6 +470,47 @@ func run() error {
 			return be
 		}
 		return output(res)
+	case "ssh-run":
+		if len(a) != 2 || a[1] != "-" {
+			return errors.New("ssh-run - (reads JSON request from stdin)")
+		}
+		rawReq, re := io.ReadAll(io.LimitReader(os.Stdin, 65536))
+		if re != nil {
+			return re
+		}
+		var req bootstrap.ExecRequest
+		if re = json.Unmarshal(rawReq, &req); re != nil {
+			return re
+		}
+		res, ce := bootstrap.RunCommand(context.Background(), req)
+		if ce != nil {
+			return ce
+		}
+		return output(res)
+	case "peer-actions":
+		if len(a) < 2 || len(a) > 3 {
+			return errors.New("peer-actions PEER_ID [-]")
+		}
+		var update []storage.PeerAction
+		save := false
+		if len(a) == 3 {
+			if a[2] != "-" {
+				return errors.New("peer-actions PEER_ID [-]")
+			}
+			rawActions, re := io.ReadAll(io.LimitReader(os.Stdin, 65536))
+			if re != nil {
+				return re
+			}
+			if re = json.Unmarshal(rawActions, &update); re != nil {
+				return re
+			}
+			save = true
+		}
+		actions, ae := s.PeerActions(a[1], update, save)
+		if ae != nil {
+			return ae
+		}
+		return output(actions)
 	case "wireguard":
 		if len(a) < 2 {
 			return errors.New("wireguard status|init|add-peer|probe")

@@ -168,3 +168,72 @@ func (s *Store) Connection(peer string, update *Connection) (Connection, error) 
 	}
 	return out, nil
 }
+
+type PeerAction struct {
+	ID         string `json:"id"`
+	Label      string `json:"label"`
+	Kind       string `json:"kind"` // "command" | "toggle"
+	Command    string `json:"command"`
+	OffCommand string `json:"off_command,omitempty"`
+	Active     bool   `json:"active,omitempty"`
+	Host       string `json:"host,omitempty"`
+	Port       int    `json:"port,omitempty"`
+	User       string `json:"user,omitempty"`
+}
+
+func (s *Store) PeerActions(peer string, update []PeerAction, save bool) ([]PeerAction, error) {
+	if _, err := s.Peer(peer); err != nil {
+		return nil, ErrDenied
+	}
+	if save {
+		cleaned := make([]PeerAction, 0, len(update))
+		for _, a := range update {
+			label := strings.TrimSpace(a.Label)
+			cmd := strings.TrimSpace(a.Command)
+			if a.ID == "" || label == "" || cmd == "" {
+				return nil, errors.New("action id, label, and command required")
+			}
+			if a.Kind != "command" && a.Kind != "toggle" {
+				return nil, errors.New("unsupported action kind")
+			}
+			if a.Kind == "toggle" && strings.TrimSpace(a.OffCommand) == "" {
+				return nil, errors.New("toggle requires off_command")
+			}
+			cleaned = append(cleaned, PeerAction{
+				ID:         a.ID,
+				Label:      label,
+				Kind:       a.Kind,
+				Command:    cmd,
+				OffCommand: strings.TrimSpace(a.OffCommand),
+				Active:     a.Active,
+				Host:       strings.TrimSpace(a.Host),
+				Port:       a.Port,
+				User:       strings.TrimSpace(a.User),
+			})
+		}
+		b, err := json.Marshal(cleaned)
+		if err != nil {
+			return nil, err
+		}
+		if _, err = s.DB.Exec("INSERT INTO preferences(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", "actions."+peer, string(b)); err != nil {
+			return nil, err
+		}
+		return cleaned, nil
+	}
+	var raw string
+	err := s.DB.QueryRow("SELECT value FROM preferences WHERE key=?", "actions."+peer).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return []PeerAction{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []PeerAction
+	if err = json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []PeerAction{}
+	}
+	return out, nil
+}

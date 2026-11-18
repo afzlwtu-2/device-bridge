@@ -121,6 +121,17 @@ func TestHostKeyMismatchRejectedAndSystemdUnitValid(t *testing.T) {
 	if res.RemoteHostname != "testbox" || !res.AgentInstalled {
 		t.Fatalf("unexpected bootstrap result: %+v", res)
 	}
+	cmdRes, err := RunCommand(context.Background(), ExecRequest{
+		Host:            "127.0.0.1",
+		Port:            addr.Port,
+		User:            "testuser",
+		Password:        "secret",
+		ExpectedHostKey: probe.HostKeySHA256,
+		Command:         "echo ok",
+	})
+	if err != nil || cmdRes.ExitCode != 0 || !strings.Contains(cmdRes.Stdout, "HOST=testbox") {
+		t.Fatalf("RunCommand failed: res=%+v err=%v", cmdRes, err)
+	}
 	_ = ln.Close()
 	<-done
 	mu.Lock()

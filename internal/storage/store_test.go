@@ -106,6 +106,17 @@ func TestRemovePeerCleansGrantsEndpointsAndPreferences(t *testing.T) {
 	if err = s.RecordRate(id, "direct-lan-v1", 12.5); err != nil {
 		t.Fatal(err)
 	}
+	actions, err := s.PeerActions(id, []PeerAction{
+		{ID: "a1", Label: "Uptime", Kind: "command", Command: "uptime"},
+		{ID: "t1", Label: "Agent", Kind: "toggle", Command: "start", OffCommand: "stop", Active: true},
+	}, true)
+	if err != nil || len(actions) != 2 {
+		t.Fatalf("PeerActions save failed: %+v err=%v", actions, err)
+	}
+	loaded, err := s.PeerActions(id, nil, false)
+	if err != nil || len(loaded) != 2 || !loaded[1].Active {
+		t.Fatalf("PeerActions reload failed: %+v err=%v", loaded, err)
+	}
 	if err = s.RemovePeer(id); err != nil {
 		t.Fatal(err)
 	}
