@@ -12,32 +12,26 @@ class DeviceAddresses extends StatelessWidget {
   final List<dynamic> candidates;
   @override
   Widget build(BuildContext context) {
-    final lines = <String>[];
     final advertised = candidates
         .where((v) => v['device_id'] == peer['id'])
         .toList();
+    String? current;
     for (final v in advertised) {
       final seen = DateTime.tryParse(v['observed'] as String? ?? '');
       final fresh =
           seen != null && DateTime.now().difference(seen).inSeconds < 30;
-      lines.add(
-        'LAN ${v['endpoint']} · ${fresh ? 'discovered' : 'last advertised'}',
-      );
-    }
-    for (final v in (peer['addresses'] as List? ?? [])) {
-      if (advertised.any((a) => a['endpoint'] == v['endpoint'])) {
-        continue;
+      if (fresh) {
+        current = 'LAN ${v['endpoint']}';
+        break;
       }
-      lines.add('LAN ${v['endpoint']} · last authenticated address');
+      current ??= 'LAN ${v['endpoint']}';
     }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('${peer['status']} · reachability checked on demand'),
-        if (lines.isEmpty)
-          const Text('IP not discovered · Find devices to refresh'),
-        ...lines.map((line) => Text(line)),
-      ],
+    return Text(
+      current == null
+          ? '${peer['status']} · tap for details'
+          : '${peer['status']} · $current',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
     );
   }
 }

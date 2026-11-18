@@ -13,6 +13,7 @@ import 'features/device_addresses.dart';
 import 'features/incoming_pair.dart';
 import 'features/connections_hub.dart';
 import 'features/appearance.dart';
+import 'features/matte_editor.dart';
 import 'features/settings_screen.dart';
 import 'features/phone_files.dart';
 
@@ -29,6 +30,7 @@ class DeviceBridgeApp extends StatefulWidget {
 
 class _DeviceBridgeAppState extends State<DeviceBridgeApp> {
   String appearance = 'system';
+  List<MatteArtItem> matteItems = defaultMatteItems();
   ThemeData get dark {
     if (isAmoledTheme(appearance)) {
       return amoledTheme(appearance);
@@ -60,6 +62,7 @@ class _DeviceBridgeAppState extends State<DeviceBridgeApp> {
     darkTheme: dark,
     builder: (context, child) => AppearanceSurface(
       appearance: appearance,
+      matteItems: matteItems,
       child: child ?? const SizedBox.shrink(),
     ),
     themeMode: appearance == 'system'
@@ -70,9 +73,15 @@ class _DeviceBridgeAppState extends State<DeviceBridgeApp> {
     home: BridgeHome(
       core: widget.core,
       appearance: appearance,
+      matteItems: matteItems,
       onAppearance: (value) {
         if (mounted) {
           setState(() => appearance = value);
+        }
+      },
+      onMatteItems: (items) {
+        if (mounted) {
+          setState(() => matteItems = items);
         }
       },
     ),
@@ -84,11 +93,15 @@ class BridgeHome extends StatefulWidget {
     super.key,
     required this.core,
     required this.appearance,
+    required this.matteItems,
     required this.onAppearance,
+    required this.onMatteItems,
   });
   final CoreBridge core;
   final String appearance;
+  final List<MatteArtItem> matteItems;
   final ValueChanged<String> onAppearance;
+  final ValueChanged<List<MatteArtItem>> onMatteItems;
   @override
   State<BridgeHome> createState() => _BridgeHomeState();
 }
@@ -128,6 +141,13 @@ class _BridgeHomeState extends State<BridgeHome> {
     await widget.core.initialize();
     final appearance = await widget.core.run(['theme']) as Map;
     widget.onAppearance(appearance['theme'] as String? ?? 'system');
+    try {
+      final settings = await widget.core.appSettings();
+      final raw = settings['matte_items'] as String?;
+      if (raw != null && raw.isNotEmpty) {
+        widget.onMatteItems(decodeMatteItems(raw));
+      }
+    } catch (_) {}
     identity = Map<String, dynamic>.from(
       await widget.core.run(['identity']) as Map,
     );
@@ -371,7 +391,7 @@ class _BridgeHomeState extends State<BridgeHome> {
           const SizedBox(width: 12),
           Flexible(
             child: Text(
-              ['DeviceBridge', 'Devices', 'Share', 'Sync'][tab],
+              ['DeviceBridge', 'Files', 'Devices', 'Share', 'Sync'][tab],
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -392,6 +412,28 @@ class _BridgeHomeState extends State<BridgeHome> {
           tooltip: 'Appearance',
           icon: const Icon(Icons.brightness_6_outlined),
           onSelected: (value) async {
+            if (value == 'edit-matte') {
+              final nav = Navigator.of(context);
+              await widget.core.run(['theme', 'matte']);
+              widget.onAppearance('matte');
+              if (!mounted) {
+                return;
+              }
+              await nav.push(
+                MaterialPageRoute<void>(
+                  builder: (_) => MatteThemeEditor(
+                    initialItems: widget.matteItems,
+                    onSave: (items) async {
+                      widget.onMatteItems(items);
+                      await widget.core.appSettings(
+                        update: {'matte_items': encodeMatteItems(items)},
+                      );
+                    },
+                  ),
+                ),
+              );
+              return;
+            }
             await widget.core.run(['theme', value]);
             widget.onAppearance(value);
           },
@@ -408,6 +450,7 @@ class _BridgeHomeState extends State<BridgeHome> {
               child: Text('AMOLED black · Neon red'),
             ),
             PopupMenuItem(value: 'matte', child: Text('Matte paper')),
+            PopupMenuItem(value: 'edit-matte', child: Text('Edit Matte theme…')),
           ],
         ),
         IconButton(
@@ -451,8 +494,9 @@ class _BridgeHomeState extends State<BridgeHome> {
               Expanded(
                 child: switch (tab) {
                   0 => home(),
-                  1 => devices(),
-                  2 => unavailable(
+                  1 => PhoneFiles(core: widget.core, embedded: true),
+                  2 => devices(),
+                  3 => unavailable(
                     'Quick sharing',
                     'One-off sending and clipboard sharing arrive after browse and pull are verified.',
                     Icons.send_outlined,
@@ -477,6 +521,11 @@ class _BridgeHomeState extends State<BridgeHome> {
           icon: const Icon(Icons.home_outlined),
           selectedIcon: amoledNavIcon(context, Icons.home, widget.appearance),
           label: 'Home',
+        ),
+        NavigationDestination(
+          icon: const Icon(Icons.folder_outlined),
+          selectedIcon: amoledNavIcon(context, Icons.folder, widget.appearance),
+          label: 'Files',
         ),
         NavigationDestination(
           icon: const Icon(Icons.devices_outlined),
@@ -544,14 +593,7 @@ class _BridgeHomeState extends State<BridgeHome> {
                 children: [
                   if (Platform.isAndroid)
                     OutlinedButton.icon(
-                      onPressed: busy
-                          ? null
-                          : () => Navigator.push(
-                              context,
-                              MaterialPageRoute<void>(
-                                builder: (_) => PhoneFiles(core: widget.core),
-                              ),
-                            ),
+                      onPressed: busy ? null : () => setState(() => tab = 1),
                       icon: const Icon(Icons.folder_open_outlined),
                       label: const Text('File manager'),
                     ),
@@ -655,7 +697,6 @@ class _BridgeHomeState extends State<BridgeHome> {
               peer: Map<String, dynamic>.from(p),
               candidates: candidates,
             ),
-            isThreeLine: true,
             trailing: const Icon(Icons.chevron_right),
             onTap: busy
                 ? null

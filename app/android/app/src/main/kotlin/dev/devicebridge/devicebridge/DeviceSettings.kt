@@ -32,6 +32,7 @@ class DeviceSettings(private val context: Context, private val deliver: (() -> U
             "android" to true,
             "keep_awake" to prefs.getBoolean("keep_awake", true),
             "show_hidden" to prefs.getBoolean("show_hidden", false),
+            "matte_items" to (prefs.getString("matte_items", "") ?: ""),
             "root_enabled" to prefs.getBoolean("root_enabled", false),
             "root_status" to (prefs.getString("root_status", "Not requested") ?: "Not requested"),
             "shizuku_enabled" to (prefs.getBoolean("shizuku_enabled", false) && granted),
@@ -41,8 +42,13 @@ class DeviceSettings(private val context: Context, private val deliver: (() -> U
     }
     fun update(values: Map<String, Any?>, result: MethodChannel.Result) {
         if (pending != null) { result.error("busy", "Finish the current permission request first", null); return }
-        for (key in values.keys) {
-            if (key !in setOf("keep_awake", "show_hidden", "root_enabled", "shizuku_enabled") || values[key] !is Boolean) {
+        for ((key, value) in values) {
+            val ok = when (key) {
+                "matte_items" -> value is String && value.length <= 32768
+                "keep_awake", "show_hidden", "root_enabled", "shizuku_enabled" -> value is Boolean
+                else -> false
+            }
+            if (!ok) {
                 result.error("invalid_setting", "Unknown setting or invalid value", null); return
             }
         }
@@ -74,7 +80,10 @@ class DeviceSettings(private val context: Context, private val deliver: (() -> U
             }
         }
         val editor = prefs.edit()
-        for ((key, value) in values) editor.putBoolean(key, value as Boolean)
+        for ((key, value) in values) {
+            if (key == "matte_items") editor.putString(key, value as String)
+            else editor.putBoolean(key, value as Boolean)
+        }
         if (values["root_enabled"] == false) editor.putString("root_status", "Disabled in DeviceBridge")
         editor.apply()
         result.success(read())

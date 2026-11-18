@@ -138,7 +138,34 @@ class _DeviceDetailState extends State<DeviceDetail> {
               ),
             ),
         const SizedBox(height: 24),
-        SelectableText('Device fingerprint\n${widget.peer['id']}'),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Device & IP history',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                SelectableText('Status: ${widget.peer['status']}'),
+                const SizedBox(height: 6),
+                for (final addr in (widget.peer['addresses'] as List? ?? const []))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: SelectableText(
+                      'LAN ${addr['endpoint']} · saved authenticated address',
+                    ),
+                  ),
+                if ((widget.peer['addresses'] as List? ?? const []).isEmpty)
+                  const Text('No saved previous addresses.'),
+                const SizedBox(height: 8),
+                SelectableText('Device fingerprint\n${widget.peer['id']}'),
+              ],
+            ),
+          ),
+        ),
         const SizedBox(height: 24),
         Wrap(
           spacing: 12,

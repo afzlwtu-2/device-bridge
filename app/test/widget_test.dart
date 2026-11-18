@@ -131,7 +131,14 @@ class FakeCore implements CoreBridge {
       'export' => {'status': 'export_registered'},
       'identity' => {'id': 'phone', 'name': 'Phone'},
       'peers' => [
-        {'id': 'laptop', 'name': 'Laptop', 'status': 'paired'},
+        {
+          'id': 'laptop',
+          'name': 'Laptop',
+          'status': 'paired',
+          'addresses': [
+            {'endpoint': '10.0.0.5:8731'},
+          ],
+        },
       ],
       'resolve' => {
         'transport': 'direct-lan-v1',
@@ -332,25 +339,35 @@ void main() {
   });
 
   testWidgets(
-    'Four primary areas, dual-pane browser, hidden files toggle and pull',
+    'Five primary areas including Files with persistent bottom bar, compact cards, and dual-pane browser',
     (tester) async {
       final core = FakeCore();
       await tester.pumpWidget(DeviceBridgeApp(core: core));
       await tester.pumpAndSettle();
       expect(find.byTooltip('Tailscale connectivity'), findsNothing);
       expect(find.byTooltip('Connections'), findsOneWidget);
-      expect(find.byType(NavigationDestination), findsNWidgets(4));
-      for (final label in ['Home', 'Devices', 'Share', 'Sync']) {
+      expect(find.byType(NavigationDestination), findsNWidgets(5));
+      for (final label in ['Home', 'Files', 'Devices', 'Share', 'Sync']) {
         expect(find.text(label), findsWidgets);
       }
-      expect(find.text('Files'), findsNothing);
       expect(find.text('Terminal'), findsNothing);
+      expect(find.textContaining('10.0.0.5:8731'), findsNothing);
       expect(core.calls.any((c) => c.first == 'list'), isFalse);
+
+      // Switching to Files keeps the bottom navigation bar visible.
+      await tester.tap(find.text('Files').last);
+      await tester.pumpAndSettle();
+      expect(find.byType(NavigationBar), findsOneWidget);
+      expect(find.text('Left device'), findsOneWidget);
+
+      await tester.tap(find.text('Home').last);
+      await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Laptop'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Laptop'));
       await tester.pumpAndSettle();
       expect(find.text('Authenticated direct LAN'), findsOneWidget);
+      expect(find.textContaining('10.0.0.5:8731'), findsOneWidget);
       expect(find.text('Remove device'), findsOneWidget);
       await tester.tap(find.text('Approved'));
       await tester.pumpAndSettle();
@@ -437,6 +454,19 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('AMOLED black · Neon red'));
     await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.byTooltip('Appearance'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Edit Matte theme…'));
+    await tester.pumpAndSettle();
+    expect(find.text('Matte editor'), findsOneWidget);
+    await tester.tap(find.text('Foreground'));
+    await tester.tap(find.byTooltip('Add bird'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    expect((core.settings['matte_items'] as String?)?.contains('"foreground":true'), isTrue);
     expect(tester.takeException(), isNull);
   });
 

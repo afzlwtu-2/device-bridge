@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../core/bridge.dart';
@@ -11,10 +13,12 @@ class PhoneFiles extends StatefulWidget {
     required this.core,
     this.remotePeer,
     this.remoteRoot,
+    this.embedded = false,
   });
   final CoreBridge core;
   final Map<String, dynamic>? remotePeer;
   final String? remoteRoot;
+  final bool embedded;
   @override
   State<PhoneFiles> createState() => _PhoneFilesState();
 }
@@ -61,9 +65,13 @@ class _PhoneFilesState extends State<PhoneFiles> with WidgetsBindingObserver {
     try {
       final settings = await widget.core.appSettings();
       showHidden = settings['show_hidden'] == true;
-      localRoots = (await widget.core.localFiles('roots', {}) as List)
-          .map((e) => Map<String, dynamic>.from(e as Map))
-          .toList();
+      try {
+        localRoots = (await widget.core.localFiles('roots', {}) as List)
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
+      } catch (_) {
+        localRoots = <Map<String, dynamic>>[];
+      }
       peers = await widget.core.run(['peers']) as List;
       for (final pane in panes) {
         await load(pane, roots: true);
@@ -583,50 +591,95 @@ class _PhoneFilesState extends State<PhoneFiles> with WidgetsBindingObserver {
     );
   }
 
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('File manager'),
-      actions: [
-        IconButton(
-          tooltip: 'Termux tools',
-          icon: const Icon(Icons.terminal),
-          onPressed: () => Navigator.push(
-            context,
-            MaterialPageRoute<void>(
-              builder: (_) => TermuxTools(core: widget.core),
-            ),
-          ),
-        ),
-        IconButton(
-          tooltip: showHidden ? 'Hide hidden files' : 'Show hidden files',
-          icon: Icon(
-            showHidden ? Icons.visibility : Icons.visibility_off_outlined,
-          ),
-          onPressed: () async {
-            setState(() => showHidden = !showHidden);
-            await widget.core.appSettings(update: {'show_hidden': showHidden});
-          },
-        ),
-      ],
-    ),
-    body: SafeArea(
-      child: Column(
-        children: [
-          if (transferring) const LinearProgressIndicator(),
-          if (notice != null)
-            Padding(padding: const EdgeInsets.all(12), child: Text(notice!)),
-          Expanded(
+  Widget _content() => SafeArea(
+    child: Column(
+      children: [
+        if (widget.embedded)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 8, 0),
             child: Row(
               children: [
-                Expanded(child: pane(0)),
-                const VerticalDivider(width: 1),
-                Expanded(child: pane(1)),
+                if (Platform.isAndroid)
+                  TextButton.icon(
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute<void>(
+                        builder: (_) => TermuxTools(core: widget.core),
+                      ),
+                    ),
+                    icon: const Icon(Icons.terminal, size: 18),
+                    label: const Text('Termux tools'),
+                  ),
+                const Spacer(),
+                IconButton(
+                  tooltip: showHidden
+                      ? 'Hide hidden files'
+                      : 'Show hidden files',
+                  icon: Icon(
+                    showHidden
+                        ? Icons.visibility
+                        : Icons.visibility_off_outlined,
+                  ),
+                  onPressed: () async {
+                    setState(() => showHidden = !showHidden);
+                    await widget.core.appSettings(
+                      update: {'show_hidden': showHidden},
+                    );
+                  },
+                ),
               ],
             ),
           ),
-        ],
-      ),
+        if (transferring) const LinearProgressIndicator(),
+        if (notice != null)
+          Padding(padding: const EdgeInsets.all(12), child: Text(notice!)),
+        Expanded(
+          child: Row(
+            children: [
+              Expanded(child: pane(0)),
+              const VerticalDivider(width: 1),
+              Expanded(child: pane(1)),
+            ],
+          ),
+        ),
+      ],
     ),
   );
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.embedded) {
+      return _content();
+    }
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('File manager'),
+        actions: [
+          IconButton(
+            tooltip: 'Termux tools',
+            icon: const Icon(Icons.terminal),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) => TermuxTools(core: widget.core),
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: showHidden ? 'Hide hidden files' : 'Show hidden files',
+            icon: Icon(
+              showHidden ? Icons.visibility : Icons.visibility_off_outlined,
+            ),
+            onPressed: () async {
+              setState(() => showHidden = !showHidden);
+              await widget.core.appSettings(
+                update: {'show_hidden': showHidden},
+              );
+            },
+          ),
+        ],
+      ),
+      body: _content(),
+    );
+  }
 }

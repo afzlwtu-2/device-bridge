@@ -84,16 +84,26 @@ class LocalCore implements CoreBridge {
       );
     }
     final file = File('$_state/settings.json');
-    final values = <String, dynamic>{'android': false, 'show_hidden': false};
+    final values = <String, dynamic>{
+      'android': false,
+      'show_hidden': false,
+      'matte_items': '',
+    };
     if (await file.exists()) {
       values.addAll(
         jsonDecode(await file.readAsString()) as Map<String, dynamic>,
       );
     }
     if (update != null) {
-      if (update.keys.any((k) => k != 'show_hidden') ||
-          update.values.any((v) => v is! bool)) {
-        throw ArgumentError('Unsupported desktop setting');
+      for (final entry in update.entries) {
+        final ok = switch (entry.key) {
+          'show_hidden' => entry.value is bool,
+          'matte_items' => entry.value is String && (entry.value as String).length <= 32768,
+          _ => false,
+        };
+        if (!ok) {
+          throw ArgumentError('Unsupported desktop setting');
+        }
       }
       values.addAll(update);
       final staged = File('${file.path}.tmp');

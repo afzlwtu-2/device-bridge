@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:material_ui/material_ui.dart';
@@ -7,35 +9,139 @@ bool isAmoledTheme(String appearance) =>
     appearance == 'amoled-green' ||
     appearance == 'amoled-red';
 
+class MatteArtItem {
+  const MatteArtItem({
+    required this.kind,
+    required this.x,
+    required this.y,
+    required this.scale,
+    required this.tilt,
+    required this.color,
+    required this.foreground,
+  });
+
+  final String kind; // 'bird' or 'flower'
+  final double x; // normalized 0..1
+  final double y; // normalized 0..1
+  final double scale;
+  final double tilt; // radians
+  final int color; // ARGB
+  final bool foreground;
+
+  MatteArtItem copyWith({
+    String? kind,
+    double? x,
+    double? y,
+    double? scale,
+    double? tilt,
+    int? color,
+    bool? foreground,
+  }) => MatteArtItem(
+    kind: kind ?? this.kind,
+    x: x ?? this.x,
+    y: y ?? this.y,
+    scale: scale ?? this.scale,
+    tilt: tilt ?? this.tilt,
+    color: color ?? this.color,
+    foreground: foreground ?? this.foreground,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'kind': kind,
+    'x': x,
+    'y': y,
+    'scale': scale,
+    'tilt': tilt,
+    'color': color,
+    'foreground': foreground,
+  };
+
+  factory MatteArtItem.fromJson(Map<String, dynamic> map) => MatteArtItem(
+    kind: map['kind'] == 'bird' ? 'bird' : 'flower',
+    x: ((map['x'] as num?)?.toDouble() ?? 0.5).clamp(0.0, 1.0),
+    y: ((map['y'] as num?)?.toDouble() ?? 0.5).clamp(0.0, 1.0),
+    scale: ((map['scale'] as num?)?.toDouble() ?? 0.9).clamp(0.35, 2.2),
+    tilt: ((map['tilt'] as num?)?.toDouble() ?? 0.0).clamp(-math.pi, math.pi),
+    color: (map['color'] as num?)?.toInt() ?? 0xfff7f3dd,
+    foreground: map['foreground'] == true,
+  );
+}
+
+List<MatteArtItem> defaultMatteItems() => const [
+  // Topbar flowers
+  MatteArtItem(kind: 'flower', x: 0.54, y: 0.060, scale: 0.66, tilt: 0, color: 0xfff7f3dd, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.62, y: 0.073, scale: 0.50, tilt: 0, color: 0xffe5b93c, foreground: false),
+  // One side-edge flower
+  MatteArtItem(kind: 'flower', x: 0.95, y: 0.360, scale: 0.90, tilt: 0, color: 0xfff7f3dd, foreground: false),
+  // Horizontal center flower
+  MatteArtItem(kind: 'flower', x: 0.50, y: 0.480, scale: 1.00, tilt: 0, color: 0xffe5b93c, foreground: false),
+  // Bigger bird centered horizontally above the bottom bar, surrounded by flowers
+  MatteArtItem(kind: 'flower', x: 0.16, y: 0.845, scale: 0.96, tilt: 0, color: 0xfff7f3dd, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.29, y: 0.858, scale: 0.74, tilt: 0, color: 0xffe5b93c, foreground: false),
+  MatteArtItem(kind: 'bird', x: 0.50, y: 0.850, scale: 1.00, tilt: 0, color: 0xff20231c, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.71, y: 0.856, scale: 0.78, tilt: 0, color: 0xfff7f3dd, foreground: false),
+  MatteArtItem(kind: 'flower', x: 0.84, y: 0.845, scale: 0.94, tilt: 0, color: 0xffe5b93c, foreground: false),
+  // Single larger flower at the bottom, tilted 45 degrees
+  MatteArtItem(kind: 'flower', x: 0.45, y: 0.952, scale: 1.18, tilt: math.pi / 4, color: 0xfff7f3dd, foreground: false),
+];
+
+List<MatteArtItem> decodeMatteItems(String? raw) {
+  if (raw == null || raw.isEmpty) return defaultMatteItems();
+  try {
+    final list = jsonDecode(raw) as List;
+    if (list.isEmpty) return const [];
+    return list
+        .take(40)
+        .map((e) => MatteArtItem.fromJson(Map<String, dynamic>.from(e as Map)))
+        .toList();
+  } catch (_) {
+    return defaultMatteItems();
+  }
+}
+
+String encodeMatteItems(List<MatteArtItem> items) =>
+    jsonEncode(items.map((e) => e.toJson()).toList());
+
 /// Static decoration: no animation controller, timer, image asset or wake lock.
 class AppearanceSurface extends StatelessWidget {
   const AppearanceSurface({
     super.key,
     required this.appearance,
     required this.child,
+    this.matteItems,
   });
   final String appearance;
   final Widget child;
+  final List<MatteArtItem>? matteItems;
   @override
-  Widget build(BuildContext context) => Stack(
-    fit: StackFit.expand,
-    children: [
-      if (appearance == 'matte')
-        const ColoredBox(
-          color: Color(0xffa3ad4c),
-          child: CustomPaint(painter: _MattePaperArt()),
-        ),
-      child,
-      if (isAmoledTheme(appearance))
-        Positioned.fill(
-          child: IgnorePointer(
-            child: CustomPaint(
-              painter: _EdgeGlow(isRed: appearance == 'amoled-red'),
+  Widget build(BuildContext context) {
+    final items = matteItems ?? defaultMatteItems();
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (appearance == 'matte')
+          ColoredBox(
+            color: const Color(0xffa3ad4c),
+            child: CustomPaint(painter: _MattePaperArt(items: items)),
+          ),
+        child,
+        if (appearance == 'matte' && items.any((e) => e.foreground))
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(painter: _MatteForegroundArt(items: items)),
             ),
           ),
-        ),
-    ],
-  );
+        if (isAmoledTheme(appearance))
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: _EdgeGlow(isRed: appearance == 'amoled-red'),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
 }
 
 class _EdgeGlow extends CustomPainter {
@@ -294,7 +400,8 @@ ThemeData amoledTheme(String appearance) {
 }
 
 class _MattePaperArt extends CustomPainter {
-  const _MattePaperArt();
+  const _MattePaperArt({required this.items});
+  final List<MatteArtItem> items;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -330,83 +437,55 @@ class _MattePaperArt extends CustomPainter {
       canvas.drawLine(Offset(x, y), Offset(x + 0.9, y + 0.15), grain);
     }
 
-    // Topbar background flowers tucked in the open header band.
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.54, 54),
-      _MatteMeadowArt.cream,
-      0.66,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.62, 66),
-      _MatteMeadowArt.gold,
-      0.50,
-    );
-
-    // Outer-edge background flowers framing lists without crossing list text.
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.95, size.height * 0.25),
-      _MatteMeadowArt.cream,
-      0.86,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.03, size.height * 0.64),
-      _MatteMeadowArt.gold,
-      0.96,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.95, size.height * 0.66),
-      _MatteMeadowArt.gold,
-      0.74,
-    );
-
-    // Background flowers and single bird perched cleanly above the bottom bar.
-    final aboveBottom = size.height - 118;
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.08, aboveBottom - 20),
-      _MatteMeadowArt.cream,
-      0.98,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.19, aboveBottom - 10),
-      _MatteMeadowArt.gold,
-      0.76,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.92, aboveBottom - 16),
-      _MatteMeadowArt.cream,
-      0.82,
-    );
-    _drawCoolCrow(
-      canvas,
-      Offset(size.width * 0.78, aboveBottom - 14),
-      0.74,
-    );
-
-    // Bottom corner flowers framing the navigation bar (no bird inside bottom bar).
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.04, size.height - 20),
-      _MatteMeadowArt.gold,
-      0.68,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.96, size.height - 20),
-      _MatteMeadowArt.cream,
-      0.68,
-    );
+    for (final item in items) {
+      if (!item.foreground) {
+        drawMatteItem(canvas, size, item);
+      }
+    }
   }
 
   @override
-  bool shouldRepaint(covariant _MattePaperArt oldDelegate) => false;
+  bool shouldRepaint(covariant _MattePaperArt oldDelegate) =>
+      oldDelegate.items != items;
+}
+
+class _MatteForegroundArt extends CustomPainter {
+  const _MatteForegroundArt({required this.items});
+  final List<MatteArtItem> items;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final item in items) {
+      if (item.foreground) {
+        drawMatteItem(canvas, size, item);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _MatteForegroundArt oldDelegate) =>
+      oldDelegate.items != items;
+}
+
+void drawMatteItem(Canvas canvas, Size size, MatteArtItem item) {
+  final center = Offset(size.width * item.x, size.height * item.y);
+  if (item.kind == 'bird') {
+    _drawCoolCrow(
+      canvas,
+      center,
+      item.scale,
+      bodyColor: Color(item.color),
+      tilt: item.tilt,
+    );
+  } else {
+    _drawFlower(
+      canvas,
+      center,
+      Color(item.color),
+      item.scale,
+      tilt: item.tilt,
+    );
+  }
 }
 
 abstract final class _MatteMeadowArt {
@@ -416,13 +495,26 @@ abstract final class _MatteMeadowArt {
   static const leaf = Color(0xff5c7e22);
 }
 
-void _drawFlower(Canvas canvas, Offset center, Color petalColor, double s) {
+void _drawFlower(
+  Canvas canvas,
+  Offset center,
+  Color petalColor,
+  double s, {
+  double tilt = 0,
+}) {
   final outline = Paint()
     ..color = _MatteMeadowArt.ink
     ..style = PaintingStyle.stroke
     ..strokeWidth = 1.9 * s
     ..strokeJoin = StrokeJoin.round;
   final stemBottom = center + Offset(0, 34 * s);
+
+  if (tilt != 0) {
+    canvas.save();
+    canvas.translate(stemBottom.dx, stemBottom.dy);
+    canvas.rotate(tilt);
+    canvas.translate(-stemBottom.dx, -stemBottom.dy);
+  }
 
   canvas.drawOval(
     Rect.fromCenter(
@@ -481,14 +573,27 @@ void _drawFlower(Canvas canvas, Offset center, Color petalColor, double s) {
       : _MatteMeadowArt.gold;
   canvas.drawCircle(center, 4.6 * s, Paint()..color = centerColor);
   canvas.drawCircle(center, 4.6 * s, outline);
+
+  if (tilt != 0) {
+    canvas.restore();
+  }
 }
 
-void _drawCoolCrow(Canvas canvas, Offset center, double s) {
+void _drawCoolCrow(
+  Canvas canvas,
+  Offset center,
+  double s, {
+  Color bodyColor = const Color(0xff20231c),
+  double tilt = 0,
+}) {
   canvas.save();
   canvas.translate(center.dx, center.dy);
+  if (tilt != 0) {
+    canvas.rotate(tilt);
+  }
   canvas.scale(s, s);
 
-  final bodyFill = Paint()..color = const Color(0xff20231c);
+  final bodyFill = Paint()..color = bodyColor;
   final outline = Paint()
     ..color = _MatteMeadowArt.ink
     ..style = PaintingStyle.stroke
