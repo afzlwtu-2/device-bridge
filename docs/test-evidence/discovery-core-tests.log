@@ -1,0 +1,5 @@
+ok  	devicebridge/internal/storage	0.004s
+ok  	devicebridge/test/integration	0.012s
+?   	devicebridge/internal/transport	[no test files]
+ok  	devicebridge/internal/transport/direct	0.002s
+?   	devicebridge/internal/transport/tailnet	[no test files]

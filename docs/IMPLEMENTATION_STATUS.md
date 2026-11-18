@@ -1,6 +1,8 @@
 # Implementation status
 
-Updated 2026-11-18. **The primary Android → Linux LAN browse/pull journey works on physical hardware.** This is the M0–M2 baseline, not the complete super-app. M3–M8 remain pending.
+> **Updated 2026-11-18 08:08 UTC.** Builds on the verified M0–M2 baseline (`a89db22`) with two-way LAN mDNS discovery, streaming tar + safe extraction, live & persisted MiB/s reporting, Matte paper cartoon theme, and selectable AMOLED Neon Green/Red vertical edge glow. Interactive Android `tsnet` login, hotspot/Wi-Fi recovery testing, M3 Quick Share/Clipboard, and M5–M8 remain pending.
+
+Updated 2026-11-18. **The primary Android ↔ Linux LAN discovery, pairing, browse, and verified chunked/streaming-tar pull journeys pass on physical hardware.** This is pre-M3/M4 hardening; M3–M8 remain pending.
 
 ## Authority and safety
 
@@ -40,24 +42,27 @@ Flutter uses this same Go core through subprocess/platform channels. Android pac
 | Flutter analyzer/widget regression tests | `flutter-analyze-3.log`, `flutter-widget-tests-4.log`: PASS |
 | Linux actual GUI startup | `linux-ui-smoke.log`: bundled core initialized, app survived bounded startup and was stopped; cursor-theme warning only |
 | Optimized Linux/Android builds | `flutter-linux-build-final.log`, `flutter-android-release-final.log`: PASS |
-| APK signatures and bundled core hash | `android-release-final-signature.log`, `android-release-final-verification.json`: PASS |
+| APK signatures and bundled core hash | `android-release-final-signature.log`, `android-release-final-verification.json`, plus latest `apksigner verify` on `0aaa31720c...`: PASS |
 | Go known-vulnerability scan | `govulncheck.log`: no known vulnerabilities; not an external audit |
+| Two-way LAN mDNS discovery & Linux → Android pull | Standalone Android UID `u0_a408` discovered at `10.100.102.33:33715`; Android UI discovered Linux at `10.100.102.69:8731`; Linux paired/approved/pulled 8 files (`8,389,711` bytes): PASS (no UFW edit) |
+| Streaming tar + adaptive gzip & live MiB/s | `internal/transfer/tar_test.go`, `TestStreamingTarPullOverMTLS`, `tar-speed-cli-verify.json` (24 files, `mode: "tar"`, `2.23 MiB/s`, persisted `rate.<peer>`): PASS |
+| Matte paper & AMOLED Neon Green/Red themes | `flutter test` (3/3) + `flutter analyze` (0 issues): PASS; earlier hardware screenshots inspected; final white-pill olive nav bar + saturated neon center peaks built into latest APK (pending foreground visual check) |
 
-Failures were retained: initial Linux fixture permissions, laptop UFW denial, lost single mDNS packet, outdated APK core caught by hash comparison, and a real Flutter dialog/controller lifecycle assertion. Fixes have targeted regression tests and passing follow-up evidence. No failed run is presented as successful.
+Failures were retained: initial Linux fixture permissions, laptop UFW denial, lost single mDNS packet, outdated APK core caught by hash comparison, a real Flutter dialog/controller lifecycle assertion, `TextStyle` `inherit` mismatch during theme animation, and `package_artifacts.py` catching a stale debug APK. Fixes have targeted regression tests and passing follow-up evidence. No failed run is presented as successful.
 
-The physical CLI folder command transferred 4,194,335 bytes in 4.098625 seconds **including SSH, discovery, hashing and fsync**; this is not a link-throughput benchmark. No fabricated bandwidth or battery figures.
+The physical CLI folder command transferred 4,194,335 bytes in 4.098625 seconds **including SSH, discovery, hashing and fsync**; this is not a link-throughput benchmark. The 24-file streaming tar CLI check measured `2.23 MiB/s` over 30 ms for 72,448 bytes on `wlan0`. No fabricated bandwidth or battery figures.
 
 ## Artifacts and cleanup
 
-- Optimized, development-signed APK: `artifacts/android-arm64/devicebridge.apk`, 11,929,443 bytes, SHA-256 `3e1979631b42f7a27bc2b133b18f555307cf0a056dedf26615265a083ef910a6`. Installed on the phone. The app remains open intentionally.
+- Development-signed release APK: `artifacts/android-arm64/devicebridge.apk`, 24,063,125 bytes, SHA-256 `0aaa31720c7f1702e20fd79851e3c0fa559a516ba519d4f4442225f9e84cc7ea` (includes `libbridge_cli.so`, `libbridge_agent.so`, and `libbridge_tailnet.so`). Debug APK: `artifacts/android-arm64/devicebridge-debug.apk`. Latest APK awaits user-safe foreground install/visual check.
 - Linux GUI bundle: `app/build/linux/x64/release/bundle/`; packaged archive: `artifacts/linux/devicebridge-linux-x64.tar.gz`; Linux and Termux Go binaries in `artifacts/linux/` and `artifacts/termux-arm64/`. `artifacts/MANIFEST.json` and `docs/test-evidence/artifact-manifest.json` record hashes.
-- All experiment-owned laptop agents stopped. All temporary wlan0 TCP8731 rules (phone10.100.102.33 → laptop10.100.102.69 only) were deleted after tests; `firewall-*.log` records cleanup. No persistent device service was installed.
-- SAF retained only the new test folder `DeviceBridge-Test-20261118T064118Z` with verified sample copies. Owned temporary UI XML is removed. Private test identities/state remain in ignored `.work/` and disposable phone snapshots for reproducibility.
+- All experiment-owned laptop agents stopped. All temporary wlan0 TCP8731 rules (phone10.100.102.33 → laptop10.100.102.69 only) were deleted after baseline tests; no UFW rules were added in this session. No persistent device service was installed.
+- SAF retained only the test folder `DeviceBridge-Test-20261118T064118Z` with verified sample copies. Owned temporary UI XML is removed. Private test identities/state remain in ignored `.work/` and disposable phone snapshots for reproducibility.
 
 ## Remaining work
 
-M2 baseline is verified; full alternate-network and hardening acceptance is not. Linux GUI's complete visual journey, hotspot/Wi-Fi Direct and IP transitions, very large trees, storage exhaustion, process-restart resume, battery/doze/force-stop and a non-rooted physical handset remain untested. Ordinary app UID operation on the rooted handset does not prove every non-root device behavior.
+M2 baseline plus two-way LAN discovery, streaming tar, live/persisted MiB/s, and Matte/AMOLED theme UI are verified at unit/integration/CLI/build levels; full alternate-network and hardening acceptance is not. Linux GUI's complete visual journey, hotspot/Wi-Fi Direct and IP transitions, very large trees, storage exhaustion, process-restart resume, battery/doze/force-stop, and a non-rooted physical handset remain untested. Interactive Android `tsnet` login/path proof (`libbridge_tailnet.so`) awaits user authentication.
 
-M3: quick sending/clipboard/share sheet, richer progress/history and large-directory archive strategy. M4: broader network intelligence/UI refinement. M5–M6: independently installed Syncthing, filtered Git-aware projection, signed single-writer controller and recovery. M7: SAF-backed serving, companion lifecycle and optional privileged providers. M8: app-only tsnet proof/login/path/battery tests and hardening. WireGuard/commands/terminal/guest assistance remain future contracts only.
+M3: quick sending/clipboard/share sheet and richer transfer history. M4: broader network intelligence/UI refinement. M5–M6: independently installed Syncthing, filtered Git-aware projection, signed single-writer controller and recovery. M7: SAF-backed serving, companion lifecycle and optional privileged providers. M8: app-only tsnet login/path/battery proof and hardening. WireGuard/commands/terminal/guest assistance remain future contracts only.
 
-No uploads, sync ownership, Syncthing management, tsnet, root/Shizuku broker or WireGuard connectivity is claimed. APKs use a development signing key. See `prgress.md` and the session lock for the next agent; local milestone commit is authorized, publication is not.
+No uploads, sync ownership, Syncthing management, authenticated `tsnet` tunnel, root/Shizuku broker or WireGuard connectivity is claimed. APKs use a development signing key. See `prgress.md` and `.devicebridge-agent-session.lock`; local milestone commit is authorized, publication is not.

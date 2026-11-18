@@ -208,3 +208,75 @@ func TestPinnedTLSAndPersistentIdentity(t *testing.T) {
 		t.Fatal("wrong server pin accepted")
 	}
 }
+
+func TestStreamingTarPullOverMTLS(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, host := open(t, "host")
+	cs, phone := open(t, "phone")
+	srcDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(srcDir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		p := filepath.Join(srcDir, "sub", "item-"+string(rune('a'+i))+".txt")
+		if err := os.WriteFile(p, []byte("tar integration payload\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	np, err := filesproviders.NewNative("tree", srcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { np.Close() })
+	reg := &filesproviders.Registry{}
+	if err := reg.Register(np); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Export("tree", srcDir); err != nil {
+		t.Fatal(err)
+	}
+	h := httptest.NewUnstartedServer(server.New(s, host, reg).Handler())
+	h.TLS = host.ServerTLS()
+	h.StartTLS()
+	t.Cleanup(h.Close)
+	addr := strings.TrimPrefix(h.URL, "https://")
+	c := client.New(phone, cs, &fakeTransport{address: addr}, transport.Candidate{DeviceID: host.ID, Endpoint: addr})
+	t.Cleanup(c.Close)
+	inv, err := host.Invite(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RequestPair(ctx, inv, phone.Name); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Approve(phone.ID, []string{"tree"}, time.Hour, 10<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.FinishPair(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var manifest protocol.Manifest
+	if err := c.JSON(ctx, "/v1/files/manifest", url.Values{"root": {"tree"}, "path": {"."}}, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if !transfer.ShouldUseTar(manifest) {
+		t.Fatal("expected ShouldUseTar=true")
+	}
+	stream, codec, err := c.OpenTar(ctx, "tree", ".", "adaptive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "pulled-tree")
+	receipt, err := transfer.PullTar(ctx, stream, codec, host.ID, manifest, dest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Files != 20 || receipt.Mode != "tar" || receipt.MiBPerSecond <= 0 {
+		t.Fatalf("unexpected tar receipt: %+v", receipt)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "sub", "item-a.txt"))
+	if err != nil || string(got) != "tar integration payload\n" {
+		t.Fatalf("extracted file mismatch: %v", err)
+	}
+}

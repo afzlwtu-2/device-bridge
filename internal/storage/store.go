@@ -16,11 +16,37 @@ import (
 
 type Store struct{ DB *sql.DB }
 type Peer struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Status  string `json:"status"`
-	Expires int64  `json:"expires"`
+	ID        string                `json:"id"`
+	Name      string                `json:"name"`
+	Status    string                `json:"status"`
+	Expires   int64                 `json:"expires"`
+	Addresses []EndpointObservation `json:"addresses,omitempty"`
 }
+type EndpointObservation struct {
+	Endpoint      string `json:"endpoint"`
+	Network       string `json:"network"`
+	Observed      int64  `json:"observed"`
+	Authenticated bool   `json:"authenticated"`
+}
+
+func (s *Store) EndpointRecords(peer string) ([]EndpointObservation, error) {
+	rows, err := s.DB.Query("SELECT endpoint,network,observed FROM endpoints WHERE peer=? ORDER BY observed DESC,endpoint LIMIT 8", peer)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []EndpointObservation{}
+	for rows.Next() {
+		var e EndpointObservation
+		if err = rows.Scan(&e.Endpoint, &e.Network, &e.Observed); err != nil {
+			return nil, err
+		}
+		e.Authenticated = true
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 type Export struct {
 	ID   string `json:"id"`
 	Path string `json:"path"`
@@ -76,11 +102,22 @@ func (s *Store) migrate() error {
 	if err := s.DB.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 2 {
+	if version > 3 {
 		return errors.New("database schema is newer than this app")
 	}
-	if version == 2 {
+	if version == 3 {
 		return nil
+	}
+	if version == 2 {
+		tx, err := s.DB.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err = tx.Exec(`CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version=3;`); err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
 	if version == 1 {
 		tx, err := s.DB.Begin()
@@ -92,7 +129,10 @@ func (s *Store) migrate() error {
 		if err != nil {
 			return err
 		}
-		return tx.Commit()
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		return s.migrate()
 	}
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -114,6 +154,25 @@ PRAGMA user_version=1;`)
 		return err
 	}
 	return s.migrate()
+}
+
+func (s *Store) Theme(value string) (string, error) {
+	if value != "" {
+		switch value {
+		case "system", "light", "dark", "amoled", "amoled-green", "amoled-red", "matte":
+		default:
+			return "", errors.New("unsupported theme")
+		}
+		if _, err := s.DB.Exec("INSERT INTO preferences(key,value) VALUES('ui.theme',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", value); err != nil {
+			return "", err
+		}
+	}
+	var saved string
+	err := s.DB.QueryRow("SELECT value FROM preferences WHERE key='ui.theme'").Scan(&saved)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "system", nil
+	}
+	return saved, err
 }
 
 // Cache only after an authenticated pinned /device handshake. TTL is deliberately

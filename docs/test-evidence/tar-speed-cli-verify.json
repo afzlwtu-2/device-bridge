@@ -1,0 +1,50 @@
+{
+  "receipt": {
+    "destination": "/home/afzl/@Projects/mine/device-bridge/.work/tar-cli-verify/pulled",
+    "files": 24,
+    "bytes": 72448,
+    "manifest_sha256": "72f71e068d5f777d4369d4d96dc6bf3851f18e9b6d2936038b070dadb7d7d148",
+    "mode": "tar",
+    "mib_per_second": 2.2323535931250595,
+    "elapsed_ms": 30
+  },
+  "progress_count": 24,
+  "last_progress": {
+    "file": "sub/item-23.txt",
+    "verified_bytes": 72448,
+    "total_bytes": 72448,
+    "mib_per_second": 2.3583081377980712,
+    "elapsed_ms": 29
+  },
+  "connection": {
+    "transport": "lan",
+    "remote_approved": false,
+    "last_mib_per_second": 2.2323535931250595,
+    "last_rate_transport": "direct-lan-v1",
+    "last_rate_observed_at": 1794988957
+  },
+  "resolve": {
+    "device_id": "2a65225282a7d75e5c7b379eaf8791c31ed7e40a60cc24eeab33272b13cb4dd5",
+    "endpoint": "10.100.102.69:40633",
+    "interface": "wlan0",
+    "transport": "direct-lan-v1",
+    "observed": "2026-11-18T13:02:37.298932206+05:00",
+    "cost": {
+      "Metered": false,
+      "Internet": false,
+      "Relayed": false,
+      "Known": true
+    },
+    "direct": true,
+    "rtt": 4148650,
+    "bytes_per_second": 2340792.4012647024,
+    "mib_per_second": 2.2323535931250595
+  },
+  "system_tailnet_rc": 0,
+  "system_tailnet_summary": {
+    "mode": "system",
+    "state": "Running",
+    "userspace": false,
+    "peer_count": 51
+  }
+}

@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../core/bridge.dart';
 import 'registry.dart';
+import 'connection_picker.dart';
 
 class DeviceDetail extends StatefulWidget {
   const DeviceDetail({
@@ -45,7 +48,31 @@ class _DeviceDetailState extends State<DeviceDetail> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text('${widget.peer['name']}')),
+    appBar: AppBar(
+      title: Text('${widget.peer['name']}'),
+      actions: [
+        IconButton(
+          tooltip: 'Choose connection',
+          onPressed: () async {
+            final changed = await showDialog<bool>(
+              context: context,
+              builder: (_) => ConnectionPicker(
+                core: widget.core,
+                peer: widget.peer['id'] as String,
+              ),
+            );
+            if (changed == true) {
+              setState(() {
+                busy = true;
+                error = null;
+              });
+              await load();
+            }
+          },
+          icon: const Icon(Icons.settings_ethernet),
+        ),
+      ],
+    ),
     body: ListView(
       padding: const EdgeInsets.all(24),
       children: [
@@ -55,9 +82,13 @@ class _DeviceDetailState extends State<DeviceDetail> {
           Card(
             child: ListTile(
               leading: const Icon(Icons.verified_user_outlined),
-              title: const Text('Authenticated direct LAN'),
+              title: Text(
+                route!['transport'] == 'direct-lan-v1'
+                    ? 'Authenticated direct LAN'
+                    : 'Tailscale · ${route!['path_kind'] ?? 'unknown'}',
+              ),
               subtitle: Text(
-                '${route!['endpoint']} · ${route!['interface']}\nHandshake ${((route!['rtt'] as num) / 1000000).toStringAsFixed(1)} ms',
+                '${route!['endpoint']} · ${route!['interface'] ?? ''}\nHandshake ${((route!['rtt'] as num) / 1000000).toStringAsFixed(1)} ms\nTransfer speed: ${((route!['mib_per_second'] as num? ?? 0) > 0) ? '${(route!['mib_per_second'] as num).toStringAsFixed(2)} MiB/s' : '— MiB/s (measure during a transfer)'}',
               ),
             ),
           ),
@@ -155,10 +186,25 @@ class _FileBrowserState extends State<FileBrowser> {
   String? error;
   String next = '';
   String? received;
+  double? receivedMiB;
+  String? receivedMode;
+  Map<String, dynamic>? liveProgress;
+  StreamSubscription<Map<String, dynamic>>? progressSub;
   @override
   void initState() {
     super.initState();
+    progressSub = widget.core.transferProgress.listen((p) {
+      if (mounted) {
+        setState(() => liveProgress = p);
+      }
+    });
     load();
+  }
+
+  @override
+  void dispose() {
+    progressSub?.cancel();
+    super.dispose();
   }
 
   Future<void> load({bool more = false}) async {
@@ -214,22 +260,30 @@ class _FileBrowserState extends State<FileBrowser> {
     setState(() {
       busy = true;
       error = null;
+      liveProgress = null;
+      receivedMiB = null;
+      receivedMode = null;
     });
     try {
       final destination = '${widget.core.downloads}/$name';
-      await widget.core.run([
+      final receipt = await widget.core.run([
         'pull',
         widget.peer['id'] as String,
         widget.root,
         path,
         destination,
-      ]);
+      ]) as Map;
       received = destination;
+      receivedMiB = (receipt['mib_per_second'] as num?)?.toDouble();
+      receivedMode = receipt['mode'] as String?;
     } catch (e) {
       error = e.toString();
     }
     if (mounted) {
-      setState(() => busy = false);
+      setState(() {
+        busy = false;
+        liveProgress = null;
+      });
     }
   }
 
@@ -265,7 +319,23 @@ class _FileBrowserState extends State<FileBrowser> {
     ),
     body: Column(
       children: [
-        if (busy) const LinearProgressIndicator(),
+        if (busy)
+          LinearProgressIndicator(
+            value: liveProgress != null &&
+                    ((liveProgress!['total_bytes'] as num? ?? 0) > 0)
+                ? ((liveProgress!['verified_bytes'] as num? ?? 0) /
+                          (liveProgress!['total_bytes'] as num))
+                      .clamp(0.0, 1.0)
+                : null,
+          ),
+        if (busy && liveProgress != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            child: Text(
+              '${(((liveProgress!['verified_bytes'] as num? ?? 0)) / (1024 * 1024)).toStringAsFixed(1)} / ${(((liveProgress!['total_bytes'] as num? ?? 0)) / (1024 * 1024)).toStringAsFixed(1)} MiB · ${((liveProgress!['mib_per_second'] as num? ?? 0)).toStringAsFixed(2)} MiB/s · ${liveProgress!['file'] ?? ''}',
+              textAlign: TextAlign.center,
+            ),
+          ),
         if (busy)
           TextButton(
             onPressed: widget.core.cancel,
@@ -282,7 +352,7 @@ class _FileBrowserState extends State<FileBrowser> {
             child: Column(
               children: [
                 Text(
-                  'Verified download\n${received!.split('/').last}\nSaved in DeviceBridge',
+                  'Verified download${receivedMode == 'tar' ? ' (streaming tar)' : ''}\n${received!.split('/').last}\nSaved in DeviceBridge${receivedMiB != null && receivedMiB! > 0 ? ' · ${receivedMiB!.toStringAsFixed(2)} MiB/s' : ''}',
                   textAlign: TextAlign.center,
                 ),
                 TextButton(

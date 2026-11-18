@@ -8,6 +8,7 @@ import android.provider.DocumentsContract
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.EventChannel
 import java.io.File
 import java.net.Inet4Address
 import java.util.UUID
@@ -17,9 +18,32 @@ class MainActivity : FlutterActivity() {
     private val worker = Executors.newSingleThreadExecutor()
     private var saveResult: MethodChannel.Result? = null
     private var saveSource: File? = null
+    private lateinit var lan: LanCoordinator
+    private lateinit var tailnet: TailnetCoordinator
+    private var networkSink: EventChannel.EventSink? = null
+    private var networkStatus: Map<String, Any?>? = null
+    private var transferSink: EventChannel.EventSink? = null
+
+    override fun onResume() { super.onResume(); if (::lan.isInitialized) lan.visible(true); if (::tailnet.isInitialized) tailnet.visible(true) }
+    override fun onStop() { if (::lan.isInitialized) lan.visible(false); if (::tailnet.isInitialized) tailnet.visible(false); super.onStop() }
 
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
+        tailnet = TailnetCoordinator(applicationContext)
+        lan = LanCoordinator(applicationContext) { value ->
+            networkStatus = value; networkSink?.success(value)
+            @Suppress("UNCHECKED_CAST")
+            val network = value["network"] as? Map<String, Any?>
+            tailnet.network(network, value["endpoint"] as? String ?: "")
+        }
+        EventChannel(engine.dartExecutor.binaryMessenger, "dev.devicebridge/network").setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink) { networkSink = events; networkStatus?.let { events.success(it) } }
+            override fun onCancel(arguments: Any?) { networkSink = null }
+        })
+        EventChannel(engine.dartExecutor.binaryMessenger, "dev.devicebridge/transfer").setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink) { transferSink = events }
+            override fun onCancel(arguments: Any?) { transferSink = null }
+        })
         MethodChannel(engine.dartExecutor.binaryMessenger, "dev.devicebridge/core").setMethodCallHandler { call, result ->
             when (call.method) {
                 "configuration" -> result.success(mapOf(
@@ -27,16 +51,30 @@ class MainActivity : FlutterActivity() {
                     "binary" to File(applicationInfo.nativeLibraryDir, "libbridge_cli.so").path
                 ))
                 "networks" -> {
-                    val cm = getSystemService(ConnectivityManager::class.java)
-                    val options = cm.allNetworks.mapNotNull { network ->
-                        val caps = cm.getNetworkCapabilities(network) ?: return@mapNotNull null
-                        if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
-                        val link = cm.getLinkProperties(network) ?: return@mapNotNull null
-                        val address = link.linkAddresses.firstOrNull { it.address is Inet4Address } ?: return@mapNotNull null
-                        mapOf("interface" to link.interfaceName, "cidr" to "${address.address.hostAddress}/${address.prefixLength}",
-                            "metered" to if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) "Unmetered Wi-Fi" else "Metered Wi-Fi: approval required")
+                    result.success(lan.networks())
+                }
+                "activateLan" -> { lan.activate(call.argument<Map<String, Any?>>("network")); result.success(null) }
+                "approveLan" -> {
+                    try { lan.approve(call.argument<Map<String, Any?>>("network") ?: emptyMap()); result.success(null) }
+                    catch (e: Exception) { result.error("network_changed", e.message, null) }
+                }
+                "tailnetEnable" -> { tailnet.enable(call.argument<Boolean>("enabled") == true); result.success(null) }
+                "openLogin" -> {
+                    val value = call.argument<String>("url") ?: ""
+                    val uri = android.net.Uri.parse(value)
+                    if (uri.scheme == "https" && uri.host == "login.tailscale.com") { startActivity(Intent(Intent.ACTION_VIEW, uri)); result.success(null) }
+                    else result.error("invalid_login", "Only the official Tailscale login page may be opened", null)
+                }
+                "connectionSetup" -> {
+                    val kind = call.argument<String>("kind")
+                    if (kind == "wifi_direct" && !packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_WIFI_DIRECT)) {
+                        result.error("unavailable", "This device does not report Wi-Fi Direct support", null)
+                    } else {
+                        val action = if (kind == "hotspot") "android.settings.TETHER_SETTINGS" else "android.settings.WIFI_DIRECT_SETTINGS"
+                        var intent = Intent(action)
+                        if (intent.resolveActivity(packageManager) == null) intent = Intent(android.provider.Settings.ACTION_WIFI_SETTINGS)
+                        try { startActivity(intent); result.success(null) } catch(e: Exception) { result.error("unavailable", e.message, null) }
                     }
-                    result.success(options)
                 }
                 "execute" -> {
                     val args = call.argument<List<String>>("arguments") ?: emptyList()
@@ -45,15 +83,17 @@ class MainActivity : FlutterActivity() {
                     if (args.size < 3 || args[0] != "--state" || args[1] != File(filesDir, "devicebridge").path) {
                         result.error("invalid_arguments", "Core state must remain inside this app", null)
                     } else {
-                        if (transfer) startForegroundService(Intent(this, TransferService::class.java))
+                        if (transfer) { tailnet.transferring(true); startForegroundService(Intent(this, TransferService::class.java)) }
                         worker.execute {
                             try {
-                                val output = CoreRuntime.execute(applicationContext, args, input)
+                                val output = CoreRuntime.execute(applicationContext, args, input) { progress ->
+                                    runOnUiThread { transferSink?.success(progress) }
+                                }
                                 runOnUiThread { result.success(output) }
                             } catch (e: Exception) {
                                 runOnUiThread { result.error("core_failed", e.message, null) }
                             } finally {
-                                if (transfer) stopService(Intent(this, TransferService::class.java))
+                                if (transfer) runOnUiThread { stopService(Intent(this, TransferService::class.java)); tailnet.transferring(false) }
                             }
                         }
                     }

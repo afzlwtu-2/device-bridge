@@ -1,0 +1,160 @@
+import 'dart:async';
+
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
+
+import '../core/bridge.dart';
+
+class TailnetPanel extends StatefulWidget {
+  const TailnetPanel({super.key, required this.core});
+  final CoreBridge core;
+  @override
+  State<TailnetPanel> createState() => _TailnetPanelState();
+}
+
+class _TailnetPanelState extends State<TailnetPanel> {
+  Map<dynamic, dynamic>? status;
+  String? error;
+  bool busy = true;
+  Timer? retry;
+  int retries = 0;
+  double? liveMiB;
+  StreamSubscription<Map<String, dynamic>>? progressSub;
+  @override
+  void initState() {
+    super.initState();
+    progressSub = widget.core.transferProgress.listen((p) {
+      if (mounted) {
+        setState(() => liveMiB = (p['mib_per_second'] as num?)?.toDouble());
+      }
+    });
+    load();
+  }
+
+  @override
+  void dispose() {
+    progressSub?.cancel();
+    retry?.cancel();
+    super.dispose();
+  }
+
+  Future<void> load() async {
+    if (mounted) {
+      setState(() => busy = true);
+    }
+    try {
+      status = await widget.core.run(['tailnet', 'status']) as Map;
+      error = null;
+    } catch (e) {
+      error = e.toString();
+    }
+    if (mounted) {
+      setState(() => busy = false);
+    }
+  }
+
+  Future<void> enable() async {
+    setState(() => busy = true);
+    try {
+      await widget.core.enableTailnet(true);
+      await load();
+      if (status?['state'] != 'Running' && retries++ < 8) {
+        retry = Timer(const Duration(seconds: 1), () {
+          if (mounted) {
+            load();
+          }
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          error = e.toString();
+          busy = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final system = status?['mode'] == 'system';
+    final login = status?['login_url'] as String?;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Tailscale connectivity')),
+      body: ListView(
+        padding: const EdgeInsets.all(24),
+        children: [
+          if (busy) const LinearProgressIndicator(),
+          Text(
+            system ? 'Existing system Tailscale' : 'App-only Tailscale',
+            style: Theme.of(context).textTheme.headlineSmall,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            system
+                ? 'DeviceBridge uses the existing laptop agent. Its settings and credentials are managed by Tailscale.'
+                : 'This creates a separate DeviceBridge node. It does not enable Android’s system-wide VPN. It runs while this app is open or transferring on approved Wi-Fi.',
+          ),
+          const SizedBox(height: 20),
+          if (status != null) ...[
+            Text('Status: ${status!['state']}'),
+            for (final ip in status!['ips'] as List? ?? [])
+              SelectableText('Tailscale IP: $ip'),
+          ],
+          if (error != null) Text(error!),
+          const SizedBox(height: 16),
+          if (!system)
+            Wrap(
+              spacing: 12,
+              children: [
+                FilledButton(
+                  onPressed: busy ? null : enable,
+                  child: const Text('Enable app-only Tailscale'),
+                ),
+                OutlinedButton(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          await widget.core.enableTailnet(false);
+                          await load();
+                        },
+                  child: const Text('Disconnect'),
+                ),
+              ],
+            ),
+          TextButton.icon(
+            onPressed: busy ? null : load,
+            icon: const Icon(Icons.refresh),
+            label: const Text('Refresh status'),
+          ),
+          if (login != null && login.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Text(
+              'Log in to authorize this DeviceBridge node. No passwords or permanent auth keys are stored in the interface.',
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: () => widget.core.openLogin(login),
+              icon: const Icon(Icons.open_in_browser),
+              label: const Text('Log in to Tailscale'),
+            ),
+            TextButton(
+              onPressed: () => Clipboard.setData(ClipboardData(text: login)),
+              child: const Text('Copy login link'),
+            ),
+          ],
+          const SizedBox(height: 24),
+          const Text(
+            'Connection paths are measured per peer. Direct, DERP relay, peer relay and unknown are shown separately. A path can change after a measurement. Remote bulk data requires explicit per-device approval; LAN never silently falls back to Tailscale.',
+          ),
+          const SizedBox(height: 12),
+          Text(
+            liveMiB != null && liveMiB! > 0
+                ? 'Transfer rate: ${liveMiB!.toStringAsFixed(2)} MiB/s'
+                : 'Transfer rate: — MiB/s (no active transfer)',
+          ),
+        ],
+      ),
+    );
+  }
+}

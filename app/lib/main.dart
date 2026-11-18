@@ -1,33 +1,82 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
 
 import 'core/bridge.dart';
 import 'features/registry.dart';
 import 'features/remote_files.dart';
 import 'features/pair_dialog.dart';
+import 'features/device_addresses.dart';
+import 'features/incoming_pair.dart';
+import 'features/tailnet_panel.dart';
+import 'features/appearance.dart';
 
 void main() => runApp(DeviceBridgeApp(core: LocalCore()));
 
-class DeviceBridgeApp extends StatelessWidget {
+class DeviceBridgeApp extends StatefulWidget {
   const DeviceBridgeApp({super.key, required this.core});
   final CoreBridge core;
+  @override
+  State<DeviceBridgeApp> createState() => _DeviceBridgeAppState();
+}
+
+class _DeviceBridgeAppState extends State<DeviceBridgeApp> {
+  String appearance = 'system';
+  ThemeData get dark {
+    if (isAmoledTheme(appearance)) {
+      return amoledTheme(appearance);
+    }
+    final scheme = ColorScheme.fromSeed(
+      seedColor: const Color(0xff41c6b5),
+      brightness: Brightness.dark,
+    );
+    return ThemeData(
+      colorScheme: scheme,
+      scaffoldBackgroundColor: const Color(0xff101615),
+      useMaterial3: true,
+    );
+  }
+
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'DeviceBridge',
     debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff176b62)),
-      scaffoldBackgroundColor: const Color(0xfff4f7f6),
-      useMaterial3: true,
+    theme: appearance == 'matte'
+        ? mattePaperTheme()
+        : ThemeData(
+            colorScheme: ColorScheme.fromSeed(
+              seedColor: const Color(0xff176b62),
+            ),
+            scaffoldBackgroundColor: const Color(0xfff4f7f6),
+            useMaterial3: true,
+          ),
+    darkTheme: dark,
+    builder: (context, child) => AppearanceSurface(
+      appearance: appearance,
+      child: child ?? const SizedBox.shrink(),
     ),
-    home: BridgeHome(core: core),
+    themeMode: appearance == 'system'
+        ? ThemeMode.system
+        : appearance == 'light' || appearance == 'matte'
+        ? ThemeMode.light
+        : ThemeMode.dark,
+    home: BridgeHome(
+      core: widget.core,
+      onAppearance: (value) {
+        if (mounted) {
+          setState(() => appearance = value);
+        }
+      },
+    ),
   );
 }
 
 class BridgeHome extends StatefulWidget {
-  const BridgeHome({super.key, required this.core});
+  const BridgeHome({super.key, required this.core, required this.onAppearance});
   final CoreBridge core;
+  final ValueChanged<String> onAppearance;
   @override
   State<BridgeHome> createState() => _BridgeHomeState();
 }
@@ -38,6 +87,9 @@ class _BridgeHomeState extends State<BridgeHome> {
   String? error;
   List<dynamic> peers = [], candidates = [];
   Map<String, dynamic>? identity;
+  StreamSubscription<Map<String, dynamic>>? networkEvents;
+  String? listenerState;
+  Timer? networkRefresh;
   final registry = FeatureRegistry()..register(RemoteFilesFeature());
   @override
   void initState() {
@@ -46,12 +98,37 @@ class _BridgeHomeState extends State<BridgeHome> {
   }
 
   Future<void> initialize() => task(() async {
+    networkEvents = widget.core.networkEvents.listen((event) {
+      if (!mounted) {
+        return;
+      }
+      candidates = [];
+      setState(() => listenerState = event['state'] as String?);
+      networkRefresh?.cancel();
+      if (event['state'] == 'active') {
+        networkRefresh = Timer(const Duration(milliseconds: 250), () {
+          if (mounted && !busy) {
+            discover();
+          }
+        });
+      }
+    });
     await widget.core.initialize();
+    final appearance = await widget.core.run(['theme']) as Map;
+    widget.onAppearance(appearance['theme'] as String? ?? 'system');
     identity = Map<String, dynamic>.from(
       await widget.core.run(['identity']) as Map,
     );
     await refreshPeers();
   });
+  @override
+  void dispose() {
+    networkEvents?.cancel();
+    networkRefresh?.cancel();
+    widget.core.shutdown();
+    super.dispose();
+  }
+
   Future<void> refreshPeers() async {
     peers = await widget.core.run(['peers']) as List;
   }
@@ -111,6 +188,29 @@ class _BridgeHomeState extends State<BridgeHome> {
       ),
     );
     if (selected != null) {
+      if (!mounted) {
+        return;
+      }
+      final roaming = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Recover on other Wi-Fi networks?'),
+          content: const Text(
+            'Allow automatic reconnection on unmetered Wi-Fi after network changes. Metered Wi-Fi and cellular will still require separate approval.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Only this network'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Allow unmetered Wi-Fi'),
+            ),
+          ],
+        ),
+      );
+      selected['allow_wifi_roaming'] = roaming == true;
       await widget.core.approveNetwork(selected);
     }
   });
@@ -122,8 +222,57 @@ class _BridgeHomeState extends State<BridgeHome> {
       return;
     }
     await task(() async {
-      candidates = await widget.core.run(['discover']) as List;
+      candidates = (await widget.core.run(['discover']) as List)
+          .where((v) => v['device_id'] != identity?['id'])
+          .toList();
       await refreshPeers();
+    });
+  }
+
+  Future<void> invite() async {
+    if (widget.core.network == null) {
+      await selectNetwork();
+    }
+    if (widget.core.network == null || !mounted) {
+      return;
+    }
+    await task(() async {
+      final value = await widget.core.run(['invite']);
+      if (!mounted) {
+        return;
+      }
+      final code = jsonEncode(value);
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Invite another device'),
+          content: SizedBox(
+            width: 440,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'This code expires in five minutes. Send it only to the device you intend to pair. Approve its request here afterward.',
+                  ),
+                  const SizedBox(height: 16),
+                  SelectableText(code),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Clipboard.setData(ClipboardData(text: code)),
+              child: const Text('Copy code'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      );
     });
   }
 
@@ -181,6 +330,40 @@ class _BridgeHomeState extends State<BridgeHome> {
       ),
       actions: [
         IconButton(
+          onPressed: busy
+              ? null
+              : () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => TailnetPanel(core: widget.core),
+                  ),
+                ),
+          icon: const Icon(Icons.cloud_outlined),
+          tooltip: 'Tailscale connectivity',
+        ),
+        PopupMenuButton<String>(
+          tooltip: 'Appearance',
+          icon: const Icon(Icons.brightness_6_outlined),
+          onSelected: (value) async {
+            await widget.core.run(['theme', value]);
+            widget.onAppearance(value);
+          },
+          itemBuilder: (_) => const [
+            PopupMenuItem(value: 'system', child: Text('System theme')),
+            PopupMenuItem(value: 'light', child: Text('Light')),
+            PopupMenuItem(value: 'dark', child: Text('Dark')),
+            PopupMenuItem(
+              value: 'amoled-green',
+              child: Text('AMOLED black · Neon green'),
+            ),
+            PopupMenuItem(
+              value: 'amoled-red',
+              child: Text('AMOLED black · Neon red'),
+            ),
+            PopupMenuItem(value: 'matte', child: Text('Matte paper')),
+          ],
+        ),
+        IconButton(
           onPressed: busy ? null : selectNetwork,
           icon: const Icon(Icons.wifi),
           tooltip: 'Approved network',
@@ -228,23 +411,28 @@ class _BridgeHomeState extends State<BridgeHome> {
         ),
       ),
     ),
-    bottomNavigationBar: NavigationBar(
-      selectedIndex: tab,
-      onDestinationSelected: (v) => setState(() => tab = v),
-      destinations: const [
-        NavigationDestination(
-          icon: Icon(Icons.home_outlined),
-          selectedIcon: Icon(Icons.home),
-          label: 'Home',
-        ),
-        NavigationDestination(
-          icon: Icon(Icons.devices_outlined),
-          label: 'Devices',
-        ),
-        NavigationDestination(icon: Icon(Icons.send_outlined), label: 'Share'),
-        NavigationDestination(icon: Icon(Icons.sync_outlined), label: 'Sync'),
-      ],
-    ),
+    bottomNavigationBar: () {
+      final bar = NavigationBar(
+        selectedIndex: tab,
+        onDestinationSelected: (v) => setState(() => tab = v),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home),
+            label: 'Home',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.devices_outlined),
+            label: 'Devices',
+          ),
+          NavigationDestination(icon: Icon(Icons.send_outlined), label: 'Share'),
+          NavigationDestination(icon: Icon(Icons.sync_outlined), label: 'Sync'),
+        ],
+      );
+      return Theme.of(context).appBarTheme.shape != null
+          ? MatteNavBarSurface(child: bar)
+          : bar;
+    }(),
   );
   Widget home() => ListView(
     padding: const EdgeInsets.all(24),
@@ -275,6 +463,15 @@ class _BridgeHomeState extends State<BridgeHome> {
                     : 'Approved LAN · ${widget.core.network!['interface']} · ${widget.core.network!['cidr']}',
               ),
               const SizedBox(height: 16),
+              if (listenerState != null)
+                Text(switch (listenerState) {
+                  'active' => 'Discoverable on this LAN while the app is open',
+                  'approval_required' => 'New network · approval required',
+                  'offline' => 'Wi-Fi disconnected · transfers paused',
+                  'receiver_error' =>
+                    'LAN listener unavailable · choose network to retry',
+                  _ => 'Recovering LAN connection…',
+                }),
               Wrap(
                 spacing: 12,
                 runSpacing: 12,
@@ -288,6 +485,11 @@ class _BridgeHomeState extends State<BridgeHome> {
                     onPressed: busy ? null : pair,
                     icon: const Icon(Icons.link),
                     label: const Text('Pair device'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: busy ? null : invite,
+                    icon: const Icon(Icons.qr_code),
+                    label: const Text('Create invitation'),
                   ),
                 ],
               ),
@@ -306,6 +508,8 @@ class _BridgeHomeState extends State<BridgeHome> {
       const Text(
         'Pulls are one-time downloads. They never register a folder for synchronization.',
       ),
+      if (Theme.of(context).appBarTheme.shape != null)
+        const MatteMeadowFooter(),
     ],
   );
   Widget devices() => ListView(
@@ -346,6 +550,8 @@ class _BridgeHomeState extends State<BridgeHome> {
           ),
         ),
       ],
+      if (Theme.of(context).appBarTheme.shape != null)
+        const MatteMeadowFooter(),
     ],
   );
   List<Widget> peerCards() => peers
@@ -354,12 +560,33 @@ class _BridgeHomeState extends State<BridgeHome> {
           child: ListTile(
             leading: const Icon(Icons.computer),
             title: Text('${p['name']}'),
-            subtitle: Text('${p['status']} · reachability checked on demand'),
+            subtitle: DeviceAddresses(
+              peer: Map<String, dynamic>.from(p),
+              candidates: candidates,
+            ),
+            isThreeLine: true,
             trailing: const Icon(Icons.chevron_right),
             onTap: busy
                 ? null
                 : () async {
-                    if (p['status'] == 'outbound') {
+                    if (p['status'] == 'pending') {
+                      final allow = await showDialog<bool>(
+                        context: context,
+                        builder: (_) => IncomingPairDialog(
+                          peer: Map<String, dynamic>.from(p),
+                        ),
+                      );
+                      if (allow != null) {
+                        await task(() async {
+                          await widget.core.run([
+                            'approve',
+                            p['id'] as String,
+                            allow ? 'downloads' : '',
+                          ]);
+                          await refreshPeers();
+                        });
+                      }
+                    } else if (p['status'] == 'outbound') {
                       await task(() async {
                         await widget.core.run(['finish', p['id'] as String]);
                         await refreshPeers();
@@ -370,7 +597,7 @@ class _BridgeHomeState extends State<BridgeHome> {
                         MaterialPageRoute<void>(
                           builder: (_) => DeviceDetail(
                             core: widget.core,
-                            peer: Map<String, dynamic>.from(p as Map),
+                            peer: Map<String, dynamic>.from(p),
                             registry: registry,
                           ),
                         ),
@@ -393,6 +620,8 @@ class _BridgeHomeState extends State<BridgeHome> {
           Text(title, style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 12),
           Text(detail, textAlign: TextAlign.center),
+          if (Theme.of(context).appBarTheme.shape != null)
+            const MatteMeadowFooter(),
         ],
       ),
     ),

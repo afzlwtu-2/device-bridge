@@ -3,6 +3,7 @@ package direct
 
 import (
 	"context"
+	"devicebridge/internal/platform"
 	"devicebridge/internal/transport"
 	"errors"
 	"net"
@@ -65,7 +66,7 @@ func (p *Provider) Dial(ctx context.Context, c transport.Candidate) (net.Conn, e
 	if c.Cost.Metered || c.Cost.Internet || c.Cost.Relayed {
 		return nil, errors.New("route policy denies bulk connection")
 	}
-	d := net.Dialer{Timeout: 8 * time.Second, LocalAddr: &net.TCPAddr{IP: net.ParseIP(p.Address.String())}}
+	d := net.Dialer{Timeout: 8 * time.Second, LocalAddr: &net.TCPAddr{IP: net.ParseIP(p.Address.String())}, Control: platform.SocketControl}
 	return d.DialContext(ctx, "tcp4", c.Endpoint)
 }
 func (p *Provider) Listen(ctx context.Context, endpoint string) (net.Listener, error) {
@@ -76,7 +77,7 @@ func (p *Provider) Listen(ctx context.Context, endpoint string) (net.Listener, e
 	if host != p.Address.String() {
 		return nil, errors.New("listener must bind the approved local address")
 	}
-	lc := net.ListenConfig{}
+	lc := net.ListenConfig{Control: platform.SocketControl}
 	return lc.Listen(ctx, "tcp4", endpoint)
 }
 func (p *Provider) Probe(ctx context.Context, c transport.Candidate) (transport.Candidate, error) {

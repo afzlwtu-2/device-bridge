@@ -8,6 +8,7 @@ import (
 	"devicebridge/internal/files"
 	"devicebridge/internal/filesproviders"
 	"devicebridge/internal/storage"
+	"devicebridge/internal/transfer"
 	"devicebridge/protocol"
 	"encoding/hex"
 	"encoding/json"
@@ -129,7 +130,7 @@ func (*remoteFiles) ProtocolVersion() int           { return 1 }
 func (*remoteFiles) RequiredGrants() []string       { return []string{"browse(root)", "read(root)"} }
 func (*remoteFiles) RequiredCapabilities() []string { return []string{"filesystem.read"} }
 func (*remoteFiles) FeatureFlags() []string {
-	return []string{"roots", "list", "stat", "read-range", "manifest", "preview"}
+	return []string{"roots", "list", "stat", "read-range", "manifest", "preview", "tar"}
 }
 func (*remoteFiles) RegisterUIActions() []features.Action {
 	return []features.Action{{ID: "browse", Label: "Browse files", Icon: "folder", Location: "device-detail", RequiredGrants: []string{"browse(root)"}, RequiredCapabilities: []string{"filesystem.read"}}}
@@ -141,6 +142,7 @@ func (m *remoteFiles) RegisterBackend(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/files/range", m.s.read)
 	mux.HandleFunc("GET /v1/files/preview", m.s.read)
 	mux.HandleFunc("GET /v1/files/manifest", m.s.manifest)
+	mux.HandleFunc("GET /v1/files/tar", m.s.tar)
 }
 func (s *Server) roots(w http.ResponseWriter, r *http.Request) {
 	if !s.paired(r) {
@@ -272,4 +274,30 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	send(w, 200, m)
+}
+func (s *Server) tar(w http.ResponseWriter, r *http.Request) {
+	p, rel, ok := s.scoped(w, r, "read")
+	if !ok {
+		return
+	}
+	codec := r.URL.Query().Get("codec")
+	if codec == "" || codec == "adaptive" {
+		codec = "gzip"
+	}
+	if codec != "gzip" && codec != "none" {
+		fail(w, 400, "unsupported_codec")
+		return
+	}
+	if s.Store.Audit(peerID(r), "tar", p.ID()+":"+rel) != nil {
+		fail(w, 500, "audit_unavailable")
+		return
+	}
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+	w.Header().Set("Content-Type", "application/x-tar")
+	w.Header().Set("X-Archive-Codec", codec)
+	w.Header().Set("X-DeviceBridge-Version", "1")
+	w.WriteHeader(200)
+	_ = transfer.WriteTar(r.Context(), p, rel, codec, w, func(n int64) error {
+		return s.Store.Authorized(peerID(r), p.ID(), "read", n)
+	})
 }

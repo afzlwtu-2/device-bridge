@@ -5,10 +5,14 @@ import (
 	"devicebridge/internal/auth"
 	"devicebridge/internal/client"
 	"devicebridge/internal/discovery"
+	"devicebridge/internal/platform"
 	"devicebridge/internal/storage"
+	"devicebridge/internal/tailnetipc"
 	"devicebridge/internal/transfer"
 	"devicebridge/internal/transport"
 	"devicebridge/internal/transport/direct"
+	"devicebridge/internal/transport/tailnet"
+	"devicebridge/internal/transport/tailscaled"
 	"devicebridge/protocol"
 	"encoding/json"
 	"errors"
@@ -19,6 +23,8 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -30,6 +36,7 @@ type command struct {
 	provider *direct.Provider
 	endpoint string
 	ctx      context.Context
+	overlay  transport.Provider
 }
 
 func output(v any) error { return json.NewEncoder(os.Stdout).Encode(v) }
@@ -53,6 +60,29 @@ func (c *command) peer(name string) (storage.Peer, error) {
 	return found[0], nil
 }
 func (c *command) connect(id string, authenticate bool) (*client.Client, transport.Candidate, error) {
+	if c.overlay != nil {
+		if c.endpoint == "" {
+			return nil, transport.Candidate{}, errors.New("select this device's verified tailnet endpoint first")
+		}
+		v, err := c.overlay.Probe(c.ctx, transport.Candidate{DeviceID: id, Endpoint: c.endpoint, Transport: c.overlay.ID()})
+		if err != nil {
+			return nil, v, err
+		}
+		cl := client.New(c.identity, c.state, c.overlay, v)
+		if authenticate {
+			var device protocol.Device
+			if err = cl.JSON(c.ctx, "/v1/device", nil, &device); err != nil {
+				cl.Close()
+				return nil, v, err
+			}
+			if device.ID != id {
+				cl.Close()
+				return nil, v, errors.New("tailnet endpoint DeviceBridge key mismatch")
+			}
+		}
+		return cl, v, nil
+	}
+
 	candidates := []transport.Candidate{}
 	network := c.provider.Interface + ":" + c.provider.Address.String() + ":" + c.provider.Prefix.String()
 	if authenticate && c.endpoint == "" {
@@ -117,10 +147,17 @@ func (c *command) connect(id string, authenticate bool) (*client.Client, transpo
 	return nil, transport.Candidate{}, errors.New("device not discovered on the approved LAN; no relay fallback")
 }
 func run() error {
+	if err := platform.BindApprovedNetwork(); err != nil {
+		return err
+	}
 	state := flag.String("state", "", "private state directory (required)")
 	iface := flag.String("interface", "wlan0", "approved unmetered LAN interface")
 	cidr := flag.String("lan-cidr", "", "this device's approved local LAN IPv4/CIDR")
 	endpoint := flag.String("endpoint", "", "diagnostic explicit endpoint (normal use discovers by identity)")
+	transportID := flag.String("transport", "lan", "lan or explicitly selected tailnet")
+	controlSocket := flag.String("tailnet-socket", "", "private app-only tsnet control socket")
+	tailnetMode := flag.String("tailnet-mode", "auto", "auto prefers existing system tailscaled; app explicitly selects tsnet")
+	remoteApproved := flag.Bool("approve-remote", false, "explicitly allow internet/relay data for this request")
 	flag.Parse()
 	a := flag.Args()
 	if *state == "" || len(a) == 0 {
@@ -143,6 +180,71 @@ func run() error {
 		return err
 	}
 	switch a[0] {
+	case "connection":
+		if len(a) < 2 || len(a) > 5 {
+			return errors.New("connection PEER_ID [lan|tailnet ENDPOINT allow-internet-and-relays]")
+		}
+		var change *storage.Connection
+		if len(a) > 2 {
+			change = &storage.Connection{Transport: a[2]}
+			if a[2] == "tailnet" {
+				if len(a) != 5 || a[4] != "allow-internet-and-relays" {
+					return errors.New("explicit internet/relay approval required")
+				}
+				change.Endpoint = a[3]
+				change.RemoteApproved = true
+			}
+		}
+		v, e := s.Connection(a[1], change)
+		if e != nil {
+			return e
+		}
+		return output(v)
+	case "tailnet":
+		if len(a) < 2 || len(a) > 3 {
+			return errors.New("tailnet status|login|logout|probe|stop [TAILNET_IP]")
+		}
+		if runtime.GOOS != "android" && *tailnetMode != "app" {
+			sys := &tailscaled.Provider{}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			st, e := sys.Status(ctx)
+			cancel()
+			if e == nil {
+				if a[1] != "status" {
+					return errors.New("existing system Tailscale is managed externally; DeviceBridge only reads/probes it")
+				}
+				return output(st)
+			}
+			if *tailnetMode == "system" {
+				return e
+			}
+		}
+		socket := *controlSocket
+		if socket == "" {
+			socket = filepath.Join(*state, "tailnet", "control.sock")
+		}
+		target := ""
+		if len(a) == 3 {
+			target = a[2]
+		}
+		v, _, err := (tailnetipc.Client{Socket: socket}).Exchange(context.Background(), tailnetipc.Request{Operation: a[1], Target: target})
+		if err != nil {
+			return err
+		}
+		return output(v)
+	case "theme":
+		if len(a) > 2 {
+			return errors.New("theme [system|light|dark|amoled|amoled-green|amoled-red|matte]")
+		}
+		value := ""
+		if len(a) == 2 {
+			value = a[1]
+		}
+		selected, e := s.Theme(value)
+		if e != nil {
+			return e
+		}
+		return output(map[string]string{"theme": selected})
 	case "init", "identity":
 		return output(protocol.Device{Version: 1, ID: id.ID, Name: id.Name, Features: []string{"remote-files-v1"}})
 	case "networks":
@@ -186,6 +288,12 @@ func run() error {
 		if e != nil {
 			return e
 		}
+		for i := range peers {
+			peers[i].Addresses, e = s.EndpointRecords(peers[i].ID)
+			if e != nil {
+				return e
+			}
+		}
 		return output(peers)
 	case "approve":
 		if len(a) < 2 || len(a) > 5 {
@@ -221,19 +329,51 @@ func run() error {
 		}
 		return output(map[string]string{"status": "revoked"})
 	}
-	p, err := direct.NewCIDR(*iface, *cidr)
-	if err != nil {
-		return err
+	var p *direct.Provider
+	if *transportID == "lan" {
+		p, err = direct.NewCIDR(*iface, *cidr)
+		if err != nil {
+			return err
+		}
+		p.Discovery = func(ctx context.Context) ([]transport.Candidate, error) { return discovery.Browse(ctx, p) }
+	} else if *transportID != "tailnet" {
+		return errors.New("unsupported selected transport")
 	}
-	p.Discovery = func(ctx context.Context) ([]transport.Candidate, error) { return discovery.Browse(ctx, p) }
 	reg := &transport.Registry{}
-	if err = reg.Register(p); err != nil {
-		return err
+	if p != nil {
+		if err = reg.Register(p); err != nil {
+			return err
+		}
 	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	c := &command{state: s, identity: id, provider: p, endpoint: *endpoint, ctx: ctx}
+	if *transportID == "tailnet" {
+		socket := *controlSocket
+		if socket == "" {
+			socket = filepath.Join(*state, "tailnet", "control.sock")
+		}
+		if runtime.GOOS != "android" && *tailnetMode != "app" {
+			sys := &tailscaled.Provider{RemoteApproved: *remoteApproved}
+			st, e := sys.Status(ctx)
+			if e == nil && st.State == "Running" {
+				c.overlay = sys
+			} else if *tailnetMode == "system" {
+				return errors.New("system Tailscale unavailable")
+			}
+		}
+		if c.overlay == nil {
+			c.overlay = &tailnet.Provider{Control: tailnetipc.Client{Socket: socket}, RemoteApproved: *remoteApproved}
+		}
+		if err = reg.Register(c.overlay); err != nil {
+			return err
+		}
+	}
 	if a[0] == "discover" {
+		if p == nil {
+			return errors.New("LAN discovery requires a selected local network")
+		}
 		all, e := p.DiscoverCandidates(ctx)
 		if e != nil {
 			return e
@@ -287,6 +427,10 @@ func run() error {
 		}
 		return output(map[string]string{"status": "paired", "id": peer.ID})
 	case "resolve":
+		if conn, e := s.Connection(peer.ID, nil); e == nil && conn.LastMiBPerSecond > 0 {
+			candidate.MiBPerSecond = conn.LastMiBPerSecond
+			candidate.BytesPerSecond = conn.LastMiBPerSecond * 1024 * 1024
+		}
 		return output(candidate)
 	case "roots":
 		var roots []protocol.Root
@@ -311,18 +455,33 @@ func run() error {
 			return err
 		}
 		return output(v)
-	case "pull":
+	case "pull", "pull-tar":
 		if len(a) != 5 {
-			return errors.New("pull PEER ROOT RELATIVE_PATH DESTINATION (must not exist)")
+			return errors.New("pull|pull-tar PEER ROOT RELATIVE_PATH DESTINATION (must not exist)")
 		}
 		var manifest protocol.Manifest
 		if err = cl.JSON(ctx, "/v1/files/manifest", url.Values{"root": {a[2]}, "path": {a[3]}}, &manifest); err != nil {
 			return err
 		}
-		receipt, err := transfer.Pull(ctx, cl, peer.ID, manifest, a[4], func(v transfer.Progress) { _ = json.NewEncoder(os.Stderr).Encode(v) })
+		emitProgress := func(v transfer.Progress) { _ = json.NewEncoder(os.Stderr).Encode(v) }
+		useTar := a[0] == "pull-tar" || transfer.ShouldUseTar(manifest)
+		var receipt transfer.Receipt
+		if useTar {
+			stream, codec, e := cl.OpenTar(ctx, a[2], a[3], "adaptive")
+			if e == nil {
+				receipt, err = transfer.PullTar(ctx, stream, codec, peer.ID, manifest, a[4], emitProgress)
+			} else if a[0] == "pull" && strings.Contains(e.Error(), "remote 404") {
+				receipt, err = transfer.Pull(ctx, cl, peer.ID, manifest, a[4], emitProgress)
+			} else {
+				err = e
+			}
+		} else {
+			receipt, err = transfer.Pull(ctx, cl, peer.ID, manifest, a[4], emitProgress)
+		}
 		if err != nil {
 			return err
 		}
+		_ = s.RecordRate(peer.ID, candidate.Transport, receipt.MiBPerSecond)
 		return output(receipt)
 	default:
 		return errors.New("unknown command")

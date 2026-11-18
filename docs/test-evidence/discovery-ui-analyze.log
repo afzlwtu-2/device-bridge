@@ -1,0 +1,6 @@
+Analyzing app...                                                
+
+warning • Unnecessary cast. Try removing the cast • lib/main.dart:547:59 • unnecessary_cast
+warning • Unnecessary cast. Try removing the cast • lib/main.dart:571:61 • unnecessary_cast
+
+2 issues found. (ran in 3.1s)

@@ -24,11 +24,14 @@ type Candidate struct {
 	Endpoint        string        `json:"endpoint"`
 	Interface       string        `json:"interface"`
 	Transport       string        `json:"transport"`
+	PathKind        string        `json:"path_kind,omitempty"`
+	Relay           string        `json:"relay,omitempty"`
 	Observed        time.Time     `json:"observed"`
 	Cost            NetworkCost   `json:"cost"`
 	Direct          bool          `json:"direct"`
 	RTT             time.Duration `json:"rtt"`
 	BytesPerSecond  float64       `json:"bytes_per_second"`
+	MiBPerSecond    float64       `json:"mib_per_second"`
 	RequiredActions []string      `json:"required_actions,omitempty"`
 }
 type Provider interface {

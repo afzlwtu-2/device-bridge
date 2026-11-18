@@ -17,6 +17,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const ChunkSize = 1 << 20
@@ -25,15 +26,33 @@ type Source interface {
 	ReadRange(context.Context, string, string, int64, int64) ([]byte, error)
 }
 type Progress struct {
-	File          string `json:"file"`
-	VerifiedBytes int64  `json:"verified_bytes"`
-	TotalBytes    int64  `json:"total_bytes"`
+	File          string  `json:"file"`
+	VerifiedBytes int64   `json:"verified_bytes"`
+	TotalBytes    int64   `json:"total_bytes"`
+	MiBPerSecond  float64 `json:"mib_per_second"`
+	ElapsedMillis int64   `json:"elapsed_ms"`
 }
 type Receipt struct {
-	Destination string `json:"destination"`
-	Files       int    `json:"files"`
-	Bytes       int64  `json:"bytes"`
-	SHA256      string `json:"manifest_sha256"`
+	Destination   string  `json:"destination"`
+	Files         int     `json:"files"`
+	Bytes         int64   `json:"bytes"`
+	SHA256        string  `json:"manifest_sha256"`
+	Mode          string  `json:"mode,omitempty"`
+	MiBPerSecond  float64 `json:"mib_per_second"`
+	ElapsedMillis int64   `json:"elapsed_ms"`
+}
+
+func rateMiB(bytes int64, started time.Time) (float64, int64) {
+	elapsed := time.Since(started)
+	ms := elapsed.Milliseconds()
+	if bytes <= 0 || elapsed <= 0 {
+		return 0, ms
+	}
+	secs := elapsed.Seconds()
+	if secs < 0.001 {
+		secs = 0.001
+	}
+	return float64(bytes) / (1024 * 1024) / secs, ms
 }
 
 func ValidateManifest(m protocol.Manifest) error {
@@ -72,6 +91,142 @@ func ValidateManifest(m protocol.Manifest) error {
 	}
 	return nil
 }
+
+type stagingHandle struct {
+	parent       *os.Root
+	root         *os.Root
+	lock         *os.File
+	abs          string
+	base         string
+	stage        string
+	manifestHash string
+}
+
+func (s *stagingHandle) close() {
+	if s.lock != nil {
+		_ = unix.Flock(int(s.lock.Fd()), unix.LOCK_UN)
+		_ = s.lock.Close()
+	}
+	if s.root != nil {
+		_ = s.root.Close()
+	}
+	if s.parent != nil {
+		_ = s.parent.Close()
+	}
+}
+
+func openStaging(peer string, m protocol.Manifest, destination string) (*stagingHandle, error) {
+	if err := ValidateManifest(m); err != nil {
+		return nil, err
+	}
+	if filesproviders.ValidPath(m.Path) != nil {
+		return nil, errors.New("invalid source path")
+	}
+	abs, err := filepath.Abs(destination)
+	if err != nil {
+		return nil, err
+	}
+	base := filepath.Base(abs)
+	if base == "." || base == string(filepath.Separator) || strings.HasSuffix(base, ".devicebridge-part") {
+		return nil, errors.New("invalid destination")
+	}
+	parent, err := os.OpenRoot(filepath.Dir(abs))
+	if err != nil {
+		return nil, err
+	}
+	h := &stagingHandle{parent: parent, abs: abs, base: base, stage: base + ".devicebridge-part"}
+	if _, e := parent.Lstat(base); !errors.Is(e, os.ErrNotExist) {
+		h.close()
+		return nil, errors.New("destination exists or cannot be inspected; overwrite denied")
+	}
+	err = parent.Mkdir(h.stage, 0700)
+	if err != nil && !errors.Is(err, os.ErrExist) {
+		h.close()
+		return nil, err
+	}
+	info, err := parent.Lstat(h.stage)
+	if err != nil || !info.IsDir() || info.Mode()&0077 != 0 {
+		h.close()
+		return nil, errors.New("staging must be a private real directory")
+	}
+	root, err := parent.OpenRoot(h.stage)
+	if err != nil {
+		h.close()
+		return nil, err
+	}
+	h.root = root
+	lock, err := root.OpenFile(".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		h.close()
+		return nil, err
+	}
+	if err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		lock.Close()
+		h.close()
+		return nil, errors.New("another pull owns this staging directory")
+	}
+	h.lock = lock
+	metadata, err := json.Marshal(struct {
+		Peer     string
+		Manifest protocol.Manifest
+	}{peer, m})
+	if err != nil {
+		h.close()
+		return nil, err
+	}
+	hash := sha256.Sum256(metadata)
+	h.manifestHash = hex.EncodeToString(hash[:])
+	previous, e := root.ReadFile("manifest.json")
+	if e == nil {
+		if string(previous) != string(metadata) {
+			h.close()
+			return nil, errors.New("source manifest changed; preserve old staging and choose a new destination")
+		}
+	} else if errors.Is(e, os.ErrNotExist) {
+		f, e := root.OpenFile("manifest.json", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if e != nil {
+			h.close()
+			return nil, e
+		}
+		_, e = f.Write(metadata)
+		if e == nil {
+			e = f.Sync()
+		}
+		f.Close()
+		if e != nil {
+			h.close()
+			return nil, e
+		}
+	} else {
+		h.close()
+		return nil, e
+	}
+	if m.Entries[0].Directory {
+		if err = root.MkdirAll("data", 0700); err != nil {
+			h.close()
+			return nil, err
+		}
+	}
+	return h, nil
+}
+
+func (s *stagingHandle) publish() error {
+	// Linux and Android use the same atomic no-replace primitive. It never
+	// overwrites a destination created after the initial existence check.
+	fd, err := s.parent.Open(".")
+	if err != nil {
+		return err
+	}
+	defer fd.Close()
+	if err = unix.Renameat2(int(fd.Fd()), s.stage+"/data", int(fd.Fd()), s.base, unix.RENAME_NOREPLACE); err != nil {
+		return fmt.Errorf("atomic publish (no overwrite): %w", err)
+	}
+	if err = fd.Sync(); err != nil {
+		return fmt.Errorf("published but directory sync failed: %w", err)
+	}
+	return nil
+}
+
 func digestFile(ctx context.Context, f *os.File) (string, error) {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return "", err
@@ -96,86 +251,14 @@ func digestFile(ctx context.Context, f *os.File) (string, error) {
 }
 func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, destination string, progress func(Progress)) (Receipt, error) {
 	var receipt Receipt
-	if err := ValidateManifest(m); err != nil {
-		return receipt, err
-	}
-	if filesproviders.ValidPath(m.Path) != nil {
-		return receipt, errors.New("invalid source path")
-	}
-	abs, err := filepath.Abs(destination)
+	st, err := openStaging(peer, m, destination)
 	if err != nil {
 		return receipt, err
 	}
-	base := filepath.Base(abs)
-	if base == "." || base == string(filepath.Separator) || strings.HasSuffix(base, ".devicebridge-part") {
-		return receipt, errors.New("invalid destination")
-	}
-	parent, err := os.OpenRoot(filepath.Dir(abs))
-	if err != nil {
-		return receipt, err
-	}
-	defer parent.Close()
-	if _, e := parent.Lstat(base); !errors.Is(e, os.ErrNotExist) {
-		return receipt, errors.New("destination exists or cannot be inspected; overwrite denied")
-	}
-	stage := base + ".devicebridge-part"
-	err = parent.Mkdir(stage, 0700)
-	if err != nil && !errors.Is(err, os.ErrExist) {
-		return receipt, err
-	}
-	info, err := parent.Lstat(stage)
-	if err != nil || !info.IsDir() || info.Mode()&0077 != 0 {
-		return receipt, errors.New("staging must be a private real directory")
-	}
-	root, err := parent.OpenRoot(stage)
-	if err != nil {
-		return receipt, err
-	}
-	defer root.Close()
-	lock, err := root.OpenFile(".lock", os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return receipt, err
-	}
-	defer lock.Close()
-	if err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		return receipt, errors.New("another pull owns this staging directory")
-	}
-	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
-	metadata, err := json.Marshal(struct {
-		Peer     string
-		Manifest protocol.Manifest
-	}{peer, m})
-	if err != nil {
-		return receipt, err
-	}
-	hash := sha256.Sum256(metadata)
-	previous, e := root.ReadFile("manifest.json")
-	if e == nil {
-		if string(previous) != string(metadata) {
-			return receipt, errors.New("source manifest changed; preserve old staging and choose a new destination")
-		}
-	} else if errors.Is(e, os.ErrNotExist) {
-		f, e := root.OpenFile("manifest.json", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if e != nil {
-			return receipt, e
-		}
-		_, e = f.Write(metadata)
-		if e == nil {
-			e = f.Sync()
-		}
-		f.Close()
-		if e != nil {
-			return receipt, e
-		}
-	} else {
-		return receipt, e
-	}
-	if m.Entries[0].Directory {
-		if err = root.MkdirAll("data", 0700); err != nil {
-			return receipt, err
-		}
-	}
+	defer st.close()
+	started := time.Now()
 	var complete int64
+	var sessionBytes int64
 	count := 0
 	for _, entry := range m.Entries {
 		if err = ctx.Err(); err != nil {
@@ -183,16 +266,16 @@ func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, 
 		}
 		target := path.Join("data", entry.Path)
 		if entry.Directory {
-			if err = root.MkdirAll(target, 0700); err != nil {
+			if err = st.root.MkdirAll(target, 0700); err != nil {
 				return receipt, err
 			}
 			continue
 		}
-		f, e := root.OpenFile(target, os.O_CREATE|os.O_RDWR, 0600)
+		f, e := st.root.OpenFile(target, os.O_CREATE|os.O_RDWR, 0600)
 		if e != nil {
 			return receipt, e
 		}
-		info, e = f.Stat()
+		info, e := f.Stat()
 		if e != nil || !info.Mode().IsRegular() {
 			f.Close()
 			return receipt, errors.New("staged payload is not a regular file")
@@ -223,12 +306,14 @@ func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, 
 				return receipt, errors.New("staging write failed (check free space)")
 			}
 			offset += n
+			sessionBytes += n
 			if e = f.Sync(); e != nil {
 				f.Close()
 				return receipt, e
 			}
 			if progress != nil {
-				progress(Progress{File: entry.Path, VerifiedBytes: complete + offset, TotalBytes: m.Bytes})
+				mib, ms := rateMiB(sessionBytes, started)
+				progress(Progress{File: entry.Path, VerifiedBytes: complete + offset, TotalBytes: m.Bytes, MiBPerSecond: mib, ElapsedMillis: ms})
 			}
 		}
 		actual, e := digestFile(ctx, f)
@@ -242,20 +327,11 @@ func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, 
 		complete += entry.Size
 		count++
 	}
-	// Linux and Android use the same atomic no-replace primitive. It never
-	// overwrites a destination created after the initial existence check.
-	fd, err := parent.Open(".")
-	if err != nil {
+	if err = st.publish(); err != nil {
 		return receipt, err
 	}
-	defer fd.Close()
-	if err = unix.Renameat2(int(fd.Fd()), stage+"/data", int(fd.Fd()), base, unix.RENAME_NOREPLACE); err != nil {
-		return receipt, fmt.Errorf("atomic publish (no overwrite): %w", err)
-	}
-	if err = fd.Sync(); err != nil {
-		return receipt, fmt.Errorf("published but directory sync failed: %w", err)
-	}
+	mib, ms := rateMiB(sessionBytes, started)
 	// Metadata is small and retained as a receipt; never remove user payloads.
-	receipt = Receipt{Destination: abs, Files: count, Bytes: complete, SHA256: hex.EncodeToString(hash[:])}
+	receipt = Receipt{Destination: st.abs, Files: count, Bytes: complete, SHA256: st.manifestHash, Mode: "chunked", MiBPerSecond: mib, ElapsedMillis: ms}
 	return receipt, nil
 }

@@ -23,21 +23,32 @@ import (
 
 type Client struct {
 	HTTP             *http.Client
+	StreamHTTP       *http.Client
 	Endpoint, PeerID string
 	Store            *storage.Store
 }
 
 func New(id *auth.Identity, s *storage.Store, p transport.Provider, c transport.Candidate) *Client {
-	h := &http.Transport{Proxy: nil, TLSClientConfig: id.ClientTLS(c.DeviceID), ForceAttemptHTTP2: false, MaxIdleConnsPerHost: 2, IdleConnTimeout: 15 * time.Second, DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+	h := &http.Transport{Proxy: nil, TLSClientConfig: id.ClientTLS(c.DeviceID), ForceAttemptHTTP2: false, MaxIdleConnsPerHost: 2, IdleConnTimeout: 15 * time.Second, ResponseHeaderTimeout: 30 * time.Second, DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 		if addr != c.Endpoint {
 			return nil, errors.New("endpoint redirect denied")
 		}
 		return p.Dial(ctx, c)
 	}}
-	return &Client{HTTP: &http.Client{Transport: h, Timeout: 3 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect denied") }}, Endpoint: c.Endpoint, PeerID: c.DeviceID, Store: s}
+	noRedirect := func(*http.Request, []*http.Request) error { return errors.New("redirect denied") }
+	return &Client{
+		HTTP:       &http.Client{Transport: h, Timeout: 3 * time.Minute, CheckRedirect: noRedirect},
+		StreamHTTP: &http.Client{Transport: h, CheckRedirect: noRedirect},
+		Endpoint:   c.Endpoint,
+		PeerID:     c.DeviceID,
+		Store:      s,
+	}
 }
 func (c *Client) Close() { c.HTTP.CloseIdleConnections() }
 func (c *Client) request(ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
+	return c.doRequest(c.HTTP, ctx, method, path, query, body)
+}
+func (c *Client) doRequest(httpClient *http.Client, ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
 	if path != "/v1/pair" {
 		p, err := c.Store.Peer(c.PeerID)
 		if err != nil || p.Status != "paired" {
@@ -61,7 +72,7 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	res, err := c.HTTP.Do(req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -142,4 +153,19 @@ func (c *Client) ReadRange(ctx context.Context, root, path string, offset, lengt
 		return nil, errors.New("chunk checksum mismatch")
 	}
 	return data, nil
+}
+func (c *Client) OpenTar(ctx context.Context, root, path, codec string) (io.ReadCloser, string, error) {
+	if codec == "" {
+		codec = "adaptive"
+	}
+	q := url.Values{"root": {root}, "path": {path}, "codec": {codec}}
+	res, err := c.doRequest(c.StreamHTTP, ctx, "GET", "/v1/files/tar", q, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	actualCodec := res.Header.Get("X-Archive-Codec")
+	if actualCodec == "" {
+		actualCodec = "none"
+	}
+	return res.Body, actualCodec, nil
 }

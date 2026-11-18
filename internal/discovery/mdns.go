@@ -4,6 +4,7 @@ package discovery
 
 import (
 	"context"
+	"devicebridge/internal/platform"
 	"devicebridge/internal/transport"
 	"devicebridge/internal/transport/direct"
 	"devicebridge/protocol"
@@ -14,6 +15,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -26,21 +28,47 @@ func records(id string, port int, ip net.IP) []dns.RR {
 	host := "db-" + id[:16] + ".local."
 	return []dns.RR{&dns.PTR{Hdr: dns.RR_Header{Name: service, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: 30}, Ptr: instance}, &dns.SRV{Hdr: dns.RR_Header{Name: instance, Rrtype: dns.TypeSRV, Class: dns.ClassINET, Ttl: 30}, Port: uint16(port), Target: host}, &dns.TXT{Hdr: dns.RR_Header{Name: instance, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 30}, Txt: []string{"v=1", "id=" + id}}, &dns.A{Hdr: dns.RR_Header{Name: host, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30}, A: ip}}
 }
-func Advertise(ctx context.Context, p *direct.Provider, id string, port int) (func(), error) {
-	iface, err := networkInterface(p.Interface)
+func listenMulticast(ctx context.Context, iface *net.Interface) (*net.UDPConn, error) {
+	lc := net.ListenConfig{Control: func(network, address string, c syscall.RawConn) error {
+		if err := platform.SocketControl(network, address, c); err != nil {
+			return err
+		}
+		var reuseErr error
+		err := c.Control(func(fd uintptr) {
+			reuseErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+		})
+		if err != nil {
+			return err
+		}
+		return reuseErr
+	}}
+	packet, err := lc.ListenPacket(ctx, "udp4", ":5353")
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.ListenMulticastUDP("udp4", iface, multicast)
-	if err != nil {
-		return nil, err
-	}
+	conn := packet.(*net.UDPConn)
 	pc := ipv4.NewPacketConn(conn)
+	if err = pc.JoinGroup(iface, multicast); err != nil {
+		conn.Close()
+		return nil, err
+	}
 	if err = pc.SetMulticastInterface(iface); err != nil {
 		conn.Close()
 		return nil, err
 	}
 	_ = pc.SetMulticastTTL(255)
+	return conn, nil
+}
+
+func Advertise(ctx context.Context, p *direct.Provider, id string, port int) (func(), error) {
+	iface, err := networkInterface(p.Interface)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := listenMulticast(ctx, iface)
+	if err != nil {
+		return nil, err
+	}
 	stop := func() { conn.Close() }
 	go func() { <-ctx.Done(); stop() }()
 	go func() {
@@ -67,21 +95,60 @@ func Advertise(ctx context.Context, p *direct.Provider, id string, port int) (fu
 					continue
 				}
 				dst := multicast
-				if src.Port != 5353 || q.Qclass&0x8000 != 0 {
+				if q.Qclass&0x8000 != 0 {
 					dst = src
 				}
-				conn.WriteToUDP(data, dst)
+				_, _ = conn.WriteToUDP(data, dst)
 				break
 			}
 		}
 	}()
 	return stop, nil
 }
+func parseResponse(p *direct.Provider, src *net.UDPAddr, raw []byte, found map[string]transport.Candidate) {
+	if !p.Prefix.Contains(src.AddrPort().Addr().Unmap()) {
+		return
+	}
+	var msg dns.Msg
+	if msg.Unpack(raw) != nil || !msg.Response {
+		return
+	}
+	srv := map[string]uint16{}
+	ids := map[string]string{}
+	ptrs := map[string]bool{}
+	for _, rr := range append(msg.Answer, msg.Extra...) {
+		switch r := rr.(type) {
+		case *dns.PTR:
+			if strings.EqualFold(r.Hdr.Name, service) {
+				ptrs[r.Ptr] = true
+			}
+		case *dns.SRV:
+			srv[r.Hdr.Name] = r.Port
+		case *dns.TXT:
+			for _, v := range r.Txt {
+				if strings.HasPrefix(v, "id=") {
+					ids[r.Hdr.Name] = strings.TrimPrefix(v, "id=")
+				}
+			}
+		}
+	}
+	for instance, id := range ids {
+		rawID, e := hex.DecodeString(id)
+		if e != nil || len(rawID) != 32 || srv[instance] == 0 || !ptrs[instance] {
+			continue
+		}
+		endpoint := net.JoinHostPort(src.IP.String(), strconv.Itoa(int(srv[instance])))
+		found[id+endpoint] = transport.Candidate{DeviceID: id, Endpoint: endpoint, Interface: p.Interface, Transport: p.ID(), Observed: time.Now().UTC(), Cost: p.NetworkCost(transport.Candidate{}), Direct: true}
+	}
+}
+
 func Browse(ctx context.Context, p *direct.Provider) ([]transport.Candidate, error) {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP(p.Address.String()), Port: 0})
+	lc := net.ListenConfig{Control: platform.SocketControl}
+	packet, err := lc.ListenPacket(ctx, "udp4", net.JoinHostPort(p.Address.String(), "0"))
 	if err != nil {
 		return nil, err
 	}
+	conn := packet.(*net.UDPConn)
 	defer conn.Close()
 	iface, err := networkInterface(p.Interface)
 	if err != nil {
@@ -92,12 +159,30 @@ func Browse(ctx context.Context, p *direct.Provider) ([]transport.Candidate, err
 		return nil, err
 	}
 	_ = pc.SetMulticastTTL(255)
-	query := dns.Msg{Question: []dns.Question{{Name: service, Qtype: dns.TypePTR, Qclass: dns.ClassINET | 0x8000}}}
-	data, err := query.Pack()
+
+	mcast, mcastErr := listenMulticast(ctx, iface)
+	if mcastErr == nil {
+		defer mcast.Close()
+	}
+
+	qmData, err := (&dns.Msg{Question: []dns.Question{{Name: service, Qtype: dns.TypePTR, Qclass: dns.ClassINET}}}).Pack()
 	if err != nil {
 		return nil, err
 	}
-	if _, err = conn.WriteToUDP(data, multicast); err != nil {
+	quData, err := (&dns.Msg{Question: []dns.Question{{Name: service, Qtype: dns.TypePTR, Qclass: dns.ClassINET | 0x8000}}}).Pack()
+	if err != nil {
+		return nil, err
+	}
+	sendQueries := func() error {
+		if mcast != nil {
+			if _, e := conn.WriteToUDP(qmData, multicast); e != nil {
+				return e
+			}
+		}
+		_, e := conn.WriteToUDP(quData, multicast)
+		return e
+	}
+	if err = sendQueries(); err != nil {
 		return nil, err
 	}
 	deadline := time.Now().Add(3 * time.Second)
@@ -105,6 +190,9 @@ func Browse(ctx context.Context, p *direct.Provider) ([]transport.Candidate, err
 		deadline = d
 	}
 	_ = conn.SetReadDeadline(deadline)
+	if mcast != nil {
+		_ = mcast.SetReadDeadline(deadline)
+	}
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -117,7 +205,7 @@ func Browse(ctx context.Context, p *direct.Provider) ([]transport.Candidate, err
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_, _ = conn.WriteToUDP(data, multicast)
+				_ = sendQueries()
 			}
 		}
 	}()
@@ -125,57 +213,60 @@ func Browse(ctx context.Context, p *direct.Provider) ([]transport.Candidate, err
 		select {
 		case <-ctx.Done():
 			conn.Close()
+			if mcast != nil {
+				mcast.Close()
+			}
 		case <-done:
 		}
 	}()
-	found := map[string]transport.Candidate{}
-	buf := make([]byte, 9000)
-	for {
-		n, src, e := conn.ReadFromUDP(buf)
-		if e != nil {
-			var ne net.Error
-			if errors.As(e, &ne) && ne.Timeout() {
-				break
+	type pkt struct {
+		src *net.UDPAddr
+		raw []byte
+		err error
+	}
+	packets := make(chan pkt, 16)
+	readLoop := func(c *net.UDPConn, reportErr bool) {
+		buf := make([]byte, 9000)
+		for {
+			n, src, e := c.ReadFromUDP(buf)
+			if e != nil {
+				var ne net.Error
+				if errors.As(e, &ne) && ne.Timeout() {
+					packets <- pkt{}
+					return
+				}
+				if reportErr {
+					packets <- pkt{err: e}
+				} else {
+					packets <- pkt{}
+				}
+				return
 			}
+			cp := make([]byte, n)
+			copy(cp, buf[:n])
+			packets <- pkt{src: src, raw: cp}
+		}
+	}
+	readers := 1
+	go readLoop(conn, true)
+	if mcast != nil {
+		readers++
+		go readLoop(mcast, false)
+	}
+	found := map[string]transport.Candidate{}
+	for readers > 0 {
+		pck := <-packets
+		if pck.err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return nil, e
+			return nil, pck.err
 		}
-		if !p.Prefix.Contains(src.AddrPort().Addr().Unmap()) {
+		if pck.src == nil {
+			readers--
 			continue
 		}
-		var msg dns.Msg
-		if msg.Unpack(buf[:n]) != nil || !msg.Response {
-			continue
-		}
-		srv := map[string]uint16{}
-		ids := map[string]string{}
-		ptrs := map[string]bool{}
-		for _, rr := range append(msg.Answer, msg.Extra...) {
-			switch r := rr.(type) {
-			case *dns.PTR:
-				if strings.EqualFold(r.Hdr.Name, service) {
-					ptrs[r.Ptr] = true
-				}
-			case *dns.SRV:
-				srv[r.Hdr.Name] = r.Port
-			case *dns.TXT:
-				for _, v := range r.Txt {
-					if strings.HasPrefix(v, "id=") {
-						ids[r.Hdr.Name] = strings.TrimPrefix(v, "id=")
-					}
-				}
-			}
-		}
-		for instance, id := range ids {
-			raw, e := hex.DecodeString(id)
-			if e != nil || len(raw) != 32 || srv[instance] == 0 || !ptrs[instance] {
-				continue
-			}
-			endpoint := net.JoinHostPort(src.IP.String(), strconv.Itoa(int(srv[instance])))
-			found[id+endpoint] = transport.Candidate{DeviceID: id, Endpoint: endpoint, Interface: p.Interface, Transport: p.ID(), Observed: time.Now().UTC(), Cost: p.NetworkCost(transport.Candidate{}), Direct: true}
-		}
+		parseResponse(p, pck.src, pck.raw, found)
 	}
 	out := []transport.Candidate{}
 	for _, c := range found {

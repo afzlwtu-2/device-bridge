@@ -7,6 +7,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
+import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -16,7 +17,12 @@ object CoreRuntime {
     private val readers = Executors.newFixedThreadPool(2)
     fun cancel() { process?.destroy() }
 
-    @Synchronized fun execute(context: Context, arguments: List<String>, input: String): String {
+    @Synchronized fun execute(
+        context: Context,
+        arguments: List<String>,
+        input: String,
+        onProgress: ((Map<String, Any?>) -> Unit)? = null
+    ): String {
         val binary = File(context.applicationInfo.nativeLibraryDir, "libbridge_cli.so")
         check(binary.canExecute()) { "Bundled Go core is unavailable for this ABI" }
         val wifi = context.getSystemService(WifiManager::class.java)
@@ -37,10 +43,44 @@ object CoreRuntime {
                 cm.registerNetworkCallback(NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), callback)
                 watching = true
             }
-            val child = ProcessBuilder(listOf(binary.path) + arguments).redirectErrorStream(false).start()
+            val builder = ProcessBuilder(listOf(binary.path) + arguments).redirectErrorStream(false)
+            if (cidr != null) {
+                val selected = cm.allNetworks.firstOrNull { network ->
+                    val caps = cm.getNetworkCapabilities(network)
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                        cm.getLinkProperties(network)?.linkAddresses?.any { "${it.address.hostAddress}/${it.prefixLength}" == cidr } == true
+                } ?: error("Approved Wi-Fi is unavailable; no cellular fallback")
+                builder.environment()["DEVICEBRIDGE_NETWORK_HANDLE"] = selected.networkHandle.toString()
+            }
+            val child = builder.start()
             process = child
             val stdout = readers.submit<String> { child.inputStream.bufferedReader().use { it.readText() } }
-            val stderr = readers.submit<String> { child.errorStream.bufferedReader().use { it.readText().takeLast(65536) } }
+            val stderr = readers.submit<String> {
+                val tail = StringBuilder()
+                child.errorStream.bufferedReader().use { reader ->
+                    reader.forEachLine { line ->
+                        if (onProgress != null && line.startsWith("{") && line.contains("\"mib_per_second\"")) {
+                            try {
+                                val obj = JSONObject(line)
+                                if (obj.has("verified_bytes")) {
+                                    onProgress(mapOf(
+                                        "file" to obj.optString("file"),
+                                        "verified_bytes" to obj.optLong("verified_bytes"),
+                                        "total_bytes" to obj.optLong("total_bytes"),
+                                        "mib_per_second" to obj.optDouble("mib_per_second", 0.0),
+                                        "elapsed_ms" to obj.optLong("elapsed_ms", 0L),
+                                    ))
+                                    return@forEachLine
+                                }
+                            } catch (_: Exception) { /* fall through to error tail */ }
+                        }
+                        if (tail.isNotEmpty()) tail.append('\n')
+                        tail.append(line)
+                        if (tail.length > 65536) tail.delete(0, tail.length - 65536)
+                    }
+                }
+                tail.toString()
+            }
             child.outputStream.bufferedWriter().use { it.write(input) }
             val code = child.waitFor()
             val out = stdout.get()

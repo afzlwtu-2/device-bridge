@@ -40,6 +40,8 @@ android {
         jniLibs {
             useLegacyPackaging = true
             keepDebugSymbols += "**/libbridge_cli.so"
+            keepDebugSymbols += "**/libbridge_agent.so"
+            keepDebugSymbols += "**/libbridge_tailnet.so"
         }
     }
 }
