@@ -4,11 +4,9 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"devicebridge/internal/files"
 	"devicebridge/internal/filesproviders"
 	"devicebridge/protocol"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +35,11 @@ func ShouldUseTar(m protocol.Manifest) bool {
 }
 
 // WriteTar streams a scoped directory tree without creating a temporary archive.
-func WriteTar(ctx context.Context, p filesproviders.Provider, rel, codec string, dst io.Writer, authorize func(int64) error) error {
+func WriteTar(ctx context.Context, p filesproviders.Provider, rel, codec string, dst io.Writer, authorize func(int64) error, excludes ...string) error {
+	normalized, err := files.ValidateExclusions(excludes)
+	if err != nil {
+		return err
+	}
 	if codec != "" && codec != "none" && codec != "gzip" {
 		return errors.New("unsupported archive codec")
 	}
@@ -57,6 +59,9 @@ func WriteTar(ctx context.Context, p filesproviders.Provider, rel, codec string,
 	var totalBytes int64
 	var walk func(string, string, int) error
 	walk = func(src, archivePath string, depth int) error {
+		if files.Excluded(archivePath, normalized) {
+			return nil
+		}
 		if depth > 128 || entries >= files.MaxManifestEntries {
 			return errors.New("archive entry limit exceeded")
 		}
@@ -269,11 +274,10 @@ func PullTar(ctx context.Context, stream io.ReadCloser, codec, peer string, m pr
 				return receipt, err
 			}
 		}
-		f, err := st.root.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+		f, err := st.root.OpenFile(target, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 		if err != nil {
 			return receipt, err
 		}
-		h := sha256.New()
 		var written int64
 		limited := io.LimitReader(tr, exp.Size+1)
 		for {
@@ -288,7 +292,6 @@ func PullTar(ctx context.Context, stream io.ReadCloser, codec, peer string, m pr
 					f.Close()
 					return receipt, fmt.Errorf("archive payload exceeds manifest size for %q", clean)
 				}
-				h.Write(buf[:n])
 				w, we := f.Write(buf[:n])
 				if we != nil || w != n {
 					f.Close()
@@ -311,10 +314,13 @@ func PullTar(ctx context.Context, stream io.ReadCloser, codec, peer string, m pr
 			f.Close()
 			return receipt, err
 		}
+		actual, err := digestFile(ctx, f)
 		f.Close()
-		actual := hex.EncodeToString(h.Sum(nil))
-		if actual != exp.SHA256 {
-			return receipt, fmt.Errorf("checksum mismatch for %q; staging preserved", clean)
+		if err != nil {
+			return receipt, err
+		}
+		if actual != exp.XXH64 {
+			return receipt, fmt.Errorf("%w: checksum mismatch for %q; staging preserved", ErrNonRetriable, clean)
 		}
 		complete += exp.Size
 		filesDone++
@@ -334,7 +340,7 @@ func PullTar(ctx context.Context, stream io.ReadCloser, codec, peer string, m pr
 		Destination:   st.abs,
 		Files:         filesDone,
 		Bytes:         complete,
-		SHA256:        st.manifestHash,
+		XXH64:         st.manifestHash,
 		Mode:          "tar",
 		MiBPerSecond:  mib,
 		ElapsedMillis: ms,

@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 
 abstract interface class CoreBridge {
   Future<void> initialize();
+  Future<dynamic> localFiles(String operation, Map<String, dynamic> arguments);
+  Future<Map<String, dynamic>> appSettings({Map<String, dynamic>? update});
   Future<dynamic> run(List<String> arguments, {String? input});
   Future<List<Map<String, dynamic>>> networks();
   Future<void> approveNetwork(Map<String, dynamic> network);
@@ -40,6 +42,7 @@ class LocalCore implements CoreBridge {
   static const channel = MethodChannel('dev.devicebridge/core');
   late String _state;
   late String _binary;
+  bool _phoneStorageExported = false;
   Process? _active;
   Process? _tailnetProcess;
   Map<String, dynamic>? _network;
@@ -53,6 +56,52 @@ class LocalCore implements CoreBridge {
   Stream<Map<String, dynamic>> get networkEvents => _events.stream;
   @override
   Stream<Map<String, dynamic>> get transferProgress => _progress.stream;
+
+  @override
+  Future<dynamic> localFiles(
+    String operation,
+    Map<String, dynamic> arguments,
+  ) async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('Phone storage providers require Android');
+    }
+    return channel.invokeMethod('localFiles', {
+      'operation': operation,
+      'arguments': arguments,
+    });
+  }
+
+  @override
+  Future<Map<String, dynamic>> appSettings({
+    Map<String, dynamic>? update,
+  }) async {
+    if (Platform.isAndroid) {
+      return Map<String, dynamic>.from(
+        await channel.invokeMethod(
+          update == null ? 'appSettings' : 'updateAppSettings',
+          update,
+        ) as Map,
+      );
+    }
+    final file = File('$_state/settings.json');
+    final values = <String, dynamic>{'android': false, 'show_hidden': false};
+    if (await file.exists()) {
+      values.addAll(
+        jsonDecode(await file.readAsString()) as Map<String, dynamic>,
+      );
+    }
+    if (update != null) {
+      if (update.keys.any((k) => k != 'show_hidden') ||
+          update.values.any((v) => v is! bool)) {
+        throw ArgumentError('Unsupported desktop setting');
+      }
+      values.addAll(update);
+      final staged = File('${file.path}.tmp');
+      await staged.writeAsString(jsonEncode(values), flush: true);
+      await staged.rename(file.path);
+    }
+    return values;
+  }
 
   @override
   Future<void> enableTailnet(bool enabled) async {
@@ -115,9 +164,15 @@ class LocalCore implements CoreBridge {
   @override
   Future<Map<String, dynamic>> platformCapabilities() async {
     if (Platform.isAndroid) {
-      return Map<String, dynamic>.from(
+      final caps = Map<String, dynamic>.from(
         await channel.invokeMethod('platformCapabilities') as Map,
       );
+      if (caps['all_files_access'] == true && !_phoneStorageExported) {
+        await run(['export', 'phone_storage', '/storage/emulated/0']);
+        _phoneStorageExported = true;
+        await channel.invokeMethod('refreshExports');
+      }
+      return caps;
     }
     final adb = await Process.run('which', ['adb'], runInShell: false);
     final ssh = await Process.run('which', ['ssh'], runInShell: false);
@@ -261,9 +316,8 @@ class LocalCore implements CoreBridge {
       await channel.invokeMethod('approveLan', {'network': network});
     }
     _network = Map<String, dynamic>.from(network);
-    await File(
-      '$_state/network.json',
-    ).writeAsString(jsonEncode(_network), flush: true);
+    await File('$_state/network.json')
+        .writeAsString(jsonEncode(_network), flush: true);
   }
 
   @override
@@ -293,6 +347,7 @@ class LocalCore implements CoreBridge {
       'roots',
       'list',
       'stat',
+      'preview',
       'pull',
       'pull-tar',
     };

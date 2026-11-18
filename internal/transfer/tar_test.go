@@ -82,7 +82,7 @@ func TestStreamingTarRoundTripAndProgress(t *testing.T) {
 func TestShouldUseTarSingleLargeFileFalse(t *testing.T) {
 	t.Parallel()
 	m := protocol.Manifest{
-		Version: 1,
+		Version: protocol.ManifestVersion,
 		Bytes:   10 << 20,
 		Entries: []protocol.ManifestEntry{{Path: ".", Directory: false, Size: 10 << 20}},
 	}
@@ -169,5 +169,40 @@ func TestPullTarCorruptionAndNoOverwrite(t *testing.T) {
 	}
 	if _, err := PullTar(context.Background(), io.NopCloser(bytes.NewReader(raw)), "none", "peer", m, existing, nil); err == nil {
 		t.Fatal("overwrite accepted")
+	}
+}
+
+func TestFolderExclusionsAffectManifestAndArchive(t *testing.T) {
+	_, p, _ := buildTree(t, 2)
+	excludes := []string{"nested/file-a0.txt", "nested/empty"}
+	m, err := files.Manifest(context.Background(), p, ".", func(int64) error { return nil }, excludes...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range m.Entries {
+		if files.Excluded(entry.Path, excludes) {
+			t.Fatalf("excluded entry leaked: %s", entry.Path)
+		}
+	}
+	var archive bytes.Buffer
+	if err = WriteTar(context.Background(), p, ".", "none", &archive, func(int64) error { return nil }, excludes...); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "filtered")
+	if _, err = PullTar(context.Background(), io.NopCloser(&archive), "none", "peer", m, destination, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, excluded := range excludes {
+		if _, err = os.Stat(filepath.Join(destination, excluded)); !os.IsNotExist(err) {
+			t.Fatalf("excluded path exists: %s", excluded)
+		}
+	}
+	if _, err = os.Stat(filepath.Join(destination, "nested", "file-b0.txt")); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{"../outside", "/absolute", ".", "nested/../file"} {
+		if _, err = files.ValidateExclusions([]string{invalid}); err == nil {
+			t.Fatalf("accepted unsafe exclusion %q", invalid)
+		}
 	}
 }

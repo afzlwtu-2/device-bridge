@@ -4,7 +4,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"devicebridge/internal/auth"
 	"devicebridge/internal/storage"
 	"devicebridge/internal/transport"
@@ -13,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cespare/xxhash/v2"
 	"io"
 	"net"
 	"net/http"
@@ -148,17 +148,21 @@ func (c *Client) ReadRange(ctx context.Context, root, path string, offset, lengt
 	if int64(len(data)) != length {
 		return nil, errors.New("range size mismatch; source changed")
 	}
-	hash := sha256.Sum256(data)
-	if hex.EncodeToString(hash[:]) != res.Header.Get("X-Chunk-SHA256") {
+	hash := xxhash.New()
+	hash.Write(data)
+	if hex.EncodeToString(hash.Sum(nil)) != res.Header.Get("X-Chunk-XXH64") {
 		return nil, errors.New("chunk checksum mismatch")
 	}
 	return data, nil
 }
-func (c *Client) OpenTar(ctx context.Context, root, path, codec string) (io.ReadCloser, string, error) {
+func (c *Client) OpenTar(ctx context.Context, root, path, codec string, excludes ...string) (io.ReadCloser, string, error) {
 	if codec == "" {
 		codec = "adaptive"
 	}
 	q := url.Values{"root": {root}, "path": {path}, "codec": {codec}}
+	for _, excluded := range excludes {
+		q.Add("exclude", excluded)
+	}
 	res, err := c.doRequest(c.StreamHTTP, ctx, "GET", "/v1/files/tar", q, nil)
 	if err != nil {
 		return nil, "", err

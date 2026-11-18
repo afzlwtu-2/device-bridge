@@ -2,11 +2,11 @@ package files
 
 import (
 	"context"
-	"crypto/sha256"
 	"devicebridge/internal/filesproviders"
 	"devicebridge/protocol"
 	"encoding/hex"
 	"errors"
+	"github.com/cespare/xxhash/v2"
 	"io"
 	"path"
 )
@@ -14,10 +14,17 @@ import (
 const MaxManifestEntries = 20000
 const MaxManifestBytes = int64(100 << 30)
 
-func Manifest(ctx context.Context, p filesproviders.Provider, rel string, authorize func(int64) error) (protocol.Manifest, error) {
-	m := protocol.Manifest{Version: protocol.Version, Root: p.ID(), Path: rel, Entries: []protocol.ManifestEntry{}}
+func Manifest(ctx context.Context, p filesproviders.Provider, rel string, authorize func(int64) error, excludes ...string) (protocol.Manifest, error) {
+	normalized, err := ValidateExclusions(excludes)
+	if err != nil {
+		return protocol.Manifest{}, err
+	}
+	m := protocol.Manifest{Excludes: normalized, Version: protocol.ManifestVersion, Root: p.ID(), Path: rel, Entries: []protocol.ManifestEntry{}}
 	var walk func(string, string, int) error
 	walk = func(src, dst string, depth int) error {
+		if Excluded(dst, normalized) {
+			return nil
+		}
 		if depth > 128 || len(m.Entries) >= MaxManifestEntries {
 			return errors.New("folder manifest limit exceeded")
 		}
@@ -63,7 +70,7 @@ func Manifest(ctx context.Context, p filesproviders.Provider, rel string, author
 		if err != nil {
 			return err
 		}
-		h := sha256.New()
+		h := xxhash.New()
 		buf := make([]byte, 256<<10)
 		var read int64
 		for {
@@ -96,11 +103,11 @@ func Manifest(ctx context.Context, p filesproviders.Provider, rel string, author
 		if read != e.Size {
 			return errors.New("file changed while scanning")
 		}
-		e.SHA256 = hex.EncodeToString(h.Sum(nil))
+		e.XXH64 = hex.EncodeToString(h.Sum(nil))
 		m.Bytes += read
 		m.Entries = append(m.Entries, e)
 		return nil
 	}
-	err := walk(rel, ".", 0)
+	err = walk(rel, ".", 0)
 	return m, err
 }

@@ -13,6 +13,10 @@ import 'features/device_addresses.dart';
 import 'features/incoming_pair.dart';
 import 'features/connections_hub.dart';
 import 'features/appearance.dart';
+import 'features/settings_screen.dart';
+import 'features/phone_files.dart';
+
+import 'dart:io';
 
 void main() => runApp(DeviceBridgeApp(core: LocalCore()));
 
@@ -341,16 +345,15 @@ class _BridgeHomeState extends State<BridgeHome> {
             'pair',
             '-',
           ], input: invite);
-          await widget.core.run([
-            'connection',
-            value['id'] as String,
-            '-',
-          ], input: jsonEncode({
-            'peer_id': value['id'],
-            'transport': 'tailnet',
-            'endpoint': tailnetEndpoint,
-            'remote_approved': true,
-          }));
+          await widget.core.run(
+            ['connection', value['id'] as String, '-'],
+            input: jsonEncode({
+              'peer_id': value['id'],
+              'transport': 'tailnet',
+              'endpoint': tailnetEndpoint,
+              'remote_approved': true,
+            }),
+          );
         } else {
           await widget.core.run(['pair', '-'], input: invite);
         }
@@ -375,6 +378,16 @@ class _BridgeHomeState extends State<BridgeHome> {
         ],
       ),
       actions: [
+        IconButton(
+          tooltip: 'Settings',
+          icon: const Icon(Icons.settings_outlined),
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute<void>(
+              builder: (_) => SettingsScreen(core: widget.core),
+            ),
+          ),
+        ),
         PopupMenuButton<String>(
           tooltip: 'Appearance',
           icon: const Icon(Icons.brightness_6_outlined),
@@ -529,6 +542,19 @@ class _BridgeHomeState extends State<BridgeHome> {
                 spacing: 12,
                 runSpacing: 12,
                 children: [
+                  if (Platform.isAndroid)
+                    OutlinedButton.icon(
+                      onPressed: busy
+                          ? null
+                          : () => Navigator.push(
+                              context,
+                              MaterialPageRoute<void>(
+                                builder: (_) => PhoneFiles(core: widget.core),
+                              ),
+                            ),
+                      icon: const Icon(Icons.folder_open_outlined),
+                      label: const Text('File manager'),
+                    ),
                   FilledButton.icon(
                     onPressed: busy ? null : discover,
                     icon: const Icon(Icons.radar),

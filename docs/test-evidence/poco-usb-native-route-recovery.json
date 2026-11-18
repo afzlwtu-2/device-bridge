@@ -1,0 +1,604 @@
+{
+  "device": "JBKJF6JFAAIZUGP7",
+  "level": "physical native Android app UID (no root), interrupted throttled LAN to USB reverse",
+  "result": "PASS",
+  "receipt": {
+    "destination": "/data/user/0/dev.devicebridge.devicebridge/files/devicebridge/downloads/recovery-usb.bin",
+    "files": 1,
+    "bytes": 67108864,
+    "manifest_xxh64": "d77496a0b3427d41",
+    "mode": "stream",
+    "transport": "adb",
+    "mib_per_second": 34.6136230251857,
+    "elapsed_ms": 1752
+  },
+  "progress": [
+    {
+      "file": ".",
+      "verified_bytes": 1048576,
+      "total_bytes": 67108864,
+      "mib_per_second": 2.8349140209132284,
+      "elapsed_ms": 352,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 2097152,
+      "total_bytes": 67108864,
+      "mib_per_second": 3.1333240228698878,
+      "elapsed_ms": 638,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 3145728,
+      "total_bytes": 67108864,
+      "mib_per_second": 3.265387594535869,
+      "elapsed_ms": 918,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "route_switched": true,
+      "from": "lan",
+      "to": "adb",
+      "endpoint": "127.0.0.1:18731",
+      "mib_per_second": 0
+    },
+    {
+      "file": ".",
+      "verified_bytes": 4554752,
+      "total_bytes": 67108864,
+      "mib_per_second": 26.13911246107429,
+      "elapsed_ms": 38,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 5603328,
+      "total_bytes": 67108864,
+      "mib_per_second": 30.713147616662813,
+      "elapsed_ms": 65,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 6651904,
+      "total_bytes": 67108864,
+      "mib_per_second": 32.63074055487443,
+      "elapsed_ms": 91,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 7700480,
+      "total_bytes": 67108864,
+      "mib_per_second": 33.030972763303964,
+      "elapsed_ms": 121,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 8749056,
+      "total_bytes": 67108864,
+      "mib_per_second": 33.712381415518436,
+      "elapsed_ms": 148,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 9797632,
+      "total_bytes": 67108864,
+      "mib_per_second": 31.126938836711695,
+      "elapsed_ms": 192,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 10846208,
+      "total_bytes": 67108864,
+      "mib_per_second": 32.23489104606826,
+      "elapsed_ms": 217,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 11894784,
+      "total_bytes": 67108864,
+      "mib_per_second": 32.577820288575474,
+      "elapsed_ms": 245,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 12943360,
+      "total_bytes": 67108864,
+      "mib_per_second": 33.28437399159904,
+      "elapsed_ms": 270,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 13991936,
+      "total_bytes": 67108864,
+      "mib_per_second": 33.64919575410544,
+      "elapsed_ms": 297,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 15040512,
+      "total_bytes": 67108864,
+      "mib_per_second": 33.128262461875806,
+      "elapsed_ms": 332,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 16089088,
+      "total_bytes": 67108864,
+      "mib_per_second": 32.33477599068082,
+      "elapsed_ms": 371,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 17137664,
+      "total_bytes": 67108864,
+      "mib_per_second": 33.794221174661445,
+      "elapsed_ms": 384,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 18186240,
+      "total_bytes": 67108864,
+      "mib_per_second": 33.49891367808501,
+      "elapsed_ms": 417,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 19234816,
+      "total_bytes": 67108864,
+      "mib_per_second": 33.60284540292543,
+      "elapsed_ms": 446,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 20283392,
+      "total_bytes": 67108864,
+      "mib_per_second": 31.961665689558597,
+      "elapsed_ms": 500,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 21331968,
+      "total_bytes": 67108864,
+      "mib_per_second": 33.62388836285194,
+      "elapsed_ms": 505,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 22380544,
+      "total_bytes": 67108864,
+      "mib_per_second": 33.76073853131019,
+      "elapsed_ms": 533,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 23429120,
+      "total_bytes": 67108864,
+      "mib_per_second": 33.919481189324195,
+      "elapsed_ms": 560,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 24477696,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.07349703056799,
+      "elapsed_ms": 586,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 25526272,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.1413921273598,
+      "elapsed_ms": 615,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 26574848,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.33400139340799,
+      "elapsed_ms": 640,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 27623424,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.335931024166435,
+      "elapsed_ms": 669,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 28672000,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.51914333525559,
+      "elapsed_ms": 695,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 29720576,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.44682426377202,
+      "elapsed_ms": 725,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 30769152,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.708334438660295,
+      "elapsed_ms": 749,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 31817728,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.52404227643898,
+      "elapsed_ms": 782,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 32866304,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.78664079141904,
+      "elapsed_ms": 804,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 33914880,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.96342657996415,
+      "elapsed_ms": 829,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 34963456,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.075424726008876,
+      "elapsed_ms": 855,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 36012032,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.886615904322255,
+      "elapsed_ms": 888,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 37060608,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.522262914872144,
+      "elapsed_ms": 926,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 38109184,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.81666954530187,
+      "elapsed_ms": 947,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 39157760,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.586288114100945,
+      "elapsed_ms": 983,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 40206336,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.86338913448531,
+      "elapsed_ms": 1003,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 41254912,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.9323491635597,
+      "elapsed_ms": 1030,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 42303488,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.03374454061584,
+      "elapsed_ms": 1056,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 43352064,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.9617586351951,
+      "elapsed_ms": 1086,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 44400640,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.10054784584072,
+      "elapsed_ms": 1111,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 45449216,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.17974924453445,
+      "elapsed_ms": 1137,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 46497792,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.19589618185467,
+      "elapsed_ms": 1164,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 47546368,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.29928590746466,
+      "elapsed_ms": 1189,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 48594944,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.166621517767915,
+      "elapsed_ms": 1222,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 49643520,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.00637918463283,
+      "elapsed_ms": 1256,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 50692096,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.27703141748665,
+      "elapsed_ms": 1275,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 51740672,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.3583874032,
+      "elapsed_ms": 1300,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 52789248,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.166447220429085,
+      "elapsed_ms": 1336,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 53837824,
+      "total_bytes": 67108864,
+      "mib_per_second": 34.88683554374943,
+      "elapsed_ms": 1375,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 54886400,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.3191218384443,
+      "elapsed_ms": 1387,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 55934976,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.36636808306262,
+      "elapsed_ms": 1413,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 56983552,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.61650722813828,
+      "elapsed_ms": 1431,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 58032128,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.694810836328145,
+      "elapsed_ms": 1456,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 59080704,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.6825760948827,
+      "elapsed_ms": 1485,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 60129280,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.67830428599386,
+      "elapsed_ms": 1513,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 61177856,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.5098063451857,
+      "elapsed_ms": 1548,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 62226432,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.70304968220518,
+      "elapsed_ms": 1568,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 63275008,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.7652634501871,
+      "elapsed_ms": 1593,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 64323584,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.72716725003525,
+      "elapsed_ms": 1623,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 65372160,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.8098564769054,
+      "elapsed_ms": 1647,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 66420736,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.881583597810504,
+      "elapsed_ms": 1672,
+      "method": "stream",
+      "transport": "lan"
+    },
+    {
+      "file": ".",
+      "verified_bytes": 67108864,
+      "total_bytes": 67108864,
+      "mib_per_second": 35.96139444015134,
+      "elapsed_ms": 1686,
+      "method": "stream",
+      "transport": "lan"
+    }
+  ],
+  "source_xxh64": "2763167e436ad40d",
+  "target_xxh64": "2763167e436ad40d",
+  "verified_target_bytes": 67108864,
+  "evidence_provenance": "Native stdout/stderr preserved in .work/poco-usb-20261118/recovery.*; completed target bytes independently reread via app UID and compared using xxhsum -H1. Native transfer PASS observed before GUI run."
+}

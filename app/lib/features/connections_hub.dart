@@ -122,6 +122,30 @@ class _ConnectionsHubState extends State<ConnectionsHub> {
                         ? 'Approved: ${activeNet['interface']} · ${activeNet['cidr']}'
                         : 'No Wi-Fi LAN approved yet (${widget.listenerState ?? 'idle'})',
                   ),
+                  if (activeNet != null)
+                    SwitchListTile.adaptive(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Recover on unmetered Wi-Fi'),
+                      subtitle: const Text(
+                        'Reconnect after Wi-Fi changes. Cellular stays blocked.',
+                      ),
+                      value: activeNet['allow_wifi_roaming'] == true,
+                      onChanged: busy
+                          ? null
+                          : (value) async {
+                              try {
+                                await widget.core.approveNetwork({
+                                  ...activeNet,
+                                  'allow_wifi_roaming': value,
+                                });
+                                await load();
+                              } catch (e) {
+                                if (mounted) {
+                                  setState(() => error = '$e');
+                                }
+                              }
+                            },
+                    ),
                   const SizedBox(height: 10),
                   FilledButton.icon(
                     onPressed: busy
@@ -153,7 +177,9 @@ class _ConnectionsHubState extends State<ConnectionsHub> {
                     ),
                   ),
                   if (hotspotNets.isEmpty)
-                    const Text('No active hotspot or Wi-Fi Direct interface detected.')
+                    const Text(
+                      'No active hotspot or Wi-Fi Direct interface detected.',
+                    )
                   else
                     for (final n in hotspotNets)
                       Text('Detected: ${n['interface']} · ${n['cidr']}'),
@@ -287,12 +313,6 @@ class _ConnectionsHubState extends State<ConnectionsHub> {
                           : 'Backend: ${wireguardStatus!['backend']} · Tunnel: ${wireguardStatus!['local_tunnel_ip']}\nPublic key: ${wireguardStatus!['public_key']}',
                     ),
                   ),
-                  if (caps['all_files_access'] != true)
-                    OutlinedButton.icon(
-                      onPressed: () => openSetup('all_files_access'),
-                      icon: const Icon(Icons.folder_copy_outlined),
-                      label: const Text('Grant full phone storage access'),
-                    ),
                   const SizedBox(height: 6),
                   const Text(
                     'Tip: Per-device primary and fallback connections live inside each Device card.',

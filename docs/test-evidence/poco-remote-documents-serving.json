@@ -1,0 +1,129 @@
+{
+  "roots": [
+    {
+      "id": "phone_storage",
+      "name": "Internal storage",
+      "writable": false
+    },
+    {
+      "id": "saf",
+      "name": "SAF",
+      "writable": false
+    },
+    {
+      "id": "termux_home",
+      "name": "Termux Home",
+      "writable": false
+    },
+    {
+      "id": "downloads",
+      "name": "downloads",
+      "writable": false
+    }
+  ],
+  "saf_list": {
+    "entries": [
+      {
+        "kind": "directory",
+        "modified": "2026-11-18T06:41:58.917Z",
+        "name": "gui-fixture-0620c22a",
+        "path": "gui-fixture-0620c22a",
+        "size": 3452
+      },
+      {
+        "kind": "directory",
+        "modified": "2026-11-18T14:13:57.589Z",
+        "name": "local-move-target",
+        "path": "local-move-target",
+        "size": 3452
+      }
+    ]
+  },
+  "termux_list": {
+    "entries": [
+      {
+        "kind": "directory",
+        "modified": "2026-11-18T14:13:57.561Z",
+        "name": "move-fixture",
+        "path": "DeviceBridge-USB-20261118/move-fixture",
+        "size": 3452
+      },
+      {
+        "kind": "directory",
+        "modified": "2026-11-18T14:14:50.017Z",
+        "name": "return-destination",
+        "path": "DeviceBridge-USB-20261118/return-destination",
+        "size": 3452
+      },
+      {
+        "kind": "file",
+        "modified": "2026-11-18T14:12:46.009Z",
+        "name": "live.txt",
+        "path": "DeviceBridge-USB-20261118/live.txt",
+        "size": 17
+      }
+    ]
+  },
+  "unicode_list": {
+    "entries": [
+      {
+        "kind": "file",
+        "modified": "2026-11-18T14:14:50.049Z",
+        "name": "keep.txt",
+        "path": "DeviceBridge-USB-20261118/return-destination/move-fixture/keep.txt",
+        "size": 49
+      },
+      {
+        "kind": "file",
+        "modified": "2026-11-18T14:14:50.425Z",
+        "name": "space \u03bb.txt",
+        "path": "DeviceBridge-USB-20261118/return-destination/move-fixture/space \u03bb.txt",
+        "size": 26
+      }
+    ]
+  },
+  "remote_preview": {
+    "name": "live.txt",
+    "text": "LIVE version two\n",
+    "truncated": false
+  },
+  "termux_pull": {
+    "destination": "/home/afzl/@Projects/mine/device-bridge/.work/poco-usb-20261118/remote-termux-pull",
+    "files": 2,
+    "bytes": 75,
+    "manifest_xxh64": "b7b5946bdb64e7d6",
+    "mode": "stream",
+    "transport": "direct-lan-v1",
+    "mib_per_second": 0.00011668320397744125,
+    "elapsed_ms": 612
+  },
+  "termux_pull_xxh64": {
+    "keep.txt": "a4c145116346834c",
+    "space \u03bb.txt": "4d9e135688bb875a"
+  },
+  "termux_exclusion_pull": {
+    "res": {
+      "destination": "/home/afzl/@Projects/mine/device-bridge/.work/poco-usb-20261118/remote-termux-excl",
+      "files": 1,
+      "bytes": 17,
+      "manifest_xxh64": "02e798559588a8b1",
+      "mode": "stream",
+      "transport": "direct-lan-v1",
+      "mib_per_second": 3.532390457133896e-05,
+      "elapsed_ms": 458
+    },
+    "pulled_files": [
+      "live.txt"
+    ]
+  },
+  "saf_pull": {
+    "destination": "/home/afzl/@Projects/mine/device-bridge/.work/poco-usb-20261118/remote-saf-pull",
+    "files": 3,
+    "bytes": 8388652,
+    "manifest_xxh64": "98250f3829e05885",
+    "mode": "stream",
+    "transport": "direct-lan-v1",
+    "mib_per_second": 1.198863041370439,
+    "elapsed_ms": 6673
+  }
+}

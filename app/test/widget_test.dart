@@ -1,12 +1,29 @@
 import 'dart:async';
+import 'dart:ui' as ui;
+
+import 'package:flutter/rendering.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:devicebridge/main.dart';
 import 'package:devicebridge/core/bridge.dart';
+import 'package:devicebridge/features/phone_files.dart';
+import 'package:devicebridge/features/folder_exclusions.dart';
 
 class FakeCore implements CoreBridge {
-  final _progressController = StreamController<Map<String, dynamic>>.broadcast();
+  @override
+  Future<dynamic> localFiles(
+    String operation,
+    Map<String, dynamic> arguments,
+  ) async => operation == 'roots'
+      ? [
+          {'id': 'internal', 'name': 'Internal storage', 'available': true},
+          {'id': 'saf', 'name': 'SAF', 'available': false},
+          {'id': 'termux', 'name': 'Termux Home', 'available': false},
+        ]
+      : {'entries': []};
+  final _progressController =
+      StreamController<Map<String, dynamic>>.broadcast();
   @override
   Future<void> enableTailnet(bool enabled) async {}
   @override
@@ -46,11 +63,31 @@ class FakeCore implements CoreBridge {
   Future<void> shutdown() async {
     await _progressController.close();
   }
+
   @override
   Stream<Map<String, dynamic>> get networkEvents => const Stream.empty();
   @override
-  Stream<Map<String, dynamic>> get transferProgress => _progressController.stream;
+  Stream<Map<String, dynamic>> get transferProgress =>
+      _progressController.stream;
   void emitProgress(Map<String, dynamic> p) => _progressController.add(p);
+  final settings = <String, dynamic>{
+    'android': true,
+    'keep_awake': true,
+    'show_hidden': false,
+    'root_enabled': false,
+    'root_status': 'Not requested',
+    'shizuku_enabled': false,
+    'shizuku_running': false,
+    'shizuku_status': 'Service not running',
+  };
+  @override
+  Future<Map<String, dynamic>> appSettings({
+    Map<String, dynamic>? update,
+  }) async {
+    if (update != null) settings.addAll(update);
+    return Map.of(settings);
+  }
+
   final calls = <List<String>>[];
   @override
   String get downloads => '/private/downloads';
@@ -138,6 +175,137 @@ class FakeCore implements CoreBridge {
 }
 
 void main() {
+  testWidgets(
+    'Global settings contains access controls without module preferences',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final core = FakeCore();
+      await tester.pumpWidget(DeviceBridgeApp(core: core));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      expect(find.text('Your device. Your rules.'), findsOneWidget);
+      expect(find.text('Show hidden files by default'), findsNothing);
+      expect(find.text('Recover on unmetered Wi-Fi'), findsNothing);
+      expect(find.text('Laptop'), findsNothing);
+      await tester.scrollUntilVisible(find.text('Root access'), 250);
+      expect(find.text('Shizuku access'), findsOneWidget);
+      await tester.scrollUntilVisible(find.text('Keep screen awake'), 250);
+      await tester.tap(find.text('Keep screen awake'));
+      await tester.pumpAndSettle();
+      expect(core.settings['keep_awake'], isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Matte background stays visible during device route push and pop',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final key = GlobalKey();
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: key,
+          child: DeviceBridgeApp(core: FakeCore()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Appearance'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Matte paper'));
+      await tester.pumpAndSettle();
+      Future<void> checkPaper() async {
+        await tester.runAsync(() async {
+          final boundary =
+              key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+          final image = await boundary.toImage(pixelRatio: 1);
+          final pixels = (await image.toByteData(
+            format: ui.ImageByteFormat.rawRgba,
+          ))!;
+          // Margin outside route cards, halfway down the screen.
+          final offset = (400 * image.width + 2) * 4;
+          expect(pixels.getUint8(offset), lessThan(200));
+          expect(pixels.getUint8(offset + 1), lessThan(200));
+          image.dispose();
+        });
+      }
+
+      await tester.ensureVisible(find.text('Laptop'));
+      await tester.tap(find.text('Laptop'));
+      await tester.pump();
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 40));
+        await checkPaper();
+      }
+      await tester.pumpAndSettle();
+      await tester.pageBack();
+      await tester.pump();
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 40));
+        await checkPaper();
+      }
+      await tester.pumpAndSettle();
+    },
+  );
+
+  testWidgets(
+    'Same phone can occupy both file-manager panes with three storage providers',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(MaterialApp(home: PhoneFiles(core: FakeCore())));
+      await tester.pumpAndSettle();
+      expect(find.text('This phone'), findsNWidgets(2));
+      await tester.tap(find.text('Internal storage').first);
+      await tester.pumpAndSettle();
+      expect(find.text('SAF · grant access'), findsWidgets);
+      expect(find.text('Termux Home · grant access'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('Exclusions select a subtree without scanning its contents', (
+    tester,
+  ) async {
+    var scans = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () => showDialog<List<String>>(
+              context: context,
+              builder: (_) => FolderExclusions(
+                load: (path) async {
+                  scans++;
+                  return [
+                    {'name': 'cache', 'kind': 'directory', 'size': 0},
+                    {'name': 'keep.txt', 'kind': 'file', 'size': 7},
+                  ];
+                },
+              ),
+            ),
+            child: const Text('Choose exclusions'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Choose exclusions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('cache'));
+    await tester.pumpAndSettle();
+    expect(scans, 1);
+    expect(find.text('1 excluded'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('Invitation route closes safely before fingerprint approval', (
     tester,
   ) async {
@@ -206,16 +374,13 @@ void main() {
       expect(core.calls.any((c) => c.first == 'pull'), isFalse);
       await tester.tap(find.widgetWithText(FilledButton, 'Pull'));
       await tester.pumpAndSettle();
-      expect(
-        core.calls.where((c) => c.first == 'pull').last,
-        [
-          'pull',
-          'laptop',
-          'approved',
-          'hello.txt',
-          '/private/downloads/hello.txt',
-        ],
-      );
+      expect(core.calls.where((c) => c.first == 'pull').last, [
+        'pull',
+        'laptop',
+        'approved',
+        'hello.txt',
+        '/private/downloads/hello.txt',
+      ]);
       expect(
         find.textContaining('Verified download (streaming tar)'),
         findsOneWidget,
@@ -234,6 +399,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Wi-Fi LAN'), findsOneWidget);
     expect(find.text('Hotspot & Wi-Fi Direct'), findsOneWidget);
+    expect(find.text('Recover on unmetered Wi-Fi'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Tailscale (tsnet / system)'),
+      200,
+    );
     expect(find.text('Tailscale (tsnet / system)'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('USB / Wireless ADB'), 200);
     expect(find.text('USB / Wireless ADB'), findsOneWidget);
@@ -310,10 +480,7 @@ void main() {
       core.failPull = false;
       await tester.tap(find.text('Continue on USB / Wireless ADB'));
       await tester.pumpAndSettle();
-      expect(
-        find.textContaining('Verified download (direct)'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('Verified download (direct)'), findsOneWidget);
       expect(find.textContaining('Via USB / Wireless ADB'), findsOneWidget);
     },
   );

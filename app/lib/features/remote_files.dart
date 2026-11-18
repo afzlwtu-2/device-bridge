@@ -7,6 +7,9 @@ import 'package:material_ui/material_ui.dart';
 import '../core/bridge.dart';
 import 'registry.dart';
 import 'connection_picker.dart';
+import 'phone_files.dart';
+import 'folder_exclusions.dart';
+import 'folder_name_dialog.dart';
 
 class DeviceDetail extends StatefulWidget {
   const DeviceDetail({
@@ -237,7 +240,7 @@ class FileBrowser extends StatefulWidget {
   State<FileBrowser> createState() => _FileBrowserState();
 }
 
-class _FileBrowserState extends State<FileBrowser> {
+class _FileBrowserState extends State<FileBrowser> with WidgetsBindingObserver {
   List<dynamic> entries = [];
   bool busy = true;
   String? error;
@@ -262,6 +265,9 @@ class _FileBrowserState extends State<FileBrowser> {
 
   // Target pane state: 'downloads' | 'local' | 'termux'
   String targetMode = 'downloads';
+  bool get usingTargetSaf => Platform.isAndroid && targetMode == 'termux';
+  bool get targetPermissionMissing =>
+      Platform.isAndroid && targetMode == 'local' && !allFilesAccess;
   late String targetPosixPath;
   String? targetSafUri;
   String? targetSafName;
@@ -269,12 +275,19 @@ class _FileBrowserState extends State<FileBrowser> {
   List<Map<String, dynamic>> targetEntries = [];
   String? targetError;
   bool targetBusy = false;
+  bool allFilesAccess = !Platform.isAndroid;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     sourcePath = widget.path;
-    targetPosixPath = widget.core.downloads;
+    if (Platform.isAndroid) {
+      targetMode = 'local';
+    }
+    targetPosixPath = Platform.isAndroid
+        ? '/storage/emulated/0'
+        : widget.core.downloads;
     progressSub = widget.core.transferProgress.listen((p) {
       if (!mounted) {
         return;
@@ -288,9 +301,15 @@ class _FileBrowserState extends State<FileBrowser> {
         }
       });
     });
+    loadBrowserSettings();
     loadSource();
     loadActiveRoute();
     loadTargetCapabilities();
+  }
+
+  Future<void> loadBrowserSettings() async {
+    final settings = await widget.core.appSettings();
+    if (mounted) setState(() => showHidden = settings['show_hidden'] == true);
   }
 
   Future<void> loadActiveRoute() async {
@@ -366,16 +385,26 @@ class _FileBrowserState extends State<FileBrowser> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     progressSub?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      loadTargetCapabilities();
+    }
   }
 
   Future<void> loadTargetCapabilities() async {
     try {
       final caps = await widget.core.platformCapabilities();
-      if (targetMode == 'local' && Platform.isAndroid) {
-        targetSafUri = caps['saf_tree_uri'] as String?;
-        targetSafName = caps['saf_tree_name'] as String?;
+      allFilesAccess = caps['all_files_access'] == true;
+      if (targetMode == 'local' && Platform.isAndroid && allFilesAccess) {
+        if (!targetPosixPath.startsWith('/storage/')) {
+          targetPosixPath = '/storage/emulated/0';
+        }
       } else if (targetMode == 'termux' && Platform.isAndroid) {
         targetSafUri = caps['termux_tree_uri'] as String?;
         targetSafName = caps['termux_tree_name'] as String?;
@@ -403,15 +432,14 @@ class _FileBrowserState extends State<FileBrowser> {
       return;
     }
     final caps = await widget.core.platformCapabilities();
+    allFilesAccess = caps['all_files_access'] == true;
     if (mode == 'local') {
-      targetSafUri = caps['saf_tree_uri'] as String?;
-      targetSafName = caps['saf_tree_name'] as String?;
-      if (targetSafUri == null) {
-        final picked = await widget.core.pickTargetTree(termux: false);
-        if (picked != null) {
-          targetSafUri = picked['uri'] as String?;
-          targetSafName = picked['name'] as String?;
-        }
+      targetPosixPath = '/storage/emulated/0';
+      targetSafUri = null;
+      if (!allFilesAccess) {
+        await widget.core.openConnectionSetup('all_files_access');
+        await loadTargetCapabilities();
+        return;
       }
     } else if (mode == 'termux') {
       targetSafUri = caps['termux_tree_uri'] as String?;
@@ -448,7 +476,9 @@ class _FileBrowserState extends State<FileBrowser> {
       targetError = null;
     });
     try {
-      if (targetMode == 'downloads' || !Platform.isAndroid) {
+      if (targetPermissionMissing) {
+        targetEntries = [];
+      } else if (!usingTargetSaf) {
         final dir = Directory(targetPosixPath);
         if (!dir.existsSync()) {
           targetEntries = [];
@@ -504,15 +534,13 @@ class _FileBrowserState extends State<FileBrowser> {
       error = null;
     });
     try {
-      final page =
-          await widget.core.run([
-                'list',
-                widget.peer['id'] as String,
-                widget.root,
-                sourcePath,
-                more ? next : '',
-              ])
-              as Map;
+      final page = await widget.core.run([
+        'list',
+        widget.peer['id'] as String,
+        widget.root,
+        sourcePath,
+        more ? next : '',
+      ]) as Map;
       if (!more) {
         entries = [];
       }
@@ -527,34 +555,15 @@ class _FileBrowserState extends State<FileBrowser> {
   }
 
   Future<void> createNewTargetFolder() async {
-    final ctrl = TextEditingController();
     final name = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('New target folder'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'Folder name'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, ctrl.text.trim()),
-            child: const Text('Create'),
-          ),
-        ],
-      ),
+      builder: (_) => const FolderNameDialog(),
     );
-    ctrl.dispose();
     if (name == null || name.isEmpty || name.contains('/')) {
       return;
     }
     try {
-      if (targetMode == 'downloads' || !Platform.isAndroid) {
+      if (!usingTargetSaf) {
         await Directory('$targetPosixPath/$name').create(recursive: true);
       } else if (targetSafUri != null) {
         await widget.core.createTargetFolder(
@@ -577,9 +586,14 @@ class _FileBrowserState extends State<FileBrowser> {
     String? targetDocOverride,
     String? targetSubLabel,
     bool skipConfirm = false,
+    List<String> exclusions = const [],
   }) async {
     final name = path == '.' ? widget.root : path.split('/').last;
-    final usingSaf = Platform.isAndroid && targetMode != 'downloads';
+    final usingSaf = usingTargetSaf;
+    if (targetPermissionMissing) {
+      setState(() => error = 'Grant phone storage access before copying here.');
+      return;
+    }
     if (usingSaf && targetSafUri == null) {
       setState(
         () => error =
@@ -593,26 +607,77 @@ class _FileBrowserState extends State<FileBrowser> {
     final baseSafLabel =
         '${targetMode == 'termux' ? 'Termux' : 'SAF'}: ${targetSafName ?? 'selected folder'}';
     final targetLabel = usingSaf
-        ? (targetSubLabel == null ? baseSafLabel : '$baseSafLabel/$targetSubLabel')
+        ? (targetSubLabel == null
+              ? baseSafLabel
+              : '$baseSafLabel/$targetSubLabel')
         : destPosixDir;
+    var selectedExclusions = List<String>.from(exclusions);
+    final isDirectory =
+        path == sourcePath ||
+        entries.any((e) => e['path'] == path && e['kind'] == 'directory');
     if (!skipConfirm) {
       final approved = await showDialog<bool>(
         context: context,
-        builder: (context) => AlertDialog(
-          title: Text('Pull $name?'),
-          content: Text(
-            'Download a verified copy into:\n$targetLabel\n\nExisting files will not be overwritten. This does not enable synchronization.',
+        builder: (context) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: Text('Pull $name?'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Download a verified copy into:\n$targetLabel\n\nExisting files will not be overwritten. This does not enable synchronization.',
+                ),
+                if (isDirectory)
+                  TextButton.icon(
+                    icon: const Icon(Icons.filter_alt_outlined),
+                    label: Text(
+                      selectedExclusions.isEmpty
+                          ? 'Exclude files or subfolders…'
+                          : '${selectedExclusions.length} exclusions',
+                    ),
+                    onPressed: () async {
+                      final result = await showDialog<List<String>>(
+                        context: context,
+                        builder: (_) => FolderExclusions(
+                          initial: selectedExclusions,
+                          load: (relative) async {
+                            final location = relative.isEmpty
+                                ? path
+                                : path == '.'
+                                ? relative
+                                : '$path/$relative';
+                            final page = await widget.core.run([
+                              'list',
+                              widget.peer['id'] as String,
+                              widget.root,
+                              location,
+                              '',
+                            ]) as Map;
+                            return (page['entries'] as List)
+                                .map((e) => Map<String, dynamic>.from(e as Map))
+                                .toList();
+                          },
+                        ),
+                      );
+                      if (result != null && context.mounted) {
+                        setDialogState(() => selectedExclusions = result);
+                      }
+                    },
+                  ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Pull'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Pull'),
-            ),
-          ],
         ),
       );
       if (approved != true || !mounted) {
@@ -631,19 +696,31 @@ class _FileBrowserState extends State<FileBrowser> {
     });
     final cmd = preferredMethod == 'tar' ? 'pull-tar' : 'pull';
     try {
-      final destination = usingSaf
+      final phoneStorageTarget = Platform.isAndroid && targetMode == 'local';
+      final destination = (usingSaf || phoneStorageTarget)
           ? '${widget.core.downloads}/$name-${DateTime.now().millisecondsSinceEpoch}'
           : '$destPosixDir/$name';
-      final receipt =
-          await widget.core.run([
-                cmd,
-                widget.peer['id'] as String,
-                widget.root,
-                path,
-                destination,
-              ])
-              as Map;
-      if (usingSaf && targetSafUri != null) {
+      final receipt = await widget.core.run([
+        cmd,
+        widget.peer['id'] as String,
+        widget.root,
+        path,
+        destination,
+        ...selectedExclusions,
+      ]) as Map;
+      if (phoneStorageTarget) {
+        await widget.core.localFiles('import', {
+          'source_path': destination,
+          'name': name,
+          'target': {
+            'kind': 'internal',
+            'path': destPosixDir
+                .replaceFirst('/storage/emulated/0', '')
+                .replaceFirst(RegExp(r'^/'), ''),
+          },
+        });
+        received = '$destPosixDir/$name';
+      } else if (usingSaf && targetSafUri != null) {
         await widget.core.exportToTargetTree(
           destination,
           targetSafUri!,
@@ -660,6 +737,17 @@ class _FileBrowserState extends State<FileBrowser> {
           (connectionConfig?['transport'] as String?) ??
           'lan';
       await loadActiveRoute();
+      if (receivedTransport == 'adb' || receivedTransport == 'ssh') {
+        resolvedRoute = {
+          ...?resolvedRoute,
+          'transport': receivedTransport,
+          'endpoint':
+              connectionConfig?[receivedTransport == 'adb'
+                  ? 'adb_endpoint'
+                  : 'ssh_endpoint'] ??
+              '',
+        };
+      }
       await loadTarget();
     } catch (e) {
       error = e.toString();
@@ -669,6 +757,7 @@ class _FileBrowserState extends State<FileBrowser> {
         'targetDir': destPosixDir,
         'targetDoc': destSafDoc,
         'targetLabel': targetLabel,
+        'excludes': selectedExclusions,
       };
     }
     if (mounted) {
@@ -689,13 +778,11 @@ class _FileBrowserState extends State<FileBrowser> {
     String endpoint = '';
     bool remoteApproved = currentCfg['remote_approved'] == true;
     if (transport == 'adb') {
-      endpoint =
-          (currentCfg['adb_endpoint'] as String? ?? '').isNotEmpty
+      endpoint = (currentCfg['adb_endpoint'] as String? ?? '').isNotEmpty
           ? currentCfg['adb_endpoint'] as String
           : '127.0.0.1:8731';
     } else if (transport == 'ssh') {
-      endpoint =
-          (currentCfg['ssh_endpoint'] as String? ?? '').isNotEmpty
+      endpoint = (currentCfg['ssh_endpoint'] as String? ?? '').isNotEmpty
           ? currentCfg['ssh_endpoint'] as String
           : '127.0.0.1:8731';
     } else if (transport == 'tailnet') {
@@ -723,12 +810,13 @@ class _FileBrowserState extends State<FileBrowser> {
       await loadActiveRoute();
     } else {
       final updated = <String, dynamic>{
+        ...currentCfg,
         'peer_id': peerId,
         'transport': transport,
         'endpoint': transport == 'lan' ? '' : endpoint,
         'remote_approved': remoteApproved,
-        'fallback_approved': true,
-        'fallback_transports': ['lan', 'adb', 'ssh', if (remoteApproved) 'tailnet'],
+        'fallback_approved': currentCfg['fallback_approved'] == true,
+        'fallback_transports': currentCfg['fallback_transports'] ?? <String>[],
         if (transport == 'adb') 'adb_endpoint': endpoint,
         if (transport == 'ssh') 'ssh_endpoint': endpoint,
       };
@@ -754,6 +842,7 @@ class _FileBrowserState extends State<FileBrowser> {
       targetDirOverride: pending['targetDir'] as String?,
       targetDocOverride: pending['targetDoc'] as String?,
       skipConfirm: true,
+      exclusions: List<String>.from(pending['excludes'] as List? ?? []),
     );
   }
 
@@ -878,9 +967,8 @@ class _FileBrowserState extends State<FileBrowser> {
                 Expanded(
                   child: Text(
                     'Source · ${widget.peer['name']} · ${widget.root}/$sourcePath',
-                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
+                    style: Theme.of(context).textTheme.labelMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -930,12 +1018,16 @@ class _FileBrowserState extends State<FileBrowser> {
 
   Widget _targetRowTile(Map<String, dynamic> e) {
     final isDir = e['kind'] == 'directory';
-    final rowId = (e['document_id'] as String?) ?? (e['path'] as String?) ?? '${e['name']}';
+    final rowId =
+        (e['document_id'] as String?) ??
+        (e['path'] as String?) ??
+        '${e['name']}';
     final isHovered = hoverTargetEntryId == rowId;
     final tile = Container(
       decoration: isHovered
           ? BoxDecoration(
-              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.18),
+              color: Theme.of(context).colorScheme.primary
+                  .withValues(alpha: 0.18),
               border: Border.all(color: Theme.of(context).colorScheme.primary),
             )
           : null,
@@ -964,7 +1056,7 @@ class _FileBrowserState extends State<FileBrowser> {
           if (!isDir) {
             return;
           }
-          if (Platform.isAndroid && targetMode != 'downloads') {
+          if (usingTargetSaf) {
             safStack.add(e['document_id'] as String);
           } else {
             targetPosixPath = e['path'] as String;
@@ -995,7 +1087,7 @@ class _FileBrowserState extends State<FileBrowser> {
         if (remotePath == null || busy) {
           return;
         }
-        if (Platform.isAndroid && targetMode != 'downloads') {
+        if (usingTargetSaf) {
           pull(
             remotePath,
             targetDocOverride: e['document_id'] as String?,
@@ -1014,12 +1106,14 @@ class _FileBrowserState extends State<FileBrowser> {
         .where((e) => _visibleName('${e['name']}'))
         .toList();
     final canGoUp =
-        (targetMode == 'downloads' && targetPosixPath != widget.core.downloads) ||
+        (targetMode == 'downloads' &&
+            targetPosixPath != widget.core.downloads) ||
         (targetMode == 'local' &&
-            !Platform.isAndroid &&
             targetPosixPath != widget.core.homeDir &&
-            targetPosixPath != '/') ||
-        (Platform.isAndroid && targetMode != 'downloads' && safStack.isNotEmpty);
+            targetPosixPath != '/' &&
+            (!Platform.isAndroid ||
+                targetPosixPath != '/storage/emulated/0')) ||
+        (usingTargetSaf && safStack.isNotEmpty);
     final isActive = activeSide == 'target';
     final cs = Theme.of(context).colorScheme;
 
@@ -1060,7 +1154,13 @@ class _FileBrowserState extends State<FileBrowser> {
                     const SizedBox(width: 4),
                     Expanded(
                       child: Text(
-                        'Target · ${targetMode == 'downloads' ? 'Downloads' : targetMode == 'termux' ? 'Termux' : 'Local'}',
+                        'Target · ${targetMode == 'downloads'
+                            ? 'Downloads'
+                            : targetMode == 'termux'
+                            ? 'Termux'
+                            : Platform.isAndroid
+                            ? 'Phone storage'
+                            : 'Local'}',
                         style: Theme.of(context).textTheme.labelMedium
                             ?.copyWith(fontWeight: FontWeight.w700),
                         overflow: TextOverflow.ellipsis,
@@ -1078,13 +1178,12 @@ class _FileBrowserState extends State<FileBrowser> {
                         onPressed: targetBusy
                             ? null
                             : () {
-                                if (Platform.isAndroid &&
-                                    targetMode != 'downloads') {
+                                if (usingTargetSaf) {
                                   safStack.removeLast();
                                 } else {
-                                  targetPosixPath = Directory(
-                                    targetPosixPath,
-                                  ).parent.path;
+                                  targetPosixPath = Directory(targetPosixPath)
+                                      .parent
+                                      .path;
                                 }
                                 loadTarget();
                               },
@@ -1100,7 +1199,9 @@ class _FileBrowserState extends State<FileBrowser> {
                         Icons.create_new_folder_outlined,
                         size: 16,
                       ),
-                      onPressed: targetBusy ? null : createNewTargetFolder,
+                      onPressed: targetBusy || targetPermissionMissing
+                          ? null
+                          : createNewTargetFolder,
                     ),
                   ],
                 ),
@@ -1112,7 +1213,10 @@ class _FileBrowserState extends State<FileBrowser> {
                   children: [
                     ChoiceChip(
                       visualDensity: VisualDensity.compact,
-                      label: const Text('Downloads', style: TextStyle(fontSize: 11)),
+                      label: const Text(
+                        'Downloads',
+                        style: TextStyle(fontSize: 11),
+                      ),
                       selected: targetMode == 'downloads',
                       onSelected: (_) => switchTargetMode('downloads'),
                     ),
@@ -1120,7 +1224,7 @@ class _FileBrowserState extends State<FileBrowser> {
                     ChoiceChip(
                       visualDensity: VisualDensity.compact,
                       label: Text(
-                        Platform.isAndroid ? 'SAF Folder' : 'Home',
+                        Platform.isAndroid ? 'Phone storage' : 'Home',
                         style: const TextStyle(fontSize: 11),
                       ),
                       selected: targetMode == 'local',
@@ -1139,10 +1243,31 @@ class _FileBrowserState extends State<FileBrowser> {
                   ],
                 ),
               ),
+              if (Platform.isAndroid && !allFilesAccess)
+                TextButton.icon(
+                  onPressed: () =>
+                      widget.core.openConnectionSetup('all_files_access'),
+                  icon: const Icon(Icons.sd_storage_outlined, size: 16),
+                  label: const Text(
+                    'Phone storage access',
+                    style: TextStyle(fontSize: 11),
+                  ),
+                ),
+              if (targetPermissionMissing)
+                const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Text(
+                    'Allow phone storage access to browse and save here.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
               if (targetBusy) const LinearProgressIndicator(),
               if (candidateData.isNotEmpty)
                 Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  margin: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
                     vertical: 4,
@@ -1164,11 +1289,12 @@ class _FileBrowserState extends State<FileBrowser> {
               if (targetError != null)
                 Padding(
                   padding: const EdgeInsets.all(6),
-                  child: Text(targetError!, style: const TextStyle(fontSize: 12)),
+                  child: Text(
+                    targetError!,
+                    style: const TextStyle(fontSize: 12),
+                  ),
                 ),
-              if (Platform.isAndroid &&
-                  targetMode != 'downloads' &&
-                  targetSafUri == null)
+              if (usingTargetSaf && targetSafUri == null)
                 Padding(
                   padding: const EdgeInsets.all(8),
                   child: OutlinedButton.icon(
@@ -1227,12 +1353,32 @@ class _FileBrowserState extends State<FileBrowser> {
           sourcePath == '.' ? widget.root : sourcePath.split('/').last,
         ),
         actions: [
+          if (Platform.isAndroid)
+            IconButton(
+              tooltip: 'Choose devices and storage',
+              icon: const Icon(Icons.view_week_outlined),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => PhoneFiles(
+                    core: widget.core,
+                    remotePeer: widget.peer,
+                    remoteRoot: widget.root,
+                  ),
+                ),
+              ),
+            ),
           IconButton(
             tooltip: showHidden ? 'Hide hidden files' : 'Show hidden files',
             icon: Icon(
               showHidden ? Icons.visibility : Icons.visibility_off_outlined,
             ),
-            onPressed: () => setState(() => showHidden = !showHidden),
+            onPressed: () async {
+              setState(() => showHidden = !showHidden);
+              await widget.core.appSettings(
+                update: {'show_hidden': showHidden},
+              );
+            },
           ),
           IconButton(
             onPressed: busy ? null : () => pull(sourcePath),
@@ -1287,7 +1433,10 @@ class _FileBrowserState extends State<FileBrowser> {
                 ),
                 ChoiceChip(
                   visualDensity: VisualDensity.compact,
-                  label: const Text('Force TAR', style: TextStyle(fontSize: 11)),
+                  label: const Text(
+                    'Force TAR',
+                    style: TextStyle(fontSize: 11),
+                  ),
                   selected: preferredMethod == 'tar',
                   onSelected: busy
                       ? null
@@ -1369,7 +1518,10 @@ class _FileBrowserState extends State<FileBrowser> {
           if (error != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              child: SelectableText(error!, style: const TextStyle(fontSize: 12)),
+              child: SelectableText(
+                error!,
+                style: const TextStyle(fontSize: 12),
+              ),
             ),
           if (received != null)
             Padding(
@@ -1377,7 +1529,11 @@ class _FileBrowserState extends State<FileBrowser> {
               child: Column(
                 children: [
                   Text(
-                    'Verified download${receivedMode == 'tar' ? ' (streaming tar)' : receivedMode == 'stream' ? ' (TCP stream)' : ' (direct)'}\n${received!.split('/').last}\nVia ${connectionDisplayName(receivedTransport ?? 'lan')}${receivedMiB != null && receivedMiB! > 0 ? ' · ${receivedMiB!.toStringAsFixed(2)} MiB/s' : ''}',
+                    'Verified download${receivedMode == 'tar'
+                        ? ' (streaming tar)'
+                        : receivedMode == 'stream'
+                        ? ' (TCP stream)'
+                        : ' (direct)'}\n${received!.split('/').last}\nVia ${connectionDisplayName(receivedTransport ?? 'lan')}${receivedMiB != null && receivedMiB! > 0 ? ' · ${receivedMiB!.toStringAsFixed(2)} MiB/s' : ''}',
                     textAlign: TextAlign.center,
                     style: const TextStyle(fontSize: 12),
                   ),

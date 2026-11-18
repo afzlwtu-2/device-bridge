@@ -3,7 +3,7 @@
 Requires the preceding android_ui_e2e pairing; never injects trust or permissions.
 """
 import datetime
-import hashlib
+from checksums import xxh64_bytes
 import json
 from pathlib import Path
 import re
@@ -40,7 +40,7 @@ def main():
         data=ui.remote('cat /data/user/0/dev.devicebridge.devicebridge/files/devicebridge/downloads/gui-hello.txt',True)
         expected=b'Actual standalone DeviceBridge GUI over LAN\n'
         if data!=expected:raise RuntimeError('release download bytes differ')
-        evidence['sha256']=hashlib.sha256(data).hexdigest();evidence['labels']=ui.labels(ui.dump())
+        evidence['xxh64']=xxh64_bytes(data);evidence['labels']=ui.labels(ui.dump())
         (ui.ROOT/'docs/test-evidence'/('android-release-'+run+'.png')).write_bytes(ui.remote(ui.focus_guard()+'screencap -p',True))
         evidence['result']='PASS'
     except Exception as e:evidence['result']='FAIL';evidence['error']=str(e);raise

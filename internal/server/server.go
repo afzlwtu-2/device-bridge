@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
 	"devicebridge/internal/auth"
 	"devicebridge/internal/features"
 	"devicebridge/internal/files"
@@ -13,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/cespare/xxhash/v2"
 	"io"
 	"log"
 	"net"
@@ -153,7 +153,16 @@ func (s *Server) roots(w http.ResponseWriter, r *http.Request) {
 	roots := []protocol.Root{}
 	for _, p := range s.Files.All() {
 		if s.Store.Authorized(peerID(r), p.ID(), "browse", 0) == nil {
-			roots = append(roots, protocol.Root{ID: p.ID(), Name: p.ID()})
+			name := p.ID()
+			switch name {
+			case "phone_storage":
+				name = "Internal storage"
+			case "saf":
+				name = "SAF"
+			case "termux_home":
+				name = "Termux Home"
+			}
+			roots = append(roots, protocol.Root{ID: p.ID(), Name: name})
 		}
 	}
 	send(w, 200, roots)
@@ -251,9 +260,10 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "audit_unavailable")
 		return
 	}
-	h := sha256.Sum256(data)
+	h := xxhash.New()
+	h.Write(data)
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("X-Chunk-SHA256", hex.EncodeToString(h[:]))
+	w.Header().Set("X-Chunk-XXH64", hex.EncodeToString(h.Sum(nil)))
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.Header().Set("X-DeviceBridge-Version", "1")
 	_, _ = w.Write(data)
@@ -265,7 +275,7 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	m, err := files.Manifest(ctx, p, rel, func(n int64) error { return s.Store.Authorized(peerID(r), p.ID(), "read", n) })
+	m, err := files.Manifest(ctx, p, rel, func(n int64) error { return s.Store.Authorized(peerID(r), p.ID(), "read", n) }, r.URL.Query()["exclude"]...)
 	if err != nil {
 		fail(w, 409, "manifest_failed_or_changed")
 		return
@@ -279,6 +289,11 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) tar(w http.ResponseWriter, r *http.Request) {
 	p, rel, ok := s.scoped(w, r, "read")
 	if !ok {
+		return
+	}
+	excludes, err := files.ValidateExclusions(r.URL.Query()["exclude"])
+	if err != nil {
+		fail(w, 400, "invalid_exclusion")
 		return
 	}
 	codec := r.URL.Query().Get("codec")
@@ -300,7 +315,7 @@ func (s *Server) tar(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 	_ = transfer.WriteTar(r.Context(), p, rel, codec, w, func(n int64) error {
 		return s.Store.Authorized(peerID(r), p.ID(), "read", n)
-	})
+	}, excludes...)
 }
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	p, rel, ok := s.scoped(w, r, "read")

@@ -14,8 +14,13 @@ import java.util.concurrent.Executors
 /** Only a fixed, packaged executable; no shell and no privileged process. */
 object CoreRuntime {
     @Volatile private var process: Process? = null
+    @Volatile private var networkSensitive = false
+    @Volatile private var fallbackAllowed = false
     private val readers = Executors.newFixedThreadPool(2)
     fun cancel() { process?.destroy() }
+    fun networkChanged() {
+        if (networkSensitive && !fallbackAllowed) cancel()
+    }
 
     @Synchronized fun execute(
         context: Context,
@@ -33,6 +38,8 @@ object CoreRuntime {
         val allowFallback = arguments.contains("--allow-route-fallback")
         val transportIndex = arguments.indexOf("--transport")
         val transportMode = if (transportIndex >= 0 && transportIndex + 1 < arguments.size) arguments[transportIndex + 1] else "lan"
+        networkSensitive = cidr != null && transportMode == "lan"
+        fallbackAllowed = allowFallback
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onLost(network: Network) { if (!allowFallback) cancel() }
             override fun onLinkPropertiesChanged(network: Network, link: LinkProperties) {
@@ -108,6 +115,8 @@ object CoreRuntime {
         } finally {
             process?.destroy()
             process = null
+            networkSensitive = false
+            fallbackAllowed = false
             if (watching) cm.unregisterNetworkCallback(callback)
             if (multicast.isHeld) multicast.release()
         }

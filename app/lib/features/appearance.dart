@@ -122,11 +122,7 @@ class _EdgeGlow extends CustomPainter {
       oldDelegate.isRed != isRed;
 }
 
-Widget amoledNavIcon(
-  BuildContext context,
-  IconData icon,
-  String appearance,
-) {
+Widget amoledNavIcon(BuildContext context, IconData icon, String appearance) {
   if (!isAmoledTheme(appearance)) {
     return Icon(icon);
   }
@@ -159,26 +155,27 @@ ThemeData amoledTheme(String appearance) {
   final isRed = appearance == 'amoled-red';
   final edge = isRed ? const Color(0xffcc0022) : const Color(0xff00b848);
   final neon = isRed ? const Color(0xffff1738) : const Color(0xff1cff68);
-  final scheme = ColorScheme.fromSeed(
-    seedColor: neon,
-    brightness: Brightness.dark,
-  ).copyWith(
-    primary: neon,
-    onPrimary: Colors.black,
-    primaryContainer: neon.withValues(alpha: 0.22),
-    onPrimaryContainer: neon,
-    secondary: neon,
-    onSecondary: Colors.black,
-    secondaryContainer: neon,
-    onSecondaryContainer: Colors.black,
-    tertiary: neon,
-    onTertiary: Colors.black,
-    surface: Colors.black,
-    surfaceContainer: Colors.black,
-    surfaceContainerLow: Colors.black,
-    surfaceContainerHigh: const Color(0xff080808),
-    surfaceContainerHighest: const Color(0xff111111),
-  );
+  final scheme =
+      ColorScheme.fromSeed(
+        seedColor: neon,
+        brightness: Brightness.dark,
+      ).copyWith(
+        primary: neon,
+        onPrimary: Colors.black,
+        primaryContainer: neon.withValues(alpha: 0.22),
+        onPrimaryContainer: neon,
+        secondary: neon,
+        onSecondary: Colors.black,
+        secondaryContainer: neon,
+        onSecondaryContainer: Colors.black,
+        tertiary: neon,
+        onTertiary: Colors.black,
+        surface: Colors.black,
+        surfaceContainer: Colors.black,
+        surfaceContainerLow: Colors.black,
+        surfaceContainerHigh: const Color(0xff080808),
+        surfaceContainerHighest: const Color(0xff111111),
+      );
   return ThemeData(
     colorScheme: scheme,
     scaffoldBackgroundColor: Colors.black,
@@ -202,9 +199,8 @@ ThemeData amoledTheme(String appearance) {
     filledButtonTheme: FilledButtonThemeData(
       style: ButtonStyle(
         foregroundColor: WidgetStateProperty.resolveWith(
-          (s) => s.contains(WidgetState.disabled)
-              ? Colors.white38
-              : Colors.black,
+          (s) =>
+              s.contains(WidgetState.disabled) ? Colors.white38 : Colors.black,
         ),
         backgroundColor: WidgetStateProperty.all(Colors.transparent),
         elevation: WidgetStateProperty.all(0),
@@ -252,10 +248,7 @@ ThemeData amoledTheme(String appearance) {
             color: Colors.black,
             borderRadius: BorderRadius.circular(24),
             boxShadow: [
-              BoxShadow(
-                color: neon.withValues(alpha: 0.18),
-                blurRadius: 8,
-              ),
+              BoxShadow(color: neon.withValues(alpha: 0.18), blurRadius: 8),
             ],
           ),
           child: child,
@@ -277,9 +270,8 @@ ThemeData amoledTheme(String appearance) {
         (s) => s.contains(WidgetState.selected) ? Colors.black : Colors.white70,
       ),
       trackColor: WidgetStateProperty.resolveWith(
-        (s) => s.contains(WidgetState.selected)
-            ? neon
-            : const Color(0xff1a1a1a),
+        (s) =>
+            s.contains(WidgetState.selected) ? neon : const Color(0xff1a1a1a),
       ),
     ),
     radioTheme: RadioThemeData(
@@ -328,7 +320,12 @@ class _MattePaperArt extends CustomPainter {
     canvas.drawCircle(Offset(size.width * 0.12, size.height * 0.14), 140, wash);
     canvas.drawCircle(Offset(size.width * 0.88, size.height * 0.22), 160, wash);
     canvas.drawOval(
-      Rect.fromLTWH(-40, size.height * 0.72, size.width + 80, size.height * 0.35),
+      Rect.fromLTWH(
+        -40,
+        size.height * 0.72,
+        size.width + 80,
+        size.height * 0.35,
+      ),
       Paint()
         ..color = const Color(0x6684902c)
         ..maskFilter = const ui.MaskFilter.blur(ui.BlurStyle.normal, 36),
@@ -346,19 +343,153 @@ class _MattePaperArt extends CustomPainter {
       final y = value / 2147483647 * size.height;
       canvas.drawLine(Offset(x, y), Offset(x + 0.9, y + 0.15), grain);
     }
+
+    // Soft botanicals & peeking bird behind scrollable lists/cards so
+    // foreground ink text stays crisp and legible on every screen.
+    canvas.saveLayer(
+      Offset.zero & size,
+      Paint()..color = const Color(0x46ffffff),
+    );
+    _drawGrassTuft(canvas, Offset(size.width * 0.16, size.height * 0.29), 0.78);
+    _drawGrassTuft(canvas, Offset(size.width * 0.84, size.height * 0.36), 0.76);
+    _drawGrassTuft(canvas, Offset(size.width * 0.22, size.height * 0.62), 0.80);
+    _drawGrassTuft(canvas, Offset(size.width * 0.76, size.height * 0.75), 0.82);
+    _drawDots(canvas, Offset(size.width * 0.88, size.height * 0.56));
+    _drawDots(canvas, Offset(size.width * 0.12, size.height * 0.73));
+
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.09, size.height * 0.24),
+      _MatteMeadowArt.cream,
+      0.70,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.91, size.height * 0.30),
+      _MatteMeadowArt.gold,
+      0.74,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.13, size.height * 0.52),
+      _MatteMeadowArt.gold,
+      0.68,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.87, size.height * 0.64),
+      _MatteMeadowArt.cream,
+      0.76,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.24, size.height * 0.76),
+      _MatteMeadowArt.cream,
+      0.64,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.73, size.height * 0.43),
+      _MatteMeadowArt.gold,
+      0.60,
+    );
+    _drawComicRays(canvas, Offset(size.width * 0.87, size.height * 0.43), 0.4);
+    _drawCoolCrow(
+      canvas,
+      Offset(size.width * 0.79, size.height * 0.49),
+      0.54,
+    );
+    canvas.restore();
+
+    // Topbar meadow accents tucked into the open header space between title & actions.
+    canvas.saveLayer(
+      Rect.fromLTWH(0, 0, size.width, 120),
+      Paint()..color = const Color(0xc8ffffff),
+    );
+    _drawGrassTuft(canvas, Offset(size.width * 0.51, 74), 0.62);
+    _drawGrassTuft(canvas, Offset(size.width * 0.64, 76), 0.58);
+    _drawDots(canvas, Offset(size.width * 0.46, 72));
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.53, 52),
+      _MatteMeadowArt.cream,
+      0.48,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.63, 58),
+      _MatteMeadowArt.gold,
+      0.44,
+    );
+    _drawComicRays(canvas, Offset(size.width * 0.59, 32), 0.35);
+    _drawCoolCrow(canvas, Offset(size.width * 0.58, 53), 0.34);
+    canvas.restore();
+
+    // Bottombar meadow strip along the lower margin & between nav destinations.
+    final bottomGround = size.height - 6;
+    canvas.saveLayer(
+      Rect.fromLTWH(0, size.height - 96, size.width, 96),
+      Paint()..color = const Color(0xb8ffffff),
+    );
+    _drawGrassTuft(canvas, Offset(size.width * 0.16, bottomGround - 4), 0.65);
+    _drawGrassTuft(canvas, Offset(size.width * 0.34, bottomGround - 6), 0.62);
+    _drawGrassTuft(canvas, Offset(size.width * 0.67, bottomGround - 5), 0.65);
+    _drawDots(canvas, Offset(size.width * 0.30, bottomGround - 1));
+    _drawDots(canvas, Offset(size.width * 0.84, bottomGround - 1));
+
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.04, bottomGround - 16),
+      _MatteMeadowArt.cream,
+      0.52,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.25, bottomGround - 12),
+      _MatteMeadowArt.gold,
+      0.46,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.41, bottomGround - 14),
+      _MatteMeadowArt.cream,
+      0.44,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.58, bottomGround - 14),
+      _MatteMeadowArt.gold,
+      0.44,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.74, bottomGround - 12),
+      _MatteMeadowArt.cream,
+      0.46,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.96, bottomGround - 16),
+      _MatteMeadowArt.gold,
+      0.52,
+    );
+    _drawCoolCrow(canvas, Offset(size.width * 0.50, bottomGround - 14), 0.44);
+    canvas.restore();
   }
 
   @override
   bool shouldRepaint(covariant _MattePaperArt oldDelegate) => false;
 }
 
+abstract final class _MatteMeadowArt {
+  static const ink = Color(0xff1b1e14);
+  static const cream = Color(0xfff7f3dd);
+  static const gold = Color(0xffe5b93c);
+  static const leaf = Color(0xff5c7e22);
+}
+
 class _MatteMeadowPainter extends CustomPainter {
   const _MatteMeadowPainter();
-
-  static const _ink = Color(0xff1b1e14);
-  static const _cream = Color(0xfff7f3dd);
-  static const _gold = Color(0xffe5b93c);
-  static const _leaf = Color(0xff5c7e22);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -369,188 +500,210 @@ class _MatteMeadowPainter extends CustomPainter {
     _drawDots(canvas, Offset(size.width * 0.15, groundY - 4));
     _drawDots(canvas, Offset(size.width * 0.84, groundY - 2));
 
-    _drawFlower(canvas, Offset(size.width * 0.08, groundY - 40), _cream, 1.0);
-    _drawFlower(canvas, Offset(size.width * 0.17, groundY - 18), _gold, 0.82);
-    _drawFlower(canvas, Offset(size.width * 0.80, groundY - 22), _cream, 0.88);
-    _drawFlower(canvas, Offset(size.width * 0.91, groundY - 38), _gold, 1.02);
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.08, groundY - 40),
+      _MatteMeadowArt.cream,
+      1.0,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.17, groundY - 18),
+      _MatteMeadowArt.gold,
+      0.82,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.80, groundY - 22),
+      _MatteMeadowArt.cream,
+      0.88,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.91, groundY - 38),
+      _MatteMeadowArt.gold,
+      1.02,
+    );
 
     _drawComicRays(canvas, Offset(size.width * 0.67, groundY - 58), 0.45);
     _drawCoolCrow(canvas, Offset(size.width * 0.53, groundY - 22), 0.76);
-  }
-
-  void _drawGrassTuft(Canvas canvas, Offset base, double scale) {
-    final p = Paint()
-      ..color = _ink
-      ..strokeWidth = 2.0 * scale
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(base, base + Offset(-7 * scale, -8 * scale), p);
-    canvas.drawLine(base, base + Offset(0, -11 * scale), p);
-    canvas.drawLine(base, base + Offset(7 * scale, -8 * scale), p);
-  }
-
-  void _drawDots(Canvas canvas, Offset at) {
-    final p = Paint()..color = _ink;
-    canvas.drawOval(Rect.fromCenter(center: at, width: 3.5, height: 5), p);
-    canvas.drawOval(
-      Rect.fromCenter(center: at + const Offset(6, 0.5), width: 3.5, height: 5),
-      p,
-    );
-  }
-
-  void _drawFlower(Canvas canvas, Offset center, Color petalColor, double s) {
-    final outline = Paint()
-      ..color = _ink
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.9 * s
-      ..strokeJoin = StrokeJoin.round;
-    final stemBottom = center + Offset(0, 34 * s);
-
-    canvas.drawOval(
-      Rect.fromCenter(
-        center: stemBottom + Offset(0, 2 * s),
-        width: 22 * s,
-        height: 6 * s,
-      ),
-      Paint()..color = const Color(0x381b1e14),
-    );
-    canvas.drawLine(
-      center + Offset(0, 6 * s),
-      stemBottom,
-      Paint()
-        ..color = _ink
-        ..strokeWidth = 2.2 * s
-        ..strokeCap = StrokeCap.round,
-    );
-
-    for (final dir in [-1.0, 1.0]) {
-      final leaf = Path()
-        ..moveTo(stemBottom.dx, stemBottom.dy - 4 * s)
-        ..quadraticBezierTo(
-          stemBottom.dx + dir * 12 * s,
-          stemBottom.dy - 14 * s,
-          stemBottom.dx + dir * 14 * s,
-          stemBottom.dy - 6 * s,
-        )
-        ..quadraticBezierTo(
-          stemBottom.dx + dir * 8 * s,
-          stemBottom.dy + 1 * s,
-          stemBottom.dx,
-          stemBottom.dy - 4 * s,
-        );
-      canvas.drawPath(leaf, Paint()..color = _leaf);
-      canvas.drawPath(leaf, outline);
-    }
-
-    final petalFill = Paint()..color = petalColor;
-    for (var i = 0; i < 5; i++) {
-      final angle = i * (2 * 3.14159265 / 5) - 3.14159265 / 2;
-      canvas.save();
-      canvas.translate(center.dx, center.dy);
-      canvas.rotate(angle);
-      final rect = Rect.fromCenter(
-        center: Offset(0, -8.5 * s),
-        width: 8.5 * s,
-        height: 11 * s,
-      );
-      canvas.drawOval(rect, petalFill);
-      canvas.drawOval(rect, outline);
-      canvas.restore();
-    }
-
-    final centerColor = petalColor == _gold ? const Color(0xffd47922) : _gold;
-    canvas.drawCircle(center, 4.6 * s, Paint()..color = centerColor);
-    canvas.drawCircle(center, 4.6 * s, outline);
-  }
-
-  void _drawCoolCrow(Canvas canvas, Offset center, double s) {
-    canvas.save();
-    canvas.translate(center.dx, center.dy);
-    canvas.scale(s, s);
-
-    final bodyFill = Paint()..color = const Color(0xff20231c);
-    final outline = Paint()
-      ..color = _ink
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.4
-      ..strokeJoin = StrokeJoin.round;
-
-    canvas.drawOval(
-      Rect.fromCenter(center: const Offset(-4, 24), width: 108, height: 14),
-      Paint()..color = const Color(0x3a1b1e14),
-    );
-
-    final leg = Paint()
-      ..color = const Color(0xff6b7068)
-      ..strokeWidth = 4.2
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(const Offset(-28, 10), const Offset(-54, 18), leg);
-    canvas.drawLine(const Offset(-20, 14), const Offset(-46, 23), leg);
-    canvas.drawLine(const Offset(-54, 18), const Offset(-62, 14), leg);
-    canvas.drawLine(const Offset(-54, 18), const Offset(-63, 21), leg);
-
-    final body = Path()
-      ..moveTo(-36, 10)
-      ..quadraticBezierTo(-18, -14, 16, -16)
-      ..quadraticBezierTo(44, -18, 48, 0)
-      ..quadraticBezierTo(44, 18, 12, 21)
-      ..quadraticBezierTo(-24, 24, -36, 10)
-      ..close();
-    canvas.drawPath(body, bodyFill);
-    canvas.drawPath(body, outline);
-
-    canvas.drawCircle(const Offset(26, -18), 16, bodyFill);
-    canvas.drawCircle(const Offset(26, -18), 16, outline);
-    final tuft = Path()
-      ..moveTo(26, -33)
-      ..lineTo(31, -41)
-      ..lineTo(33, -32)
-      ..lineTo(39, -38)
-      ..lineTo(37, -28);
-    canvas.drawPath(tuft, bodyFill);
-
-    final beak = Path()
-      ..moveTo(14, -20)
-      ..lineTo(-2, -16)
-      ..lineTo(14, -10)
-      ..close();
-    canvas.drawPath(beak, Paint()..color = const Color(0xff7f8580));
-    canvas.drawPath(beak, outline);
-
-    final glassPaint = Paint()..color = const Color(0xff11130e);
-    final lens1 = RRect.fromRectAndRadius(
-      const Rect.fromLTWH(10, -28, 12, 9),
-      const Radius.circular(2.5),
-    );
-    final lens2 = RRect.fromRectAndRadius(
-      const Rect.fromLTWH(23, -27, 13, 9),
-      const Radius.circular(2.5),
-    );
-    canvas.drawRRect(lens1, glassPaint);
-    canvas.drawRRect(lens2, glassPaint);
-    canvas.drawLine(
-      const Offset(36, -23),
-      const Offset(42, -20),
-      Paint()
-        ..color = _ink
-        ..strokeWidth = 2.0,
-    );
-    final shine = Paint()
-      ..color = _cream
-      ..strokeWidth = 1.6
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(const Offset(13, -26), const Offset(16, -21), shine);
-    canvas.drawLine(const Offset(27, -25), const Offset(30, -20), shine);
-
-    canvas.restore();
   }
 
   @override
   bool shouldRepaint(covariant _MatteMeadowPainter oldDelegate) => false;
 }
 
+void _drawGrassTuft(Canvas canvas, Offset base, double scale) {
+  final p = Paint()
+    ..color = _MatteMeadowArt.ink
+    ..strokeWidth = 2.0 * scale
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(base, base + Offset(-7 * scale, -8 * scale), p);
+  canvas.drawLine(base, base + Offset(0, -11 * scale), p);
+  canvas.drawLine(base, base + Offset(7 * scale, -8 * scale), p);
+}
+
+void _drawDots(Canvas canvas, Offset at) {
+  final p = Paint()..color = _MatteMeadowArt.ink;
+  canvas.drawOval(Rect.fromCenter(center: at, width: 3.5, height: 5), p);
+  canvas.drawOval(
+    Rect.fromCenter(center: at + const Offset(6, 0.5), width: 3.5, height: 5),
+    p,
+  );
+}
+
+void _drawFlower(Canvas canvas, Offset center, Color petalColor, double s) {
+  final outline = Paint()
+    ..color = _MatteMeadowArt.ink
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1.9 * s
+    ..strokeJoin = StrokeJoin.round;
+  final stemBottom = center + Offset(0, 34 * s);
+
+  canvas.drawOval(
+    Rect.fromCenter(
+      center: stemBottom + Offset(0, 2 * s),
+      width: 22 * s,
+      height: 6 * s,
+    ),
+    Paint()..color = const Color(0x381b1e14),
+  );
+  canvas.drawLine(
+    center + Offset(0, 6 * s),
+    stemBottom,
+    Paint()
+      ..color = _MatteMeadowArt.ink
+      ..strokeWidth = 2.2 * s
+      ..strokeCap = StrokeCap.round,
+  );
+
+  for (final dir in [-1.0, 1.0]) {
+    final leaf = Path()
+      ..moveTo(stemBottom.dx, stemBottom.dy - 4 * s)
+      ..quadraticBezierTo(
+        stemBottom.dx + dir * 12 * s,
+        stemBottom.dy - 14 * s,
+        stemBottom.dx + dir * 14 * s,
+        stemBottom.dy - 6 * s,
+      )
+      ..quadraticBezierTo(
+        stemBottom.dx + dir * 8 * s,
+        stemBottom.dy + 1 * s,
+        stemBottom.dx,
+        stemBottom.dy - 4 * s,
+      );
+    canvas.drawPath(leaf, Paint()..color = _MatteMeadowArt.leaf);
+    canvas.drawPath(leaf, outline);
+  }
+
+  final petalFill = Paint()..color = petalColor;
+  for (var i = 0; i < 5; i++) {
+    final angle = i * (2 * 3.14159265 / 5) - 3.14159265 / 2;
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(angle);
+    final rect = Rect.fromCenter(
+      center: Offset(0, -8.5 * s),
+      width: 8.5 * s,
+      height: 11 * s,
+    );
+    canvas.drawOval(rect, petalFill);
+    canvas.drawOval(rect, outline);
+    canvas.restore();
+  }
+
+  final centerColor = petalColor == _MatteMeadowArt.gold
+      ? const Color(0xffd47922)
+      : _MatteMeadowArt.gold;
+  canvas.drawCircle(center, 4.6 * s, Paint()..color = centerColor);
+  canvas.drawCircle(center, 4.6 * s, outline);
+}
+
+void _drawCoolCrow(Canvas canvas, Offset center, double s) {
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  canvas.scale(s, s);
+
+  final bodyFill = Paint()..color = const Color(0xff20231c);
+  final outline = Paint()
+    ..color = _MatteMeadowArt.ink
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.4
+    ..strokeJoin = StrokeJoin.round;
+
+  canvas.drawOval(
+    Rect.fromCenter(center: const Offset(-4, 24), width: 108, height: 14),
+    Paint()..color = const Color(0x3a1b1e14),
+  );
+
+  final leg = Paint()
+    ..color = const Color(0xff6b7068)
+    ..strokeWidth = 4.2
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(const Offset(-28, 10), const Offset(-54, 18), leg);
+  canvas.drawLine(const Offset(-20, 14), const Offset(-46, 23), leg);
+  canvas.drawLine(const Offset(-54, 18), const Offset(-62, 14), leg);
+  canvas.drawLine(const Offset(-54, 18), const Offset(-63, 21), leg);
+
+  final body = Path()
+    ..moveTo(-36, 10)
+    ..quadraticBezierTo(-18, -14, 16, -16)
+    ..quadraticBezierTo(44, -18, 48, 0)
+    ..quadraticBezierTo(44, 18, 12, 21)
+    ..quadraticBezierTo(-24, 24, -36, 10)
+    ..close();
+  canvas.drawPath(body, bodyFill);
+  canvas.drawPath(body, outline);
+
+  canvas.drawCircle(const Offset(26, -18), 16, bodyFill);
+  canvas.drawCircle(const Offset(26, -18), 16, outline);
+  final tuft = Path()
+    ..moveTo(26, -33)
+    ..lineTo(31, -41)
+    ..lineTo(33, -32)
+    ..lineTo(39, -38)
+    ..lineTo(37, -28);
+  canvas.drawPath(tuft, bodyFill);
+
+  final beak = Path()
+    ..moveTo(14, -20)
+    ..lineTo(-2, -16)
+    ..lineTo(14, -10)
+    ..close();
+  canvas.drawPath(beak, Paint()..color = const Color(0xff7f8580));
+  canvas.drawPath(beak, outline);
+
+  final glassPaint = Paint()..color = const Color(0xff11130e);
+  final lens1 = RRect.fromRectAndRadius(
+    const Rect.fromLTWH(10, -28, 12, 9),
+    const Radius.circular(2.5),
+  );
+  final lens2 = RRect.fromRectAndRadius(
+    const Rect.fromLTWH(23, -27, 13, 9),
+    const Radius.circular(2.5),
+  );
+  canvas.drawRRect(lens1, glassPaint);
+  canvas.drawRRect(lens2, glassPaint);
+  canvas.drawLine(
+    const Offset(36, -23),
+    const Offset(42, -20),
+    Paint()
+      ..color = _MatteMeadowArt.ink
+      ..strokeWidth = 2.0,
+  );
+  final shine = Paint()
+    ..color = _MatteMeadowArt.cream
+    ..strokeWidth = 1.6
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(const Offset(13, -26), const Offset(16, -21), shine);
+  canvas.drawLine(const Offset(27, -25), const Offset(30, -20), shine);
+
+  canvas.restore();
+}
+
 void _drawComicRays(Canvas canvas, Offset origin, double tilt) {
   final p = Paint()
-    ..color = const Color(0xff1b1e14)
+    ..color = _MatteMeadowArt.ink
     ..strokeWidth = 3.2
     ..strokeCap = StrokeCap.round;
   canvas.save();
@@ -570,12 +723,22 @@ ThemeData mattePaperTheme() {
   final scheme = ColorScheme.fromSeed(seedColor: olive).copyWith(
     primary: olive,
     onPrimary: cream,
+    primaryContainer: const Color(0xffdbe4a0),
+    onPrimaryContainer: ink,
     secondary: gold,
     onSecondary: ink,
+    secondaryContainer: const Color(0xfff0dda1),
+    onSecondaryContainer: ink,
+    tertiary: const Color(0xff69753b),
+    onTertiary: cream,
+    tertiaryContainer: const Color(0xffd7dec1),
+    onTertiaryContainer: ink,
     surface: cream,
     onSurface: ink,
+    onSurfaceVariant: const Color(0xff4b503a),
     surfaceContainerLow: const Color(0xffede9c9),
     surfaceContainer: const Color(0xffede9c9),
+    surfaceContainerHighest: const Color(0xffe6e6c7),
     inverseSurface: cream,
     onInverseSurface: ink,
     outline: ink,
@@ -589,6 +752,22 @@ ThemeData mattePaperTheme() {
     colorScheme: scheme,
     useMaterial3: true,
     scaffoldBackgroundColor: Colors.transparent,
+    // The paper art lives behind Navigator. Android's default route fade
+    // otherwise paints ColorScheme.surface (cream) across it during a push/pop.
+    pageTransitionsTheme: PageTransitionsTheme(
+      builders: {
+        ...const PageTransitionsTheme().builders,
+        TargetPlatform.android: const PredictiveBackPageTransitionsBuilder(
+          fallbackColor: Colors.transparent,
+        ),
+        TargetPlatform.linux: const FadeForwardsPageTransitionsBuilder(
+          backgroundColor: Colors.transparent,
+        ),
+        TargetPlatform.windows: const FadeForwardsPageTransitionsBuilder(
+          backgroundColor: Colors.transparent,
+        ),
+      },
+    ),
     appBarTheme: const AppBarTheme(
       backgroundColor: Colors.transparent,
       foregroundColor: ink,

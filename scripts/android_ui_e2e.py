@@ -6,7 +6,7 @@ diagnostics. Start only with the user's APK/app-testing authorization. Firewall
 approval is separate; this script never changes firewall rules.
 """
 import datetime
-import hashlib
+from checksums import xxh64_bytes
 import json
 from pathlib import Path
 import re
@@ -134,7 +134,7 @@ def main():
         appfile = '/data/user/0/' + PACKAGE + '/files/devicebridge/downloads/gui-fixture/gui-hello.txt'
         actual = remote(shlex.join(['run-as', PACKAGE, 'cat', appfile]), True)
         if actual != payload: raise RuntimeError('app-private received bytes differ')
-        evidence['verified_sha256'] = hashlib.sha256(actual).hexdigest()
+        evidence['verified_xxh64'] = xxh64_bytes(actual)
         evidence['app_uid'] = remote(shlex.join(['run-as', PACKAGE, 'id']), True).decode().strip()
         evidence['checks'].append('standalone app pulled verified nested folder; app-UID bytes match')
         png = remote(focus_guard() + 'screencap -p', True)

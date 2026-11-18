@@ -4,6 +4,9 @@ package protocol
 import "time"
 
 const Version = 1
+
+// ManifestVersion 2 uses XXH64 (seed zero), matching xxhsum -H1.
+const ManifestVersion = 2
 const Service = "_devicebridge._tcp"
 
 type Device struct {
@@ -46,15 +49,16 @@ type Listing struct {
 type ManifestEntry struct {
 	Path      string `json:"path"`
 	Size      int64  `json:"size"`
-	SHA256    string `json:"sha256"`
+	XXH64     string `json:"xxh64"`
 	Directory bool   `json:"directory"`
 }
 type Manifest struct {
-	Version int             `json:"version"`
-	Root    string          `json:"root"`
-	Path    string          `json:"path"`
-	Entries []ManifestEntry `json:"entries"`
-	Bytes   int64           `json:"bytes"`
+	Excludes []string        `json:"excludes,omitempty"`
+	Version  int             `json:"version"`
+	Root     string          `json:"root"`
+	Path     string          `json:"path"`
+	Entries  []ManifestEntry `json:"entries"`
+	Bytes    int64           `json:"bytes"`
 }
 type Error struct {
 	Code    string `json:"code"`

@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -64,7 +65,31 @@ func run() error {
 		}
 		exports, _ = s.Exports()
 	}
+	if endpoint, token := os.Getenv("DEVICEBRIDGE_DOCUMENTS_ENDPOINT"), os.Getenv("DEVICEBRIDGE_DOCUMENTS_TOKEN"); endpoint != "" && token != "" {
+		for _, kind := range strings.Split(os.Getenv("DEVICEBRIDGE_DOCUMENTS_KINDS"), ",") {
+			if kind == "" {
+				continue
+			}
+			rootID := kind
+			if kind == "termux" {
+				rootID = "termux_home"
+			}
+			provider, e := filesproviders.NewDocuments(rootID, kind, endpoint, token)
+			if e != nil {
+				return e
+			}
+			if e = s.ExportDocuments(rootID, kind); e != nil {
+				return e
+			}
+			if e = providers.Register(provider); e != nil {
+				return e
+			}
+		}
+	}
 	for _, e := range exports {
+		if strings.HasPrefix(e.Path, "android-documents://") {
+			continue
+		}
 		f, err := filesproviders.NewNative(e.ID, e.Path)
 		if err != nil {
 			continue

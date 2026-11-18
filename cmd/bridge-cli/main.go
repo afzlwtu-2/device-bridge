@@ -6,6 +6,7 @@ import (
 	"devicebridge/internal/bootstrap"
 	"devicebridge/internal/client"
 	"devicebridge/internal/discovery"
+	"devicebridge/internal/files"
 	"devicebridge/internal/platform"
 	"devicebridge/internal/storage"
 	"devicebridge/internal/tailnetipc"
@@ -20,6 +21,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/cespare/xxhash/v2"
 	"io"
 	"net"
 	"net/url"
@@ -27,18 +29,20 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 )
 
 type command struct {
-	state    *storage.Store
-	identity *auth.Identity
-	provider *direct.Provider
-	endpoint string
-	ctx      context.Context
-	overlay  transport.Provider
+	selectedTransport string
+	state             *storage.Store
+	identity          *auth.Identity
+	provider          *direct.Provider
+	endpoint          string
+	ctx               context.Context
+	overlay           transport.Provider
 }
 
 func output(v any) error { return json.NewEncoder(os.Stdout).Encode(v) }
@@ -137,6 +141,9 @@ func (c *command) connect(id string, authenticate bool) (*client.Client, transpo
 	}
 	var last error
 	for _, v := range candidates {
+		if c.selectedTransport == "adb" || c.selectedTransport == "ssh" {
+			v.Transport = c.selectedTransport
+		}
 		cl := client.New(c.identity, c.state, c.provider, v)
 		if authenticate {
 			var device protocol.Device
@@ -185,6 +192,37 @@ func run() error {
 	if *state == "" || len(a) == 0 {
 		return errors.New("usage: bridge-cli --state DIR [--interface wlan0 --lan-cidr LOCAL/24] init|identity|export|invite|peers|approve|revoke|discover|pair|finish|roots|list|stat|pull|resolve")
 	}
+	if a[0] == "checksum" {
+		if len(a) != 2 {
+			return errors.New("checksum FILE (or - for stdin)")
+		}
+		var input io.Reader = os.Stdin
+		if a[1] != "-" {
+			f, e := os.Open(a[1])
+			if e != nil {
+				return e
+			}
+			defer f.Close()
+			input = f
+		}
+		h := xxhash.New()
+		n, e := io.Copy(h, input)
+		if e != nil {
+			return e
+		}
+		return output(map[string]any{"algorithm": "xxh64", "xxh64": fmt.Sprintf("%016x", h.Sum64()), "bytes": n})
+	}
+
+	if a[0] == "publish-local" {
+		if len(a) != 3 {
+			return errors.New("publish-local STAGED_DATA DESTINATION")
+		}
+		if err := transfer.PublishLocal(a[1], a[2]); err != nil {
+			return err
+		}
+		return output(map[string]string{"destination": a[2], "status": "published"})
+	}
+
 	s, err := storage.Open(*state)
 	if err != nil {
 		return err
@@ -515,7 +553,7 @@ func run() error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	c := &command{state: s, identity: id, provider: p, endpoint: *endpoint, ctx: ctx}
+	c := &command{state: s, identity: id, provider: p, endpoint: *endpoint, ctx: ctx, selectedTransport: *transportID}
 	if *transportID == "tailnet" {
 		c.overlay, err = openOverlay(ctx, *state, *controlSocket, *tailnetMode, *remoteApproved)
 		if err != nil {
@@ -616,6 +654,26 @@ func run() error {
 			return err
 		}
 		return output(roots)
+	case "preview":
+		if len(a) != 4 {
+			return errors.New("preview PEER ROOT PATH")
+		}
+		var meta protocol.Entry
+		if err = cl.JSON(ctx, "/v1/files/stat", url.Values{"root": {a[2]}, "path": {a[3]}}, &meta); err != nil {
+			return err
+		}
+		if meta.Kind != "file" {
+			return errors.New("select a regular file")
+		}
+		data, e := cl.ReadRange(ctx, a[2], a[3], 0, min(meta.Size, 65536))
+		if e != nil {
+			return e
+		}
+		text := strings.ToValidUTF8(string(data), "�")
+		if strings.ContainsRune(text, 0) {
+			text = "Binary file. Download to open with another application."
+		}
+		return output(map[string]any{"name": meta.Name, "text": text, "truncated": meta.Size > 65536})
 	case "list", "stat":
 		if len(a) < 3 || len(a) > 5 {
 			return errors.New("list|stat PEER ROOT [RELATIVE_PATH] [PAGE]")
@@ -634,23 +692,31 @@ func run() error {
 		}
 		return output(v)
 	case "pull", "pull-tar":
-		if len(a) != 5 {
+		if len(a) < 5 {
 			return errors.New("pull|pull-tar PEER ROOT RELATIVE_PATH DESTINATION (must not exist)")
 		}
+		excludes, ee := files.ValidateExclusions(a[5:])
+		if ee != nil {
+			return ee
+		}
 		var manifest protocol.Manifest
-		if err = cl.JSON(ctx, "/v1/files/manifest", url.Values{"root": {a[2]}, "path": {a[3]}}, &manifest); err != nil {
+		if err = cl.JSON(ctx, "/v1/files/manifest", url.Values{"root": {a[2]}, "path": {a[3]}, "exclude": excludes}, &manifest); err != nil {
 			return err
 		}
+		if !slices.Equal(manifest.Excludes, excludes) {
+			return errors.New("remote device did not honor requested exclusions; update both devices")
+		}
+		activeTransport := *transportID
 		emitProgress := func(v transfer.Progress) {
 			if v.Transport == "" {
-				v.Transport = *transportID
+				v.Transport = activeTransport
 			}
 			_ = json.NewEncoder(os.Stderr).Encode(v)
 		}
 		useTar := a[0] == "pull-tar" || transfer.ShouldUseTar(manifest)
 		var receipt transfer.Receipt
 		if useTar {
-			stream, codec, e := cl.OpenTar(ctx, a[2], a[3], "adaptive")
+			stream, codec, e := cl.OpenTar(ctx, a[2], a[3], "adaptive", excludes...)
 			if e == nil {
 				receipt, err = transfer.PullTar(ctx, stream, codec, peer.ID, manifest, a[4], emitProgress)
 			} else if a[0] == "pull" && strings.Contains(e.Error(), "remote 404") {
@@ -718,7 +784,7 @@ func run() error {
 								if e != nil {
 									return nil, "", nil, e
 								}
-								ac := &command{state: s, identity: id, provider: lp, endpoint: rEp, ctx: actx}
+								ac := &command{state: s, identity: id, provider: lp, endpoint: rEp, ctx: actx, selectedTransport: rName}
 								acl, cand, e := ac.connect(peer.ID, true)
 								if e != nil {
 									return nil, "", nil, e
@@ -777,6 +843,7 @@ func run() error {
 				if len(alts) > 0 {
 					var switched string
 					receipt, switched, err = transfer.ResumePullOnAlternates(ctx, *transportID, alts, peer.ID, manifest, a[4], err, emitProgress, func(sw transfer.RouteSwitch) {
+						activeTransport = sw.To
 						_ = json.NewEncoder(os.Stderr).Encode(sw)
 					})
 					if err == nil {

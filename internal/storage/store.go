@@ -379,6 +379,16 @@ func (s *Store) Export(id, path string) error {
 	_, err = s.DB.Exec("INSERT INTO exports(id,path) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET path=excluded.path", id, p)
 	return err
 }
+
+// ExportDocuments records a versioned Android provider root without treating
+// its identifier as a native filesystem path.
+func (s *Store) ExportDocuments(id, kind string) error {
+	if id == "" || len(id) > 80 || (kind != "saf" && kind != "termux") {
+		return errors.New("invalid Android document export")
+	}
+	_, err := s.DB.Exec("INSERT INTO exports(id,path) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET path=excluded.path", id, "android-documents://"+kind)
+	return err
+}
 func (s *Store) Exports() ([]Export, error) {
 	rows, err := s.DB.Query("SELECT id,path FROM exports ORDER BY id")
 	if err != nil {

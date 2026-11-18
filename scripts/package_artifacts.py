@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Package already-built outputs; fail if an APK contains an outdated Go core."""
-import hashlib
+from checksums import xxh64, xxh64_bytes
 import json
 from pathlib import Path
 import shutil
@@ -18,6 +18,8 @@ def main():
             raise RuntimeError('APK Go core differs from NDK build; rebuild the APK before packaging')
     out=root/'artifacts/android-arm64/devicebridge.apk'
     shutil.copy2(apk,out)
+    if xxh64(apk) != xxh64(out):
+        raise RuntimeError('Completed APK copy failed XXH64 verification')
     linux=root/'artifacts/linux/devicebridge-linux-x64.tar.gz'
     bundle=root/'app/build/linux/x64/release/bundle'
     with tarfile.open(linux,'w:gz') as archive:
@@ -31,15 +33,15 @@ def main():
         files.append(debug)
     termux=[root/'artifacts/termux-arm64/bridge-agent',root/'artifacts/termux-arm64/bridge-cli']
     files.extend(p for p in termux if p.exists())
-    manifest={'files':{str(p.relative_to(root)):{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files},'android_signing':'development key; optimized build','core_sha256':hashlib.sha256(core).hexdigest()}
+    manifest={'files':{str(p.relative_to(root)):{'bytes':p.stat().st_size,'xxh64':xxh64(p)} for p in files},'android_signing':'development key; optimized build','core_xxh64':xxh64_bytes(core)}
     listed=subprocess.check_output(['git','ls-files','-z','--cached','--others','--exclude-standard'],cwd=root).split(b'\0')
-    digest=hashlib.sha256()
+    source_records=bytearray()
     for name in sorted(set(listed)):
         if not name:continue
         relative=name.decode();p=root/relative
         if relative.startswith(('docs/','artifacts/','.work/')) or not p.is_file():continue
-        digest.update(name+b'\0'+hashlib.sha256(p.read_bytes()).digest())
-    manifest['source_sha256_excluding_docs_artifacts']=digest.hexdigest()
+        source_records.extend(name+b'\0'+bytes.fromhex(xxh64(p)))
+    manifest['source_xxh64_excluding_docs_artifacts']=xxh64_bytes(source_records)
     manifest['termux_artifacts_not_built']=[str(p.relative_to(root)) for p in termux if not p.exists()]
     (root/'artifacts/MANIFEST.json').write_text(json.dumps(manifest,indent=2)+'\n')
     (root/'docs/test-evidence/artifact-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')

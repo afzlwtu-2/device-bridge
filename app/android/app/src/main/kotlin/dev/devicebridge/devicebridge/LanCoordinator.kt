@@ -17,7 +17,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** Foreground-only discovery/listener. Owns no system configuration or VPN. */
-class LanCoordinator(private val context: Context, private val event: (Map<String, Any?>) -> Unit) {
+class LanCoordinator(private val context: Context, private val documentsEnvironment: () -> Map<String, String> = { emptyMap() }, private val event: (Map<String, Any?>) -> Unit) {
     private val cm = context.getSystemService(ConnectivityManager::class.java)
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -96,6 +96,8 @@ class LanCoordinator(private val context: Context, private val event: (Map<Strin
         refresh()
     }
 
+    fun refreshExports() { stopReceiver(); refresh() }
+
     fun visible(value: Boolean) {
         visible = value
         if (value && !watching) {
@@ -125,13 +127,13 @@ class LanCoordinator(private val context: Context, private val event: (Map<Strin
                 (policy.optBoolean("allow_wifi_roaming") && n["unmetered"] == true && handle.isNotEmpty()))
         }
         if (selected == null) {
-            stopReceiver(); CoreRuntime.cancel()
+            stopReceiver(); CoreRuntime.networkChanged()
             event(mapOf("state" to if (options.isEmpty()) "offline" else "approval_required", "network" to null)); return
         }
         val handle = selected["network_handle"] as? String ?: ""
         val next = "$handle:${selected["interface"]}:${selected["cidr"]}"
         if (next == signature) return
-        CoreRuntime.cancel()
+        CoreRuntime.networkChanged()
         stopReceiver(); signature = next; val owner = ++generation
         if (!lock.isHeld) lock.acquire()
         event(mapOf("state" to "recovering", "network" to selected))
@@ -143,6 +145,7 @@ class LanCoordinator(private val context: Context, private val event: (Map<Strin
                 val args = listOf(binary.path, "--state", File(context.filesDir, "devicebridge").path,
                     "--interface", selected["interface"] as String, "--lan-cidr", selected["cidr"] as String, "--port", "0")
                 val builder = ProcessBuilder(args).redirectErrorStream(false)
+                builder.environment().putAll(documentsEnvironment())
                 if (handle.isNotEmpty()) {
                     builder.environment()["DEVICEBRIDGE_NETWORK_HANDLE"] = handle
                 }

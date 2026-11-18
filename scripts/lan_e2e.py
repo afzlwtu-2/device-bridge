@@ -6,7 +6,7 @@ Discovery, not an entered peer IP, selects the application endpoint.
 """
 import argparse
 import datetime
-import hashlib
+from checksums import xxh64
 import json
 from pathlib import Path
 import shlex
@@ -86,12 +86,12 @@ def main():
             start = time.monotonic()
             receipt = phone('pull', laptop['id'], 'fixture', relative, remote_work + '/' + label)
             evidence[label] = {'receipt': receipt, 'elapsed_including_ssh_and_discovery_seconds': round(time.monotonic()-start, 6)}
-        expected = {p.relative_to(fixture).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in fixture.rglob('*') if p.is_file()}
-        code = "import pathlib,hashlib,json; p=pathlib.Path(" + repr(remote_work + '/folder') + "); print(json.dumps({str(f.relative_to(p)):hashlib.sha256(f.read_bytes()).hexdigest() for f in p.rglob('*') if f.is_file()}))"
+        expected = {p.relative_to(fixture).as_posix(): xxh64(p) for p in fixture.rglob('*') if p.is_file()}
+        code = "import pathlib,subprocess,json; p=pathlib.Path(" + repr(remote_work + '/folder') + "); print(json.dumps({str(f.relative_to(p)):subprocess.check_output(['xxhsum','-H1','-q'],input=f.read_bytes()).decode().split()[0] for f in p.rglob('*') if f.is_file()}))"
         actual = json.loads(remote(['python', '-c', code]))
         if actual != expected: raise RuntimeError('physical folder hashes differ')
-        evidence['verified_sha256'] = actual
-        evidence['checks'].append('phone pulled file and nested folder; all SHA-256 hashes match including empty/unicode files')
+        evidence['verified_xxh64'] = actual
+        evidence['checks'].append('phone pulled file and nested folder; all XXH64 checksums match including empty/unicode files')
         local('revoke', mobile['id'])
         try: phone('roots', laptop['id'])
         except RuntimeError: evidence['checks'].append('revoked phone denied')

@@ -24,6 +24,9 @@ class MainActivity : FlutterActivity() {
     private var saveSource: File? = null
     private var treeResult: MethodChannel.Result? = null
     private var treeKind: String = "saf"
+    private lateinit var termuxControl: TermuxControl
+    private lateinit var documentsGateway: DocumentsGateway
+    private lateinit var deviceSettings: DeviceSettings
     private lateinit var lan: LanCoordinator
     private lateinit var tailnet: TailnetCoordinator
     private var networkSink: EventChannel.EventSink? = null
@@ -31,9 +34,14 @@ class MainActivity : FlutterActivity() {
     private var transferSink: EventChannel.EventSink? = null
     private val targetPrefs by lazy { getSharedPreferences("devicebridge-targets", Context.MODE_PRIVATE) }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (::termuxControl.isInitialized) termuxControl.permissionResult(requestCode)
+    }
+
     override fun onResume() {
         super.onResume()
-        window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        applyAwakeSetting()
         if (::lan.isInitialized) lan.visible(true)
         if (::tailnet.isInitialized) tailnet.visible(true)
     }
@@ -45,15 +53,54 @@ class MainActivity : FlutterActivity() {
 
     override fun onStop() { if (::lan.isInitialized) lan.visible(false); if (::tailnet.isInitialized) tailnet.visible(false); super.onStop() }
 
+    private fun applyAwakeSetting() {
+        val enabled = getSharedPreferences("devicebridge-settings", Context.MODE_PRIVATE).getBoolean("keep_awake", true)
+        if (enabled && hasWindowFocus()) window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        applyAwakeSetting()
+    }
+
+    override fun onDestroy() {
+        if (::termuxControl.isInitialized) termuxControl.close()
+        if (::documentsGateway.isInitialized) documentsGateway.close()
+        if (::deviceSettings.isInitialized) deviceSettings.close()
+        super.onDestroy()
+    }
+
     private fun isTermuxInstalled(): Boolean = try {
         packageManager.getPackageInfo("com.termux", 0); true
     } catch (_: PackageManager.NameNotFoundException) { false }
+
+    // Reopen the completed destination so verification covers bytes stored by
+    // the document provider, including Termux SAF, rather than the copy buffer.
+    private fun checksum(input: java.io.InputStream): String {
+        val binary = File(applicationInfo.nativeLibraryDir, "libbridge_cli.so")
+        val child = ProcessBuilder(binary.path, "--state", File(filesDir, "devicebridge").path, "checksum", "-").start()
+        try {
+            input.use { source -> child.outputStream.use { source.copyTo(it) } }
+            val output = child.inputStream.bufferedReader().use { it.readText() }
+            val error = child.errorStream.bufferedReader().use { it.readText() }
+            check(child.waitFor() == 0) { "XXH64 verification failed: $error" }
+            return org.json.JSONObject(output).getString("xxh64")
+        } finally { child.destroy() }
+    }
+
+    private fun copyVerifiedFile(source: File, doc: Uri) {
+        contentResolver.openOutputStream(doc, "w")!!.use { output -> source.inputStream().use { it.copyTo(output) } }
+        val expected = checksum(source.inputStream())
+        val actual = checksum(contentResolver.openInputStream(doc) ?: error("Cannot reread completed destination"))
+        check(actual == expected) { "Destination XXH64 mismatch; verified private download preserved" }
+    }
 
     private fun copyFileOrDirToDocument(source: File, parentDocUri: Uri) {
         if (!source.isDirectory) {
             val doc = DocumentsContract.createDocument(contentResolver, parentDocUri, "application/octet-stream", source.name)
                 ?: error("Cannot create destination file")
-            contentResolver.openOutputStream(doc, "w")!!.use { output -> source.inputStream().use { it.copyTo(output) } }
+            copyVerifiedFile(source, doc)
             return
         }
         val destName = source.name
@@ -69,7 +116,7 @@ class MainActivity : FlutterActivity() {
                     if (child.isDirectory) DocumentsContract.Document.MIME_TYPE_DIR else "application/octet-stream",
                     child.name
                 ) ?: error("Cannot create document")
-                if (child.isDirectory) copy(child, doc) else contentResolver.openOutputStream(doc, "w")!!.use { output -> child.inputStream().use { it.copyTo(output) } }
+                if (child.isDirectory) copy(child, doc) else copyVerifiedFile(child, doc)
             }
         }
         copy(source, dest)
@@ -77,8 +124,11 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
+        deviceSettings = DeviceSettings(applicationContext) { action -> runOnUiThread { action() } }
         tailnet = TailnetCoordinator(applicationContext)
-        lan = LanCoordinator(applicationContext) { value ->
+        termuxControl = TermuxControl(this)
+        documentsGateway = DocumentsGateway(this)
+        lan = LanCoordinator(applicationContext, documentsGateway::environment) { value ->
             networkStatus = value; networkSink?.success(value)
             @Suppress("UNCHECKED_CAST")
             val network = value["network"] as? Map<String, Any?>
@@ -94,10 +144,32 @@ class MainActivity : FlutterActivity() {
         })
         MethodChannel(engine.dartExecutor.binaryMessenger, "dev.devicebridge/core").setMethodCallHandler { call, result ->
             when (call.method) {
+                "localFiles" -> {
+                    val operation = call.argument<String>("operation") ?: ""
+                    val arguments = call.argument<Map<String, Any?>>("arguments") ?: emptyMap()
+                    if (operation == "termux-status") { result.success(termuxControl.status()); return@setMethodCallHandler }
+                    if (operation == "termux-permission") { termuxControl.permission(result); return@setMethodCallHandler }
+                    if (operation == "termux-run") {
+                        termuxControl.run(arguments["program"] as? String ?: "", (arguments["arguments"] as? List<*>)?.map { it as String } ?: emptyList(), result)
+                        return@setMethodCallHandler
+                    }
+                    worker.execute {
+                        try {
+                            val value = LocalFiles(this, ::checksum).execute(operation, arguments)
+                            runOnUiThread { result.success(value) }
+                        } catch (e: Exception) { runOnUiThread { result.error("local_files_failed", e.message, null) } }
+                    }
+                }
+                "appSettings" -> result.success(deviceSettings.read())
+                "updateAppSettings" -> {
+                    deviceSettings.update(call.arguments as? Map<String, Any?> ?: emptyMap(), result)
+                    applyAwakeSetting()
+                }
                 "configuration" -> result.success(mapOf(
                     "state" to File(filesDir, "devicebridge").path,
                     "binary" to File(applicationInfo.nativeLibraryDir, "libbridge_cli.so").path
                 ))
+                "refreshExports" -> { lan.refreshExports(); result.success(null) }
                 "networks" -> result.success(lan.networks())
                 "activateLan" -> { lan.activate(call.argument<Map<String, Any?>>("network")); result.success(null) }
                 "approveLan" -> {
@@ -130,6 +202,12 @@ class MainActivity : FlutterActivity() {
                 }
                 "connectionSetup" -> {
                     val kind = call.argument<String>("kind")
+                    if (kind == "shizuku" || kind == "termux") {
+                        val intent = packageManager.getLaunchIntentForPackage(if (kind == "termux") "com.termux" else "moe.shizuku.privileged.api")
+                        if (intent == null) result.error("unavailable", "${if (kind == "termux") "Termux" else "Shizuku"} is not installed", null)
+                        else { startActivity(intent); result.success(null) }
+                        return@setMethodCallHandler
+                    }
                     if (kind == "all_files_access" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))
                         try { startActivity(intent); result.success(null) } catch (e: Exception) { result.error("unavailable", e.message, null) }
@@ -157,7 +235,7 @@ class MainActivity : FlutterActivity() {
                         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
                             if (termux && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                putExtra(DocumentsContract.EXTRA_INITIAL_URI, Uri.parse("content://com.termux.documents/tree/%2Fdata%2Fdata%2Fcom.termux%2Ffiles%2Fhome"))
+                                putExtra(DocumentsContract.EXTRA_INITIAL_URI, DocumentsContract.buildDocumentUri("com.termux.documents", "/data/data/com.termux/files/home"))
                             }
                         }
                         startActivityForResult(intent, 402)
@@ -298,6 +376,10 @@ class MainActivity : FlutterActivity() {
             treeResult = null
             val uri = data?.data
             if (resultCode != Activity.RESULT_OK || uri == null) { reply.success(null); return }
+            if (treeKind == "termux" && uri.authority != "com.termux.documents") {
+                reply.error("wrong_provider", "Choose Termux from the system picker's storage menu, then select its Home folder", null)
+                return
+            }
             try {
                 contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             } catch (_: Exception) { /* some providers grant non-persistable session access */ }
@@ -307,6 +389,7 @@ class MainActivity : FlutterActivity() {
                 .putString("${treeKind}_uri", uri.toString())
                 .putString("${treeKind}_name", label)
                 .apply()
+            if (::lan.isInitialized) lan.refreshExports()
             reply.success(mapOf("uri" to uri.toString(), "name" to label, "kind" to treeKind))
             return
         }
@@ -320,7 +403,7 @@ class MainActivity : FlutterActivity() {
         worker.execute {
             try {
                 if (!source.isDirectory) {
-                    contentResolver.openOutputStream(uri, "w")!!.use { output -> source.inputStream().use { it.copyTo(output) } }
+                    copyVerifiedFile(source, uri)
                 } else {
                     val parent = DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri))
                     val name = source.name + "-" + UUID.randomUUID().toString().take(8)

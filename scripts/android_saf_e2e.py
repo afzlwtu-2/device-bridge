@@ -3,7 +3,7 @@
 No system settings, partitions, ADB, existing folders or projects are modified.
 """
 import datetime
-import hashlib
+from checksums import xxh64_bytes
 import json
 from pathlib import Path
 import re
@@ -61,11 +61,11 @@ def main():
         elif 'Allow' in labels: tap(label='Allow')
         ui.wait_label('Verified download',timeout=30)
         # Only inspect the new test folder. Do not enumerate unrelated shared data.
-        code = "from pathlib import Path; import json,hashlib; roots=[Path('/storage/emulated/0')/"+repr(folder)+",Path('/storage/emulated/0/Download')/"+repr(folder)+"]; p=next((r for r in roots if r.is_dir()),None); assert p is not None; print(json.dumps({str(f.relative_to(p)):hashlib.sha256(f.read_bytes()).hexdigest() for f in p.rglob('*') if f.is_file()}))"
+        code = "from pathlib import Path; import json,subprocess; roots=[Path('/storage/emulated/0')/"+repr(folder)+",Path('/storage/emulated/0/Download')/"+repr(folder)+"]; p=next((r for r in roots if r.is_dir()),None); assert p is not None; print(json.dumps({str(f.relative_to(p)):subprocess.check_output(['xxhsum','-H1','-q'],input=f.read_bytes()).decode().split()[0] for f in p.rglob('*') if f.is_file()}))"
         result = json.loads(ui.remote(shlex.join(['python','-c',code])))
-        expected = hashlib.sha256(b'Actual standalone DeviceBridge GUI over LAN\n').hexdigest()
+        expected = xxh64_bytes(b'Actual standalone DeviceBridge GUI over LAN\n')
         if expected not in result.values(): raise RuntimeError('SAF copy did not match verified private download')
-        evidence['copied_sha256'] = result
+        evidence['copied_xxh64'] = result
         evidence['result'] = 'PASS'
     except Exception as e:
         evidence['result']='FAIL';evidence['error']=str(e);raise

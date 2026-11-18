@@ -97,25 +97,31 @@ class _ConnectionPickerState extends State<ConnectionPicker> {
             const SizedBox(height: 16),
             DropdownButtonFormField<String>(
               initialValue: mode,
-              decoration: const InputDecoration(labelText: 'Primary connection'),
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Primary connection',
+              ),
               items: const [
                 DropdownMenuItem(
                   value: 'lan',
-                  child: Text('Direct local network (Wi-Fi / Hotspot / P2P)'),
+                  child: Text(
+                    'Direct local network (Wi-Fi / Hotspot / P2P)',
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
                 DropdownMenuItem(value: 'tailnet', child: Text('Tailscale')),
                 DropdownMenuItem(
                   value: 'wireguard',
-                  child: Text('WireGuard (Userspace / Kernel · LAN-direct first)'),
+                  child: Text(
+                    'WireGuard (Userspace / Kernel · LAN-direct first)',
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
                 DropdownMenuItem(
                   value: 'adb',
                   child: Text('USB / Wireless ADB tunnel'),
                 ),
-                DropdownMenuItem(
-                  value: 'ssh',
-                  child: Text('SSH local tunnel'),
-                ),
+                DropdownMenuItem(value: 'ssh', child: Text('SSH local tunnel')),
               ],
               onChanged: (v) => setState(() => mode = v ?? 'lan'),
             ),
@@ -293,8 +299,7 @@ class _ConnectionPickerState extends State<ConnectionPicker> {
                   String? selectedEp = endpoint;
                   if (mode == 'tailnet' && (!approved || endpoint == null)) {
                     setState(
-                      () => error =
-                          'Select a tailnet device and approve remote data first.',
+                      () => error = 'Select a tailnet device and approve remote data first.',
                     );
                     return;
                   }

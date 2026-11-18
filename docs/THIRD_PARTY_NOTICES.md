@@ -6,6 +6,8 @@ Resolved Go modules and Dart packages used by this development build. SQLite eng
 
 | Component | Version | License file |
 | --- | --- | --- |
+| Shizuku API/provider/aidl/shared | 13.1.5 | [MIT license](licenses/shizuku-api-v13.1.5.txt) (license URL from the published Maven POM) |
+| github.com/cespare/xxhash/v2 | v2.3.0 | [license](licenses/github.com_cespare_xxhash-v2.3.0.txt) |
 | github.com/mattn/go-sqlite3 | v1.14.32 | [license](licenses/github.com_mattn_go-sqlite3-v1.14.32.txt) |
 | github.com/miekg/dns | v1.1.73 | [license](licenses/github.com_miekg_dns-v1.1.73.txt) |
 | golang.org/x/net | v0.63.0 | [license](licenses/golang.org_x_net-v0.63.0.txt) |

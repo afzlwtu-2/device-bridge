@@ -3,7 +3,6 @@ package transfer
 
 import (
 	"context"
-	"crypto/sha256"
 	"devicebridge/internal/files"
 	"devicebridge/internal/filesproviders"
 	"devicebridge/protocol"
@@ -11,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cespare/xxhash/v2"
 	"golang.org/x/sys/unix"
 	"io"
 	"os"
@@ -43,7 +43,7 @@ type Receipt struct {
 	Destination   string  `json:"destination"`
 	Files         int     `json:"files"`
 	Bytes         int64   `json:"bytes"`
-	SHA256        string  `json:"manifest_sha256"`
+	XXH64         string  `json:"manifest_xxh64"`
 	Mode          string  `json:"mode,omitempty"`
 	Transport     string  `json:"transport,omitempty"`
 	MiBPerSecond  float64 `json:"mib_per_second"`
@@ -64,14 +64,17 @@ func rateMiB(bytes int64, started time.Time) (float64, int64) {
 }
 
 func ValidateManifest(m protocol.Manifest) error {
-	if m.Version != 1 || len(m.Entries) == 0 || len(m.Entries) > files.MaxManifestEntries || m.Bytes < 0 || m.Bytes > files.MaxManifestBytes {
-		return errors.New("invalid manifest bounds")
+	if _, err := files.ValidateExclusions(m.Excludes); err != nil {
+		return err
+	}
+	if m.Version != protocol.ManifestVersion || len(m.Entries) == 0 || len(m.Entries) > files.MaxManifestEntries || m.Bytes < 0 || m.Bytes > files.MaxManifestBytes {
+		return errors.New("unsupported manifest version (update both devices) or invalid manifest bounds")
 	}
 	seen := map[string]bool{}
 	dirs := map[string]bool{}
 	var total int64
 	for i, e := range m.Entries {
-		if filesproviders.ValidPath(e.Path) != nil || e.Path == "" || path.Clean(e.Path) != e.Path || seen[e.Path] || e.Size < 0 {
+		if files.Excluded(e.Path, m.Excludes) || filesproviders.ValidPath(e.Path) != nil || e.Path == "" || path.Clean(e.Path) != e.Path || seen[e.Path] || e.Size < 0 {
 			return errors.New("unsafe or duplicate manifest entry")
 		}
 		if i == 0 && e.Path != "." {
@@ -82,13 +85,13 @@ func ValidateManifest(m protocol.Manifest) error {
 		}
 		seen[e.Path] = true
 		if e.Directory {
-			if e.Size != 0 || e.SHA256 != "" {
+			if e.Size != 0 || e.XXH64 != "" {
 				return errors.New("invalid directory metadata")
 			}
 			dirs[e.Path] = true
 		} else {
-			h, err := hex.DecodeString(e.SHA256)
-			if err != nil || len(h) != 32 || total > files.MaxManifestBytes-e.Size {
+			h, err := hex.DecodeString(e.XXH64)
+			if err != nil || len(h) != 8 || total > files.MaxManifestBytes-e.Size {
 				return errors.New("invalid file checksum or size")
 			}
 			total += e.Size
@@ -182,8 +185,9 @@ func openStaging(peer string, m protocol.Manifest, destination string) (*staging
 		h.close()
 		return nil, err
 	}
-	hash := sha256.Sum256(metadata)
-	h.manifestHash = hex.EncodeToString(hash[:])
+	hash := xxhash.New()
+	hash.Write(metadata)
+	h.manifestHash = hex.EncodeToString(hash.Sum(nil))
 	previous, e := root.ReadFile("manifest.json")
 	if e == nil {
 		if string(previous) != string(metadata) {
@@ -239,7 +243,7 @@ func digestFile(ctx context.Context, f *os.File) (string, error) {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return "", err
 	}
-	h := sha256.New()
+	h := xxhash.New()
 	buf := make([]byte, 256<<10)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -406,7 +410,7 @@ func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, 
 		if e != nil {
 			return receipt, e
 		}
-		if actual != entry.SHA256 {
+		if actual != entry.XXH64 {
 			return receipt, fmt.Errorf("%w: checksum mismatch for %q; staging preserved", ErrNonRetriable, entry.Path)
 		}
 		complete += entry.Size
@@ -421,6 +425,6 @@ func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, 
 		mode = "stream"
 	}
 	// Metadata is small and retained as a receipt; never remove user payloads.
-	receipt = Receipt{Destination: st.abs, Files: count, Bytes: complete, SHA256: st.manifestHash, Mode: mode, MiBPerSecond: mib, ElapsedMillis: ms}
+	receipt = Receipt{Destination: st.abs, Files: count, Bytes: complete, XXH64: st.manifestHash, Mode: mode, MiBPerSecond: mib, ElapsedMillis: ms}
 	return receipt, nil
 }

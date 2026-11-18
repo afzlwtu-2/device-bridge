@@ -3,13 +3,15 @@ package transfer
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"devicebridge/protocol"
 	"encoding/hex"
 	"errors"
+	"github.com/cespare/xxhash/v2"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -36,8 +38,9 @@ func (s *fakeSource) ReadRange(_ context.Context, _, _ string, o, n int64) ([]by
 	return b, nil
 }
 func manifest(data []byte) protocol.Manifest {
-	h := sha256.Sum256(data)
-	return protocol.Manifest{Version: 1, Root: "shared", Path: "file", Bytes: int64(len(data)), Entries: []protocol.ManifestEntry{{Path: ".", Size: int64(len(data)), SHA256: hex.EncodeToString(h[:])}}}
+	h := xxhash.New()
+	h.Write(data)
+	return protocol.Manifest{Version: protocol.ManifestVersion, Root: "shared", Path: "file", Bytes: int64(len(data)), Entries: []protocol.ManifestEntry{{Path: ".", Size: int64(len(data)), XXH64: hex.EncodeToString(h.Sum(nil))}}}
 }
 func TestInterruptedPullResumesAndPublishes(t *testing.T) {
 	t.Parallel()
@@ -175,5 +178,48 @@ func TestStreamPullAndResume(t *testing.T) {
 	got, err := os.ReadFile(dest)
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatal("streamed payload mismatch", err)
+	}
+}
+
+// Compare the wire/file digest with the independent tool used on both devices.
+func TestXXH64MatchesXXHSum(t *testing.T) {
+	executable, err := exec.LookPath("xxhsum")
+	if err != nil {
+		t.Skip("xxhsum not installed")
+	}
+	for _, size := range []int{0, 3, 31, 32, 33, 1<<20 + 17} {
+		data := bytes.Repeat([]byte{0x5a}, size)
+		cmd := exec.Command(executable, "-H1", "-q")
+		cmd.Stdin = bytes.NewReader(data)
+		output, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected := strings.Fields(string(output))[0]
+		m := manifest(data)
+		if got := m.Entries[0].XXH64; got != expected {
+			t.Fatalf("%d bytes: got %s want %s", size, got, expected)
+		}
+		destination := filepath.Join(t.TempDir(), "received")
+		if _, err := Pull(context.Background(), &fakeSource{data: data}, "peer", m, destination, nil); err != nil {
+			t.Fatal(err)
+		}
+		output, err = exec.Command(executable, "-H1", "-q", destination).Output()
+		if err != nil || strings.Fields(string(output))[0] != expected {
+			t.Fatalf("completed target digest mismatch: %s, %v", output, err)
+		}
+	}
+}
+
+func TestLegacyManifestFailsClosed(t *testing.T) {
+	m := manifest([]byte("payload"))
+	m.Version = 1
+	if ValidateManifest(m) == nil {
+		t.Fatal("accepted legacy checksum manifest")
+	}
+	m.Version = protocol.ManifestVersion
+	m.Entries[0].XXH64 = strings.Repeat("0", 64)
+	if ValidateManifest(m) == nil {
+		t.Fatal("accepted SHA-256 length as XXH64")
 	}
 }

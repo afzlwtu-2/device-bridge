@@ -13,4 +13,5 @@ flutter build apk --debug --target-platform android-arm64
 flutter build apk --release --target-platform android-arm64
 cd ..
 cp app/build/app/outputs/flutter-apk/app-debug.apk artifacts/android-arm64/devicebridge-debug.apk
+xxhsum -H1 app/build/app/outputs/flutter-apk/app-debug.apk | sed 's|app/build/app/outputs/flutter-apk/app-debug.apk|artifacts/android-arm64/devicebridge-debug.apk|' | xxhsum -H1 --check --strict
 python3 scripts/package_artifacts.py
