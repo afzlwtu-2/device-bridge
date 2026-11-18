@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.Settings
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -29,7 +30,18 @@ class MainActivity : FlutterActivity() {
     private var transferSink: EventChannel.EventSink? = null
     private val targetPrefs by lazy { getSharedPreferences("devicebridge-targets", Context.MODE_PRIVATE) }
 
-    override fun onResume() { super.onResume(); if (::lan.isInitialized) lan.visible(true); if (::tailnet.isInitialized) tailnet.visible(true) }
+    override fun onResume() {
+        super.onResume()
+        window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (::lan.isInitialized) lan.visible(true)
+        if (::tailnet.isInitialized) tailnet.visible(true)
+    }
+
+    override fun onPause() {
+        window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        super.onPause()
+    }
+
     override fun onStop() { if (::lan.isInitialized) lan.visible(false); if (::tailnet.isInitialized) tailnet.visible(false); super.onStop() }
 
     private fun isTermuxInstalled(): Boolean = try {

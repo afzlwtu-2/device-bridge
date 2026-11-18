@@ -21,7 +21,8 @@ Laptop `/home/afzl/@Projects/mine/device-bridge` is the sole authoritative repos
   - Fixed with `awaitingLogin()` (5-min login timeout), 120s background grace period across `onStop()`, `WidgetsBindingObserver` resume polling in `TailnetPanel`, and clean user-facing off-state messaging (`tailnet-panel-updated.png` verified on WayDroid).
 - **Builds & verification**:
   - `go test -count=1 -race ./...` PASS; `scripts/phone_build_test.sh` (Termux `go1.27.2 android/arm64`) PASS; `flutter analyze` (0 issues) PASS; `flutter test` (4/4) PASS; `bash scripts/build_apps.sh` PASS.
-  - `artifacts/android-arm64/devicebridge.apk`: `24,137,933` bytes, SHA-256 `202f7b539c0a71abeda1c54e095fafae56b812012842ed4e8a34416a21c4199f`, `apksigner verify --print-certs` PASS. Installed (`adb install -r`) on both `JBKJF6JFAAIZUGP7` (POCO, currently PIN-locked so live phone UI walkthrough skipped without bypassing lockscreen) and `192.168.240.112:5555` (WayDroid).
+  - `artifacts/android-arm64/devicebridge.apk`: `24,138,029` bytes, SHA-256 `6bf5c2d4e886044dcb03e03bbad240ab6d60e3025fb2745113b11cb08a2f714c`, `apksigner verify --print-certs` PASS. Installed (`adb install -r`) on both `JBKJF6JFAAIZUGP7` (POCO, currently PIN-locked so live phone UI walkthrough skipped without bypassing lockscreen; `stay_on_while_plugged_in=3` enabled for USB sessions) and `192.168.240.112:5555` (WayDroid).
+- **Keep device awake (`MainActivity.kt`)**: added `WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON` in `onResume()` and cleared it in `onPause()` so the Android screen stays awake during foreground DeviceBridge sessions (`dumpsys window windows` verified `KEEP_SCREEN_ON` present in foreground and cleared after `KEYCODE_HOME`).
 
 ## Pending / next steps
 
