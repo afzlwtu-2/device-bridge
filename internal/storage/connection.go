@@ -6,16 +6,21 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"time"
 )
 
 type Connection struct {
-	Transport          string  `json:"transport"`
-	Endpoint           string  `json:"endpoint,omitempty"`
-	RemoteApproved     bool    `json:"remote_approved"`
-	LastMiBPerSecond   float64 `json:"last_mib_per_second,omitempty"`
-	LastRateTransport  string  `json:"last_rate_transport,omitempty"`
-	LastRateObservedAt int64   `json:"last_rate_observed_at,omitempty"`
+	Transport          string   `json:"transport"`
+	Endpoint           string   `json:"endpoint,omitempty"`
+	RemoteApproved     bool     `json:"remote_approved"`
+	FallbackApproved   bool     `json:"fallback_approved"`
+	FallbackTransports []string `json:"fallback_transports,omitempty"`
+	AdbEndpoint        string   `json:"adb_endpoint,omitempty"`
+	SshEndpoint        string   `json:"ssh_endpoint,omitempty"`
+	LastMiBPerSecond   float64  `json:"last_mib_per_second,omitempty"`
+	LastRateTransport  string   `json:"last_rate_transport,omitempty"`
+	LastRateObservedAt int64    `json:"last_rate_observed_at,omitempty"`
 }
 
 type rateRecord struct {
@@ -40,6 +45,27 @@ func (s *Store) RecordRate(peer, transportID string, mibPerSecond float64) error
 	return err
 }
 
+func validLoopbackEndpoint(ep string) bool {
+	if ep == "" {
+		return true
+	}
+	host, port, err := net.SplitHostPort(ep)
+	if err != nil || port == "" {
+		return false
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
+}
+
+func validTailnetEndpoint(ep string) bool {
+	host, port, err := net.SplitHostPort(ep)
+	ip, ie := netip.ParseAddr(host)
+	if err != nil || ie != nil || port != "8731" {
+		return false
+	}
+	return netip.MustParsePrefix("100.64.0.0/10").Contains(ip) || netip.MustParsePrefix("fd7a:115c:a1e0::/48").Contains(ip)
+}
+
 func (s *Store) Connection(peer string, update *Connection) (Connection, error) {
 	var out Connection
 	out.Transport = "lan"
@@ -48,20 +74,46 @@ func (s *Store) Connection(peer string, update *Connection) (Connection, error) 
 		return out, ErrDenied
 	}
 	if update != nil {
-		if update.Transport != "lan" && update.Transport != "tailnet" {
+		switch update.Transport {
+		case "lan", "tailnet", "adb", "ssh":
+		default:
 			return out, errors.New("unsupported connection choice")
 		}
-		if update.Transport == "tailnet" {
-			host, port, e := net.SplitHostPort(update.Endpoint)
-			ip, ie := netip.ParseAddr(host)
-			if e != nil || ie != nil || port != "8731" || (!netip.MustParsePrefix("100.64.0.0/10").Contains(ip) && !netip.MustParsePrefix("fd7a:115c:a1e0::/48").Contains(ip)) || !update.RemoteApproved {
-				return out, errors.New("tailnet endpoint and explicit internet/relay consent required")
+		if update.Transport == "tailnet" && (!validTailnetEndpoint(update.Endpoint) || !update.RemoteApproved) {
+			return out, errors.New("tailnet endpoint and explicit internet/relay consent required")
+		}
+		if (update.Transport == "adb" || update.Transport == "ssh") && (update.Endpoint == "" || !validLoopbackEndpoint(update.Endpoint)) {
+			return out, errors.New("ADB/SSH tunnel requires an explicit 127.0.0.1:port endpoint")
+		}
+		if !validLoopbackEndpoint(update.AdbEndpoint) || !validLoopbackEndpoint(update.SshEndpoint) {
+			return out, errors.New("fallback ADB/SSH tunnel must use 127.0.0.1:port")
+		}
+		if update.Endpoint != "" && update.Transport == "tailnet" && !validTailnetEndpoint(update.Endpoint) {
+			return out, errors.New("invalid tailnet endpoint")
+		}
+		cleanedFallback := []string{}
+		for _, t := range update.FallbackTransports {
+			t = strings.TrimSpace(t)
+			switch t {
+			case "lan", "adb", "ssh":
+				cleanedFallback = append(cleanedFallback, t)
+			case "tailnet":
+				if !update.RemoteApproved || !validTailnetEndpoint(update.Endpoint) {
+					return out, errors.New("tailnet fallback requires explicit remote approval and tailnet endpoint")
+				}
+				cleanedFallback = append(cleanedFallback, t)
+			default:
+				return out, errors.New("unsupported fallback transport")
 			}
 		}
 		stored := Connection{
-			Transport:      update.Transport,
-			Endpoint:       update.Endpoint,
-			RemoteApproved: update.RemoteApproved,
+			Transport:          update.Transport,
+			Endpoint:           update.Endpoint,
+			RemoteApproved:     update.RemoteApproved,
+			FallbackApproved:   update.FallbackApproved,
+			FallbackTransports: cleanedFallback,
+			AdbEndpoint:        update.AdbEndpoint,
+			SshEndpoint:        update.SshEndpoint,
 		}
 		b, e := json.Marshal(stored)
 		if e != nil {

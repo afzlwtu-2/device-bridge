@@ -17,17 +17,69 @@ class TailnetCoordinator(private val context: Context) {
     private val prefs = context.getSharedPreferences("devicebridge-tailnet", Context.MODE_PRIVATE)
     private var visible = false
     private var transferring = false
+    private var awaitingLogin = false
     private var network: Map<String, Any?>? = null
     private var endpoint = ""
     private var signature = ""
     private var child: Process? = null
     private var generation = 0
     private val directory get() = File(context.filesDir, "devicebridge/tailnet")
+    private val delayedStop = Runnable {
+        awaitingLogin = false
+        reconcileNow()
+    }
+    private val loginTimeout = Runnable {
+        awaitingLogin = false
+        reconcile()
+    }
 
-    fun enable(value: Boolean) { prefs.edit().putBoolean("enabled", value).apply(); reconcile() }
-    fun visible(value: Boolean) { visible = value; reconcile() }
-    fun transferring(value: Boolean) { transferring = value; reconcile() }
-    fun network(value: Map<String, Any?>?, receiver: String = "") { network = value; endpoint = receiver; reconcile() }
+    fun enable(value: Boolean) {
+        prefs.edit().putBoolean("enabled", value).apply()
+        if (!value) {
+            awaitingLogin = false
+            main.removeCallbacks(delayedStop)
+            main.removeCallbacks(loginTimeout)
+            reconcileNow()
+            return
+        }
+        reconcile()
+    }
+
+    fun awaitingLogin() {
+        awaitingLogin = true
+        main.removeCallbacks(delayedStop)
+        main.removeCallbacks(loginTimeout)
+        main.postDelayed(loginTimeout, 5 * 60_000L)
+        reconcile()
+    }
+
+    fun visible(value: Boolean) {
+        visible = value
+        if (value) {
+            main.removeCallbacks(delayedStop)
+        }
+        reconcile()
+    }
+
+    fun transferring(value: Boolean) {
+        transferring = value
+        if (value) {
+            main.removeCallbacks(delayedStop)
+        }
+        reconcile()
+    }
+
+    fun network(value: Map<String, Any?>?, receiver: String = "") {
+        if (value != null) {
+            network = value
+            endpoint = receiver
+        } else if (!awaitingLogin) {
+            network = null
+            endpoint = ""
+        }
+        reconcile()
+    }
+
     fun enabled() = prefs.getBoolean("enabled", false)
 
     private fun control(target: String) {
@@ -52,8 +104,29 @@ class TailnetCoordinator(private val context: Context) {
 
     private fun reconcile() {
         val selected = network
-        if (!enabled() || (!visible && !transferring) || selected == null) { if (signature.isNotEmpty()) stop(); return }
-        val next = "${selected["network_handle"]}:${selected["cidr"]}"
+        if (!enabled() || selected == null) {
+            main.removeCallbacks(delayedStop)
+            if (signature.isNotEmpty()) stop()
+            return
+        }
+        if (!visible && !transferring && !awaitingLogin) {
+            // Keep tsnet alive briefly across app switches / SAF pickers / login return so state persists cleanly.
+            main.removeCallbacks(delayedStop)
+            main.postDelayed(delayedStop, 120_000L)
+            return
+        }
+        main.removeCallbacks(delayedStop)
+        reconcileNow()
+    }
+
+    private fun reconcileNow() {
+        val selected = network
+        if (!enabled() || (!visible && !transferring && !awaitingLogin) || selected == null) {
+            if (signature.isNotEmpty()) stop()
+            return
+        }
+        val handle = selected["network_handle"] as? String ?: ""
+        val next = "$handle:${selected["cidr"]}"
         if (signature == next) { worker.execute { control(endpoint) }; return }
         stop(); signature = next; val owner = ++generation
         val target = endpoint
@@ -64,7 +137,11 @@ class TailnetCoordinator(private val context: Context) {
                 check(binary.canExecute()) { "App-only Tailscale module is not installed" }
                 val builder = ProcessBuilder(binary.path, "--state", directory.path, "--name", "devicebridge-phone")
                 builder.environment().apply {
-                    put("DEVICEBRIDGE_NETWORK_HANDLE", selected["network_handle"] as String)
+                    if (handle.isNotEmpty()) {
+                        put("DEVICEBRIDGE_NETWORK_HANDLE", handle)
+                    } else {
+                        remove("DEVICEBRIDGE_NETWORK_HANDLE")
+                    }
                     put("DEVICEBRIDGE_LAN_CIDR", selected["cidr"] as String)
                     put("DEVICEBRIDGE_INTERFACE", selected["interface"] as String)
                     remove("TS_AUTHKEY"); remove("TS_CLIENT_SECRET")

@@ -12,12 +12,26 @@ abstract interface class CoreBridge {
   Future<void> cancel();
   Future<String?> saveDownload(String path);
   String get downloads;
+  String get homeDir;
   Map<String, dynamic>? get network;
   Stream<Map<String, dynamic>> get networkEvents;
   Stream<Map<String, dynamic>> get transferProgress;
   Future<void> enableTailnet(bool enabled);
   Future<void> openLogin(String url);
   Future<void> openConnectionSetup(String kind);
+  Future<Map<String, dynamic>> platformCapabilities();
+  Future<Map<String, dynamic>?> pickTargetTree({bool termux = false});
+  Future<Map<String, dynamic>> listTargetTree(String uri, {String? documentId});
+  Future<String?> createTargetFolder(
+    String uri,
+    String name, {
+    String? documentId,
+  });
+  Future<void> exportToTargetTree(
+    String localPath,
+    String uri, {
+    String? documentId,
+  });
   Future<void> shutdown();
 }
 
@@ -39,6 +53,7 @@ class LocalCore implements CoreBridge {
   Stream<Map<String, dynamic>> get networkEvents => _events.stream;
   @override
   Stream<Map<String, dynamic>> get transferProgress => _progress.stream;
+
   @override
   Future<void> enableTailnet(bool enabled) async {
     if (Platform.isAndroid) {
@@ -92,9 +107,75 @@ class LocalCore implements CoreBridge {
       await channel.invokeMethod('connectionSetup', {'kind': kind});
     } else {
       throw UnsupportedError(
-        'Use your desktop network settings to establish a hotspot or Wi-Fi Direct link, then select that interface.',
+        'Use your desktop network settings to configure $kind, then refresh Connections.',
       );
     }
+  }
+
+  @override
+  Future<Map<String, dynamic>> platformCapabilities() async {
+    if (Platform.isAndroid) {
+      return Map<String, dynamic>.from(
+        await channel.invokeMethod('platformCapabilities') as Map,
+      );
+    }
+    final adb = await Process.run('which', ['adb'], runInShell: false);
+    final ssh = await Process.run('which', ['ssh'], runInShell: false);
+    return {
+      'wifi_direct': false,
+      'adb_enabled': adb.exitCode == 0,
+      'ssh_available': ssh.exitCode == 0,
+      'termux_installed': false,
+    };
+  }
+
+  @override
+  Future<Map<String, dynamic>?> pickTargetTree({bool termux = false}) async {
+    if (!Platform.isAndroid) {
+      return {'uri': homeDir, 'name': 'Home', 'kind': 'posix'};
+    }
+    final res = await channel.invokeMethod<Map>('pickTargetTree', {
+      'termux': termux,
+    });
+    return res == null ? null : Map<String, dynamic>.from(res);
+  }
+
+  @override
+  Future<Map<String, dynamic>> listTargetTree(
+    String uri, {
+    String? documentId,
+  }) async {
+    final res = await channel.invokeMethod<Map>('listTargetTree', {
+      'uri': uri,
+      'document_id': documentId,
+    });
+    return Map<String, dynamic>.from(res!);
+  }
+
+  @override
+  Future<String?> createTargetFolder(
+    String uri,
+    String name, {
+    String? documentId,
+  }) async {
+    return channel.invokeMethod<String>('createTargetFolder', {
+      'uri': uri,
+      'name': name,
+      'document_id': documentId,
+    });
+  }
+
+  @override
+  Future<void> exportToTargetTree(
+    String localPath,
+    String uri, {
+    String? documentId,
+  }) async {
+    await channel.invokeMethod('exportToTargetTree', {
+      'path': localPath,
+      'uri': uri,
+      'document_id': documentId,
+    });
   }
 
   @override
@@ -108,6 +189,8 @@ class LocalCore implements CoreBridge {
   Map<String, dynamic>? get network => _network;
   @override
   String get downloads => '$_state/downloads';
+  @override
+  String get homeDir => Platform.environment['HOME'] ?? downloads;
 
   @override
   Future<void> initialize() async {
@@ -152,7 +235,9 @@ class LocalCore implements CoreBridge {
         _events.add(event);
       });
       await channel.invokeMethod('activateLan', {'network': _network});
-      _nativeProgress ??= transferChannel.receiveBroadcastStream().listen((value) {
+      _nativeProgress ??= transferChannel.receiveBroadcastStream().listen((
+        value,
+      ) {
         _progress.add(Map<String, dynamic>.from(value as Map));
       });
     }
@@ -164,8 +249,9 @@ class LocalCore implements CoreBridge {
       await channel.invokeMethod('approveLan', {'network': network});
     }
     _network = Map<String, dynamic>.from(network);
-    await File('$_state/network.json')
-        .writeAsString(jsonEncode(_network), flush: true);
+    await File(
+      '$_state/network.json',
+    ).writeAsString(jsonEncode(_network), flush: true);
   }
 
   @override
@@ -199,7 +285,8 @@ class LocalCore implements CoreBridge {
     };
     if (deviceOperations.contains(arguments.first) && arguments.length > 1) {
       final connection = await run(['connection', arguments[1]]) as Map;
-      if (connection['transport'] == 'tailnet') {
+      final transport = connection['transport'] as String? ?? 'lan';
+      if (transport == 'tailnet') {
         args.addAll([
           '--transport',
           'tailnet',
@@ -207,6 +294,16 @@ class LocalCore implements CoreBridge {
           connection['endpoint'] as String,
           '--approve-remote',
         ]);
+      } else if (transport == 'adb' || transport == 'ssh') {
+        args.addAll([
+          '--transport',
+          transport,
+          '--endpoint',
+          connection['endpoint'] as String,
+        ]);
+      }
+      if (connection['fallback_approved'] == true) {
+        args.add('--allow-route-fallback');
       }
     }
     args.addAll(arguments);
@@ -234,10 +331,11 @@ class LocalCore implements CoreBridge {
           .transform(utf8.decoder)
           .transform(const LineSplitter())
           .listen((line) {
-            if (line.startsWith('{') && line.contains('"mib_per_second"')) {
+            if (line.startsWith('{')) {
               try {
                 final obj = Map<String, dynamic>.from(jsonDecode(line) as Map);
-                if (obj.containsKey('verified_bytes')) {
+                if (obj.containsKey('verified_bytes') ||
+                    obj['route_switched'] == true) {
                   _progress.add(obj);
                   return;
                 }

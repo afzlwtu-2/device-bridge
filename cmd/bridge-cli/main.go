@@ -59,6 +59,23 @@ func (c *command) peer(name string) (storage.Peer, error) {
 	}
 	return found[0], nil
 }
+func openOverlay(ctx context.Context, stateDir, controlSocket, tailnetMode string, remoteApproved bool) (transport.Provider, error) {
+	socket := controlSocket
+	if socket == "" {
+		socket = filepath.Join(stateDir, "tailnet", "control.sock")
+	}
+	if runtime.GOOS != "android" && tailnetMode != "app" {
+		sys := &tailscaled.Provider{RemoteApproved: remoteApproved}
+		st, e := sys.Status(ctx)
+		if e == nil && st.State == "Running" {
+			return sys, nil
+		} else if tailnetMode == "system" {
+			return nil, errors.New("system Tailscale unavailable")
+		}
+	}
+	return &tailnet.Provider{Control: tailnetipc.Client{Socket: socket}, RemoteApproved: remoteApproved}, nil
+}
+
 func (c *command) connect(id string, authenticate bool) (*client.Client, transport.Candidate, error) {
 	if c.overlay != nil {
 		if c.endpoint == "" {
@@ -154,11 +171,13 @@ func run() error {
 	iface := flag.String("interface", "wlan0", "approved unmetered LAN interface")
 	cidr := flag.String("lan-cidr", "", "this device's approved local LAN IPv4/CIDR")
 	endpoint := flag.String("endpoint", "", "diagnostic explicit endpoint (normal use discovers by identity)")
-	transportID := flag.String("transport", "lan", "lan or explicitly selected tailnet")
+	transportID := flag.String("transport", "lan", "lan, adb, ssh, or explicitly selected tailnet")
 	controlSocket := flag.String("tailnet-socket", "", "private app-only tsnet control socket")
 	tailnetMode := flag.String("tailnet-mode", "auto", "auto prefers existing system tailscaled; app explicitly selects tsnet")
 	remoteApproved := flag.Bool("approve-remote", false, "explicitly allow internet/relay data for this request")
+	allowFallback := flag.Bool("allow-route-fallback", false, "allow approved alternate-route resume on disruption")
 	flag.Parse()
+	_ = *allowFallback
 	a := flag.Args()
 	if *state == "" || len(a) == 0 {
 		return errors.New("usage: bridge-cli --state DIR [--interface wlan0 --lan-cidr LOCAL/24] init|identity|export|invite|peers|approve|revoke|discover|pair|finish|roots|list|stat|pull|resolve")
@@ -182,17 +201,34 @@ func run() error {
 	switch a[0] {
 	case "connection":
 		if len(a) < 2 || len(a) > 5 {
-			return errors.New("connection PEER_ID [lan|tailnet ENDPOINT allow-internet-and-relays]")
+			return errors.New("connection PEER_ID [-|lan|tailnet|adb|ssh ENDPOINT [allow-internet-and-relays]]")
 		}
 		var change *storage.Connection
 		if len(a) > 2 {
-			change = &storage.Connection{Transport: a[2]}
-			if a[2] == "tailnet" {
-				if len(a) != 5 || a[4] != "allow-internet-and-relays" {
-					return errors.New("explicit internet/relay approval required")
+			if a[2] == "-" {
+				data, e := io.ReadAll(io.LimitReader(os.Stdin, 8192))
+				if e != nil {
+					return e
 				}
-				change.Endpoint = a[3]
-				change.RemoteApproved = true
+				var parsed storage.Connection
+				if e = json.Unmarshal(data, &parsed); e != nil {
+					return e
+				}
+				change = &parsed
+			} else {
+				change = &storage.Connection{Transport: a[2]}
+				if a[2] == "tailnet" {
+					if len(a) != 5 || a[4] != "allow-internet-and-relays" {
+						return errors.New("explicit internet/relay approval required")
+					}
+					change.Endpoint = a[3]
+					change.RemoteApproved = true
+				} else if a[2] == "adb" || a[2] == "ssh" {
+					if len(a) < 4 {
+						return errors.New("ADB/SSH connection requires 127.0.0.1:port")
+					}
+					change.Endpoint = a[3]
+				}
 			}
 		}
 		v, e := s.Connection(a[1], change)
@@ -338,13 +374,20 @@ func run() error {
 		return output(map[string]string{"status": "removed"})
 	}
 	var p *direct.Provider
-	if *transportID == "lan" {
+	switch *transportID {
+	case "lan":
 		p, err = direct.NewCIDR(*iface, *cidr)
 		if err != nil {
 			return err
 		}
 		p.Discovery = func(ctx context.Context) ([]transport.Candidate, error) { return discovery.Browse(ctx, p) }
-	} else if *transportID != "tailnet" {
+	case "adb", "ssh":
+		p, err = direct.NewCIDR("lo", "127.0.0.1/8")
+		if err != nil {
+			return err
+		}
+	case "tailnet":
+	default:
 		return errors.New("unsupported selected transport")
 	}
 	reg := &transport.Registry{}
@@ -358,21 +401,9 @@ func run() error {
 	defer cancel()
 	c := &command{state: s, identity: id, provider: p, endpoint: *endpoint, ctx: ctx}
 	if *transportID == "tailnet" {
-		socket := *controlSocket
-		if socket == "" {
-			socket = filepath.Join(*state, "tailnet", "control.sock")
-		}
-		if runtime.GOOS != "android" && *tailnetMode != "app" {
-			sys := &tailscaled.Provider{RemoteApproved: *remoteApproved}
-			st, e := sys.Status(ctx)
-			if e == nil && st.State == "Running" {
-				c.overlay = sys
-			} else if *tailnetMode == "system" {
-				return errors.New("system Tailscale unavailable")
-			}
-		}
-		if c.overlay == nil {
-			c.overlay = &tailnet.Provider{Control: tailnetipc.Client{Socket: socket}, RemoteApproved: *remoteApproved}
+		c.overlay, err = openOverlay(ctx, *state, *controlSocket, *tailnetMode, *remoteApproved)
+		if err != nil {
+			return err
 		}
 		if err = reg.Register(c.overlay); err != nil {
 			return err
@@ -486,10 +517,108 @@ func run() error {
 		} else {
 			receipt, err = transfer.Pull(ctx, cl, peer.ID, manifest, a[4], emitProgress)
 		}
+		usedTransport := candidate.Transport
+		if err != nil && ctx.Err() == nil && !errors.Is(err, transfer.ErrNonRetriable) {
+			if savedConn, ce := s.Connection(peer.ID, nil); ce == nil && savedConn.FallbackApproved {
+				var alts []transfer.AlternateSource
+				seenRoute := map[string]bool{*transportID: true}
+				order := append([]string{}, savedConn.FallbackTransports...)
+				if len(order) == 0 {
+					order = []string{"lan", "adb", "ssh"}
+					if savedConn.RemoteApproved && savedConn.Endpoint != "" {
+						order = append(order, "tailnet")
+					}
+				}
+				for _, routeName := range order {
+					if seenRoute[routeName] {
+						continue
+					}
+					seenRoute[routeName] = true
+					switch routeName {
+					case "lan":
+						if *cidr == "" {
+							continue
+						}
+						alts = append(alts, transfer.AlternateSource{
+							Name: "lan",
+							Open: func(actx context.Context) (transfer.Source, string, func(), error) {
+								lp, e := direct.NewCIDR(*iface, *cidr)
+								if e != nil {
+									return nil, "", nil, e
+								}
+								lp.Discovery = func(dctx context.Context) ([]transport.Candidate, error) { return discovery.Browse(dctx, lp) }
+								ac := &command{state: s, identity: id, provider: lp, ctx: actx}
+								acl, cand, e := ac.connect(peer.ID, true)
+								if e != nil {
+									return nil, "", nil, e
+								}
+								return acl, cand.Endpoint, acl.Close, nil
+							},
+						})
+					case "adb", "ssh":
+						ep := savedConn.AdbEndpoint
+						if routeName == "ssh" {
+							ep = savedConn.SshEndpoint
+						}
+						if ep == "" && savedConn.Transport == routeName {
+							ep = savedConn.Endpoint
+						}
+						if ep == "" {
+							continue
+						}
+						rName, rEp := routeName, ep
+						alts = append(alts, transfer.AlternateSource{
+							Name: rName,
+							Open: func(actx context.Context) (transfer.Source, string, func(), error) {
+								lp, e := direct.NewCIDR("lo", "127.0.0.1/8")
+								if e != nil {
+									return nil, "", nil, e
+								}
+								ac := &command{state: s, identity: id, provider: lp, endpoint: rEp, ctx: actx}
+								acl, cand, e := ac.connect(peer.ID, true)
+								if e != nil {
+									return nil, "", nil, e
+								}
+								return acl, cand.Endpoint, acl.Close, nil
+							},
+						})
+					case "tailnet":
+						if !savedConn.RemoteApproved || savedConn.Endpoint == "" {
+							continue
+						}
+						tEp := savedConn.Endpoint
+						alts = append(alts, transfer.AlternateSource{
+							Name: "tailnet",
+							Open: func(actx context.Context) (transfer.Source, string, func(), error) {
+								ov, e := openOverlay(actx, *state, *controlSocket, *tailnetMode, true)
+								if e != nil {
+									return nil, "", nil, e
+								}
+								ac := &command{state: s, identity: id, overlay: ov, endpoint: tEp, ctx: actx}
+								acl, cand, e := ac.connect(peer.ID, true)
+								if e != nil {
+									return nil, "", nil, e
+								}
+								return acl, cand.Endpoint, acl.Close, nil
+							},
+						})
+					}
+				}
+				if len(alts) > 0 {
+					var switched string
+					receipt, switched, err = transfer.ResumePullOnAlternates(ctx, *transportID, alts, peer.ID, manifest, a[4], err, emitProgress, func(sw transfer.RouteSwitch) {
+						_ = json.NewEncoder(os.Stderr).Encode(sw)
+					})
+					if err == nil {
+						usedTransport = switched
+					}
+				}
+			}
+		}
 		if err != nil {
 			return err
 		}
-		_ = s.RecordRate(peer.ID, candidate.Transport, receipt.MiBPerSecond)
+		_ = s.RecordRate(peer.ID, usedTransport, receipt.MiBPerSecond)
 		return output(receipt)
 	default:
 		return errors.New("unknown command")

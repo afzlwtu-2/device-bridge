@@ -14,6 +14,35 @@ class FakeCore implements CoreBridge {
   @override
   Future<void> openConnectionSetup(String kind) async {}
   @override
+  Future<Map<String, dynamic>> platformCapabilities() async => {
+    'wifi_direct': true,
+    'adb_enabled': true,
+    'termux_installed': true,
+  };
+  @override
+  Future<Map<String, dynamic>?> pickTargetTree({bool termux = false}) async => {
+    'uri': 'content://mock/tree',
+    'name': termux ? 'TermuxHome' : 'PickedFolder',
+    'kind': termux ? 'termux' : 'saf',
+  };
+  @override
+  Future<Map<String, dynamic>> listTargetTree(
+    String uri, {
+    String? documentId,
+  }) async => {'entries': []};
+  @override
+  Future<String?> createTargetFolder(
+    String uri,
+    String name, {
+    String? documentId,
+  }) async => null;
+  @override
+  Future<void> exportToTargetTree(
+    String localPath,
+    String uri, {
+    String? documentId,
+  }) async {}
+  @override
   Future<void> shutdown() async {
     await _progressController.close();
   }
@@ -25,6 +54,8 @@ class FakeCore implements CoreBridge {
   final calls = <List<String>>[];
   @override
   String get downloads => '/private/downloads';
+  @override
+  String get homeDir => '/private/home';
   @override
   Map<String, dynamic>? get network => {
     'interface': 'test0',
@@ -45,6 +76,7 @@ class FakeCore implements CoreBridge {
     calls.add(arguments);
     return switch (arguments.first) {
       'connection' => {'transport': 'lan'},
+      'tailnet' => {'mode': 'app', 'state': 'Stopped', 'ips': []},
       'theme' => {'theme': arguments.length > 1 ? arguments[1] : 'system'},
       'export' => {'status': 'export_registered'},
       'identity' => {'id': 'phone', 'name': 'Phone'},
@@ -70,6 +102,13 @@ class FakeCore implements CoreBridge {
             'size': 5,
             'modified': '2026-11-18',
           },
+          {
+            'name': '.secret-dotfile',
+            'path': '.secret-dotfile',
+            'kind': 'file',
+            'size': 8,
+            'modified': '2026-11-18',
+          },
         ],
       },
       'pull' => {
@@ -79,6 +118,7 @@ class FakeCore implements CoreBridge {
       },
       'discover' => [],
       'pair' => {'status': 'pending'},
+      'remove' => {'status': 'removed'},
       _ => throw StateError('Unexpected command $arguments'),
     };
   }
@@ -109,46 +149,80 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(core.calls.any((c) => c.first == 'pair'), isTrue);
   });
-  testWidgets('Four primary areas and remote files inside a paired device', (
+
+  testWidgets(
+    'Four primary areas, dual-pane browser, hidden files toggle and pull',
+    (tester) async {
+      final core = FakeCore();
+      await tester.pumpWidget(DeviceBridgeApp(core: core));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Tailscale connectivity'), findsNothing);
+      expect(find.byTooltip('Connections'), findsOneWidget);
+      expect(find.byType(NavigationDestination), findsNWidgets(4));
+      for (final label in ['Home', 'Devices', 'Share', 'Sync']) {
+        expect(find.text(label), findsWidgets);
+      }
+      expect(find.text('Files'), findsNothing);
+      expect(find.text('Terminal'), findsNothing);
+      expect(core.calls.any((c) => c.first == 'list'), isFalse);
+      await tester.ensureVisible(find.text('Laptop'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Laptop'));
+      await tester.pumpAndSettle();
+      expect(find.text('Authenticated direct LAN'), findsOneWidget);
+      expect(find.text('Remove device'), findsOneWidget);
+      await tester.tap(find.text('Approved'));
+      await tester.pumpAndSettle();
+      expect(find.text('hello.txt'), findsOneWidget);
+      expect(find.text('.secret-dotfile'), findsNothing);
+      expect(find.text('Termux Storage'), findsOneWidget);
+      await tester.tap(find.byTooltip('Show hidden files'));
+      await tester.pumpAndSettle();
+      expect(find.text('.secret-dotfile'), findsOneWidget);
+      await tester.tap(find.byTooltip('Hide hidden files'));
+      await tester.pumpAndSettle();
+      expect(find.text('.secret-dotfile'), findsNothing);
+
+      expect(core.calls.any((c) => c.first == 'pull'), isFalse);
+      await tester.tap(find.byIcon(Icons.download_outlined));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Existing files will not be overwritten'),
+        findsOneWidget,
+      );
+      expect(core.calls.any((c) => c.first == 'pull'), isFalse);
+      await tester.tap(find.widgetWithText(FilledButton, 'Pull'));
+      await tester.pumpAndSettle();
+      expect(core.calls.last, [
+        'pull',
+        'laptop',
+        'approved',
+        'hello.txt',
+        '/private/downloads/hello.txt',
+      ]);
+      expect(
+        find.textContaining('Verified download (streaming tar)'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('42.50 MiB/s'), findsOneWidget);
+    },
+  );
+
+  testWidgets('Connections hub shows all transports under Wi-Fi icon', (
     tester,
   ) async {
     final core = FakeCore();
     await tester.pumpWidget(DeviceBridgeApp(core: core));
     await tester.pumpAndSettle();
-    expect(find.byType(NavigationDestination), findsNWidgets(4));
-    for (final label in ['Home', 'Devices', 'Share', 'Sync']) {
-      expect(find.text(label), findsWidgets);
-    }
-    expect(find.text('Files'), findsNothing);
-    expect(find.text('Terminal'), findsNothing);
-    expect(core.calls.any((c) => c.first == 'list'), isFalse);
-    await tester.ensureVisible(find.text('Laptop'));
+    await tester.tap(find.byTooltip('Connections'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Laptop'));
-    await tester.pumpAndSettle();
-    expect(find.text('Authenticated direct LAN'), findsOneWidget);
-    await tester.tap(find.text('Approved'));
-    await tester.pumpAndSettle();
-    expect(find.text('hello.txt'), findsOneWidget);
-    expect(core.calls.any((c) => c.first == 'pull'), isFalse);
-    await tester.tap(find.byIcon(Icons.download_outlined));
-    await tester.pumpAndSettle();
-    expect(
-      find.textContaining('Existing files will not be overwritten'),
-      findsOneWidget,
-    );
-    expect(core.calls.any((c) => c.first == 'pull'), isFalse);
-    await tester.tap(find.widgetWithText(FilledButton, 'Pull'));
-    await tester.pumpAndSettle();
-    expect(core.calls.last, [
-      'pull',
-      'laptop',
-      'approved',
-      'hello.txt',
-      '/private/downloads/hello.txt',
-    ]);
-    expect(find.textContaining('Verified download (streaming tar)'), findsOneWidget);
-    expect(find.textContaining('42.50 MiB/s'), findsOneWidget);
+    expect(find.text('Wi-Fi LAN'), findsOneWidget);
+    expect(find.text('Hotspot & Wi-Fi Direct'), findsOneWidget);
+    expect(find.text('Tailscale (tsnet / system)'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('USB / Wireless ADB'), 200);
+    expect(find.text('USB / Wireless ADB'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('SSH & Termux Bridge'), 200);
+    expect(find.text('SSH & Termux Bridge'), findsOneWidget);
   });
 
   testWidgets('Matte paper and AMOLED themes render cleanly', (tester) async {

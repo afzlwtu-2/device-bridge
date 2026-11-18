@@ -12,6 +12,7 @@ import android.os.Looper
 import org.json.JSONObject
 import java.io.File
 import java.net.Inet4Address
+import java.net.NetworkInterface
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -35,14 +36,46 @@ class LanCoordinator(private val context: Context, private val event: (Map<Strin
         override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) { main.post { refresh() } }
     }
 
-    fun networks(): List<Map<String, Any?>> = cm.allNetworks.mapNotNull { network ->
-        val caps = cm.getNetworkCapabilities(network) ?: return@mapNotNull null
-        if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
-        val link = cm.getLinkProperties(network) ?: return@mapNotNull null
-        val address = link.linkAddresses.firstOrNull { it.address is Inet4Address && it.address.isSiteLocalAddress } ?: return@mapNotNull null
-        mapOf("interface" to link.interfaceName, "cidr" to "${address.address.hostAddress}/${address.prefixLength}",
-            "network_handle" to network.networkHandle.toString(), "unmetered" to caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
-            "metered" to if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) "Unmetered Wi-Fi" else "Metered Wi-Fi: explicit approval required")
+    fun networks(): List<Map<String, Any?>> {
+        val list = cm.allNetworks.mapNotNull { network ->
+            val caps = cm.getNetworkCapabilities(network) ?: return@mapNotNull null
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
+            val link = cm.getLinkProperties(network) ?: return@mapNotNull null
+            val address = link.linkAddresses.firstOrNull { it.address is Inet4Address && it.address.isSiteLocalAddress } ?: return@mapNotNull null
+            mapOf("interface" to link.interfaceName, "cidr" to "${address.address.hostAddress}/${address.prefixLength}",
+                "network_handle" to network.networkHandle.toString(), "unmetered" to caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
+                "kind" to "wifi",
+                "metered" to if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) "Unmetered Wi-Fi" else "Metered Wi-Fi: explicit approval required")
+        }.toMutableList()
+        // Detect local hotspot / Wi-Fi Direct group-owner interfaces that Android ConnectivityManager may not register as TRANSPORT_WIFI.
+        try {
+            val existing = list.map { "${it["interface"]}:${it["cidr"]}" }.toSet()
+            val ifaces = NetworkInterface.getNetworkInterfaces()
+            while (ifaces != null && ifaces.hasMoreElements()) {
+                val iface = ifaces.nextElement()
+                if (!iface.isUp || iface.isLoopback) continue
+                val name = iface.name ?: continue
+                if (!name.startsWith("ap") && !name.startsWith("swlan") && !name.startsWith("p2p") && !name.startsWith("wlan") && !name.startsWith("rndis")) continue
+                for (la in iface.interfaceAddresses) {
+                    val addr = la.address
+                    if (addr is Inet4Address && addr.isSiteLocalAddress) {
+                        val cidr = "${addr.hostAddress}/${la.networkPrefixLength}"
+                        if ("$name:$cidr" !in existing) {
+                            val kind = if (name.startsWith("p2p")) "wifi_direct" else "hotspot"
+                            list.add(mapOf(
+                                "interface" to name,
+                                "cidr" to cidr,
+                                "network_handle" to "",
+                                "unmetered" to true,
+                                "kind" to kind,
+                                "metered" to "Hotspot / P2P local interface (explicit approval required)"
+                            ))
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) { /* restricted netlink on some Android builds */ }
+        return list
     }
 
     fun activate(saved: Map<String, Any?>?) {
@@ -56,8 +89,8 @@ class LanCoordinator(private val context: Context, private val event: (Map<Strin
     }
 
     fun approve(selected: Map<String, Any?>) {
-        val actual = networks().firstOrNull { it["network_handle"] == selected["network_handle"] && it["cidr"] == selected["cidr"] }
-            ?: error("Wi-Fi changed; select the current network again")
+        val actual = networks().firstOrNull { it["network_handle"] == (selected["network_handle"] ?: "") && it["cidr"] == selected["cidr"] && it["interface"] == selected["interface"] }
+            ?: error("Network changed; select the current network again")
         val value = actual + ("allow_wifi_roaming" to (selected["allow_wifi_roaming"] == true))
         prefs.edit().putString("policy", JSONObject(value).toString()).apply()
         refresh()
@@ -87,14 +120,16 @@ class LanCoordinator(private val context: Context, private val event: (Map<Strin
         val policy = prefs.getString("policy", null)?.let { JSONObject(it) }
         val options = networks()
         val selected = options.firstOrNull { n ->
-            policy != null && ((n["network_handle"] == policy.optString("network_handle") && (n["unmetered"] == true || !policy.optBoolean("unmetered"))) ||
-                (policy.optBoolean("allow_wifi_roaming") && n["unmetered"] == true))
+            val handle = n["network_handle"] as? String ?: ""
+            policy != null && ((handle == policy.optString("network_handle") && n["cidr"] == policy.optString("cidr") && (n["unmetered"] == true || !policy.optBoolean("unmetered"))) ||
+                (policy.optBoolean("allow_wifi_roaming") && n["unmetered"] == true && handle.isNotEmpty()))
         }
         if (selected == null) {
             stopReceiver(); CoreRuntime.cancel()
             event(mapOf("state" to if (options.isEmpty()) "offline" else "approval_required", "network" to null)); return
         }
-        val next = "${selected["network_handle"]}:${selected["interface"]}:${selected["cidr"]}"
+        val handle = selected["network_handle"] as? String ?: ""
+        val next = "$handle:${selected["interface"]}:${selected["cidr"]}"
         if (next == signature) return
         CoreRuntime.cancel()
         stopReceiver(); signature = next; val owner = ++generation
@@ -108,7 +143,9 @@ class LanCoordinator(private val context: Context, private val event: (Map<Strin
                 val args = listOf(binary.path, "--state", File(context.filesDir, "devicebridge").path,
                     "--interface", selected["interface"] as String, "--lan-cidr", selected["cidr"] as String, "--port", "0")
                 val builder = ProcessBuilder(args).redirectErrorStream(false)
-                builder.environment()["DEVICEBRIDGE_NETWORK_HANDLE"] = selected["network_handle"] as String
+                if (handle.isNotEmpty()) {
+                    builder.environment()["DEVICEBRIDGE_NETWORK_HANDLE"] = handle
+                }
                 val process = builder.start(); child = process
                 Thread {
                     process.inputStream.bufferedReader().use { reader ->

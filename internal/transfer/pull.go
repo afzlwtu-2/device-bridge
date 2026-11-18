@@ -22,6 +22,8 @@ import (
 
 const ChunkSize = 1 << 20
 
+var ErrNonRetriable = errors.New("non-retriable transfer policy or integrity error")
+
 type Source interface {
 	ReadRange(context.Context, string, string, int64, int64) ([]byte, error)
 }
@@ -117,10 +119,10 @@ func (s *stagingHandle) close() {
 
 func openStaging(peer string, m protocol.Manifest, destination string) (*stagingHandle, error) {
 	if err := ValidateManifest(m); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrNonRetriable, err)
 	}
 	if filesproviders.ValidPath(m.Path) != nil {
-		return nil, errors.New("invalid source path")
+		return nil, fmt.Errorf("%w: invalid source path", ErrNonRetriable)
 	}
 	abs, err := filepath.Abs(destination)
 	if err != nil {
@@ -128,7 +130,7 @@ func openStaging(peer string, m protocol.Manifest, destination string) (*staging
 	}
 	base := filepath.Base(abs)
 	if base == "." || base == string(filepath.Separator) || strings.HasSuffix(base, ".devicebridge-part") {
-		return nil, errors.New("invalid destination")
+		return nil, fmt.Errorf("%w: invalid destination", ErrNonRetriable)
 	}
 	parent, err := os.OpenRoot(filepath.Dir(abs))
 	if err != nil {
@@ -137,7 +139,7 @@ func openStaging(peer string, m protocol.Manifest, destination string) (*staging
 	h := &stagingHandle{parent: parent, abs: abs, base: base, stage: base + ".devicebridge-part"}
 	if _, e := parent.Lstat(base); !errors.Is(e, os.ErrNotExist) {
 		h.close()
-		return nil, errors.New("destination exists or cannot be inspected; overwrite denied")
+		return nil, fmt.Errorf("%w: destination exists or cannot be inspected; overwrite denied", ErrNonRetriable)
 	}
 	err = parent.Mkdir(h.stage, 0700)
 	if err != nil && !errors.Is(err, os.ErrExist) {
@@ -147,7 +149,7 @@ func openStaging(peer string, m protocol.Manifest, destination string) (*staging
 	info, err := parent.Lstat(h.stage)
 	if err != nil || !info.IsDir() || info.Mode()&0077 != 0 {
 		h.close()
-		return nil, errors.New("staging must be a private real directory")
+		return nil, fmt.Errorf("%w: staging must be a private real directory", ErrNonRetriable)
 	}
 	root, err := parent.OpenRoot(h.stage)
 	if err != nil {
@@ -163,7 +165,7 @@ func openStaging(peer string, m protocol.Manifest, destination string) (*staging
 	if err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		lock.Close()
 		h.close()
-		return nil, errors.New("another pull owns this staging directory")
+		return nil, fmt.Errorf("%w: another pull owns this staging directory", ErrNonRetriable)
 	}
 	h.lock = lock
 	metadata, err := json.Marshal(struct {
@@ -180,7 +182,7 @@ func openStaging(peer string, m protocol.Manifest, destination string) (*staging
 	if e == nil {
 		if string(previous) != string(metadata) {
 			h.close()
-			return nil, errors.New("source manifest changed; preserve old staging and choose a new destination")
+			return nil, fmt.Errorf("%w: source manifest changed; preserve old staging and choose a new destination", ErrNonRetriable)
 		}
 	} else if errors.Is(e, os.ErrNotExist) {
 		f, e := root.OpenFile("manifest.json", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
@@ -322,7 +324,7 @@ func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, 
 			return receipt, e
 		}
 		if actual != entry.SHA256 {
-			return receipt, fmt.Errorf("checksum mismatch for %q; staging preserved", entry.Path)
+			return receipt, fmt.Errorf("%w: checksum mismatch for %q; staging preserved", ErrNonRetriable, entry.Path)
 		}
 		complete += entry.Size
 		count++

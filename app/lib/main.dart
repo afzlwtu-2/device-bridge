@@ -10,7 +10,7 @@ import 'features/remote_files.dart';
 import 'features/pair_dialog.dart';
 import 'features/device_addresses.dart';
 import 'features/incoming_pair.dart';
-import 'features/tailnet_panel.dart';
+import 'features/connections_hub.dart';
 import 'features/appearance.dart';
 
 void main() => runApp(DeviceBridgeApp(core: LocalCore()));
@@ -336,18 +336,6 @@ class _BridgeHomeState extends State<BridgeHome> {
         ],
       ),
       actions: [
-        IconButton(
-          onPressed: busy
-              ? null
-              : () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => TailnetPanel(core: widget.core),
-                  ),
-                ),
-          icon: const Icon(Icons.cloud_outlined),
-          tooltip: 'Tailscale connectivity',
-        ),
         PopupMenuButton<String>(
           tooltip: 'Appearance',
           icon: const Icon(Icons.brightness_6_outlined),
@@ -371,9 +359,20 @@ class _BridgeHomeState extends State<BridgeHome> {
           ],
         ),
         IconButton(
-          onPressed: busy ? null : selectNetwork,
+          onPressed: busy
+              ? null
+              : () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => ConnectionsHub(
+                      core: widget.core,
+                      listenerState: listenerState,
+                      onSelectNetwork: selectNetwork,
+                    ),
+                  ),
+                ),
           icon: const Icon(Icons.wifi),
-          tooltip: 'Approved network',
+          tooltip: 'Connections',
         ),
       ],
     ),

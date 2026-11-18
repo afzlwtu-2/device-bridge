@@ -280,3 +280,96 @@ func TestStreamingTarPullOverMTLS(t *testing.T) {
 		t.Fatalf("extracted file mismatch: %v", err)
 	}
 }
+
+type failingSource struct {
+	inner     transfer.Source
+	failAfter int
+	calls     int
+}
+
+func (f *failingSource) ReadRange(ctx context.Context, root, p string, o, n int64) ([]byte, error) {
+	f.calls++
+	if f.calls > f.failAfter {
+		return nil, os.ErrDeadlineExceeded
+	}
+	return f.inner.ReadRange(ctx, root, p, o, n)
+}
+
+func TestTransferDisruptionResumesOverAlternateRoute(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, host := open(t, "host")
+	cs, phone := open(t, "phone")
+	big := make([]byte, transfer.ChunkSize+4096)
+	for i := range big {
+		big[i] = byte(i % 251)
+	}
+	reg := &filesproviders.Registry{}
+	if err := reg.Register(&fakeFiles{data: big}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Export("memory", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	h := httptest.NewUnstartedServer(server.New(s, host, reg).Handler())
+	h.TLS = host.ServerTLS()
+	h.StartTLS()
+	t.Cleanup(h.Close)
+	addr := strings.TrimPrefix(h.URL, "https://")
+	c1 := client.New(phone, cs, &fakeTransport{address: addr}, transport.Candidate{DeviceID: host.ID, Endpoint: addr})
+	t.Cleanup(c1.Close)
+	inv, err := host.Invite(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c1.RequestPair(ctx, inv, phone.Name); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Approve(phone.ID, []string{"memory"}, time.Hour, 10<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := c1.FinishPair(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var manifest protocol.Manifest
+	if err := c1.JSON(ctx, "/v1/files/manifest", url.Values{"root": {"memory"}, "path": {"."}}, &manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "resumed.bin")
+	dropping := &failingSource{inner: c1, failAfter: 1}
+	_, initialErr := transfer.Pull(ctx, dropping, host.ID, manifest, dest, nil)
+	if initialErr == nil {
+		t.Fatal("expected mid-transfer disruption")
+	}
+	var switchedTo string
+	receipt, usedRoute, err := transfer.ResumePullOnAlternates(
+		ctx,
+		"lan",
+		[]transfer.AlternateSource{
+			{
+				Name: "tailnet",
+				Open: func(context.Context) (transfer.Source, string, func(), error) {
+					c2 := client.New(phone, cs, &fakeTransport{address: addr}, transport.Candidate{DeviceID: host.ID, Endpoint: addr})
+					return c2, addr, c2.Close, nil
+				},
+			},
+		},
+		host.ID,
+		manifest,
+		dest,
+		initialErr,
+		nil,
+		func(sw transfer.RouteSwitch) { switchedTo = sw.To },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usedRoute != "tailnet" || switchedTo != "tailnet" || receipt.Bytes != int64(len(big)) {
+		t.Fatalf("unexpected resume outcome: route=%s switched=%s receipt=%+v", usedRoute, switchedTo, receipt)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "hello.txt"))
+	if err != nil || !bytes.Equal(got, big) {
+		t.Fatalf("resumed file mismatch: %v", err)
+	}
+}

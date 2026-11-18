@@ -30,27 +30,32 @@ object CoreRuntime {
         val cm = context.getSystemService(ConnectivityManager::class.java)
         val cidrIndex = arguments.indexOf("--lan-cidr")
         val cidr = if (cidrIndex >= 0) arguments[cidrIndex + 1] else null
+        val allowFallback = arguments.contains("--allow-route-fallback")
+        val transportIndex = arguments.indexOf("--transport")
+        val transportMode = if (transportIndex >= 0 && transportIndex + 1 < arguments.size) arguments[transportIndex + 1] else "lan"
         val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onLost(network: Network) { cancel() }
+            override fun onLost(network: Network) { if (!allowFallback) cancel() }
             override fun onLinkPropertiesChanged(network: Network, link: LinkProperties) {
-                if (cidr != null && link.linkAddresses.none { "${it.address.hostAddress}/${it.prefixLength}" == cidr }) cancel()
+                if (!allowFallback && cidr != null && link.linkAddresses.none { "${it.address.hostAddress}/${it.prefixLength}" == cidr }) cancel()
             }
         }
         var watching = false
         try {
-            if (cidr != null) {
+            if (cidr != null && transportMode == "lan") {
                 multicast.acquire()
                 cm.registerNetworkCallback(NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), callback)
                 watching = true
             }
             val builder = ProcessBuilder(listOf(binary.path) + arguments).redirectErrorStream(false)
-            if (cidr != null) {
+            if (cidr != null && transportMode == "lan") {
                 val selected = cm.allNetworks.firstOrNull { network ->
                     val caps = cm.getNetworkCapabilities(network)
                     caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
                         cm.getLinkProperties(network)?.linkAddresses?.any { "${it.address.hostAddress}/${it.prefixLength}" == cidr } == true
-                } ?: error("Approved Wi-Fi is unavailable; no cellular fallback")
-                builder.environment()["DEVICEBRIDGE_NETWORK_HANDLE"] = selected.networkHandle.toString()
+                }
+                if (selected != null) {
+                    builder.environment()["DEVICEBRIDGE_NETWORK_HANDLE"] = selected.networkHandle.toString()
+                }
             }
             val child = builder.start()
             process = child
@@ -59,7 +64,7 @@ object CoreRuntime {
                 val tail = StringBuilder()
                 child.errorStream.bufferedReader().use { reader ->
                     reader.forEachLine { line ->
-                        if (onProgress != null && line.startsWith("{") && line.contains("\"mib_per_second\"")) {
+                        if (onProgress != null && line.startsWith("{")) {
                             try {
                                 val obj = JSONObject(line)
                                 if (obj.has("verified_bytes")) {
@@ -69,6 +74,15 @@ object CoreRuntime {
                                         "total_bytes" to obj.optLong("total_bytes"),
                                         "mib_per_second" to obj.optDouble("mib_per_second", 0.0),
                                         "elapsed_ms" to obj.optLong("elapsed_ms", 0L),
+                                    ))
+                                    return@forEachLine
+                                }
+                                if (obj.optBoolean("route_switched", false)) {
+                                    onProgress(mapOf(
+                                        "route_switched" to true,
+                                        "from" to obj.optString("from"),
+                                        "to" to obj.optString("to"),
+                                        "endpoint" to obj.optString("endpoint"),
                                     ))
                                     return@forEachLine
                                 }

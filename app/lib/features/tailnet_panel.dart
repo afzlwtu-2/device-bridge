@@ -12,7 +12,8 @@ class TailnetPanel extends StatefulWidget {
   State<TailnetPanel> createState() => _TailnetPanelState();
 }
 
-class _TailnetPanelState extends State<TailnetPanel> {
+class _TailnetPanelState extends State<TailnetPanel>
+    with WidgetsBindingObserver {
   Map<dynamic, dynamic>? status;
   String? error;
   bool busy = true;
@@ -23,6 +24,7 @@ class _TailnetPanelState extends State<TailnetPanel> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     progressSub = widget.core.transferProgress.listen((p) {
       if (mounted) {
         setState(() => liveMiB = (p['mib_per_second'] as num?)?.toDouble());
@@ -32,43 +34,72 @@ class _TailnetPanelState extends State<TailnetPanel> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      retries = 0;
+      load(pollUntilRunning: true);
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     progressSub?.cancel();
     retry?.cancel();
     super.dispose();
   }
 
-  Future<void> load() async {
-    if (mounted) {
+  String _formatError(Object err) {
+    if (err is PlatformException) {
+      final raw = err.message ?? err.toString();
+      final match = RegExp(r'"message"\s*:\s*"([^"]+)"').firstMatch(raw);
+      if (match != null) {
+        final msg = match.group(1)!;
+        if (msg.contains('not running')) {
+          return 'App-only Tailscale is off. Approve a Wi-Fi or Hotspot network in Connections, then tap Enable app-only Tailscale.';
+        }
+        return msg;
+      }
+      return raw;
+    }
+    return err.toString();
+  }
+
+  Future<void> load({bool pollUntilRunning = false, bool silent = false}) async {
+    if (mounted && !silent) {
       setState(() => busy = true);
     }
     try {
       status = await widget.core.run(['tailnet', 'status']) as Map;
       error = null;
     } catch (e) {
-      error = e.toString();
+      error = _formatError(e);
     }
     if (mounted) {
       setState(() => busy = false);
+      if (pollUntilRunning &&
+          status?['state'] != 'Running' &&
+          retries++ < 30) {
+        retry?.cancel();
+        retry = Timer(const Duration(seconds: 1), () {
+          if (mounted) {
+            load(pollUntilRunning: true, silent: true);
+          }
+        });
+      }
     }
   }
 
   Future<void> enable() async {
     setState(() => busy = true);
+    retries = 0;
     try {
       await widget.core.enableTailnet(true);
-      await load();
-      if (status?['state'] != 'Running' && retries++ < 8) {
-        retry = Timer(const Duration(seconds: 1), () {
-          if (mounted) {
-            load();
-          }
-        });
-      }
+      await load(pollUntilRunning: true, silent: true);
     } catch (e) {
       if (mounted) {
         setState(() {
-          error = e.toString();
+          error = _formatError(e);
           busy = false;
         });
       }
