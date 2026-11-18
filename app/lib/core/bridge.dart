@@ -276,6 +276,7 @@ class LocalCore implements CoreBridge {
       ]);
     }
     const deviceOperations = {
+      'finish',
       'resolve',
       'roots',
       'list',

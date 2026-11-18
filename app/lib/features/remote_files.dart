@@ -114,17 +114,22 @@ class _DeviceDetailState extends State<DeviceDetail> {
                 trailing: const Icon(Icons.chevron_right),
                 onTap: busy
                     ? null
-                    : () => Navigator.push(
-                        context,
-                        MaterialPageRoute<void>(
-                          builder: (_) => FileBrowser(
-                            core: widget.core,
-                            peer: widget.peer,
-                            root: root['id'] as String,
-                            path: '.',
+                    : () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute<void>(
+                            builder: (_) => FileBrowser(
+                              core: widget.core,
+                              peer: widget.peer,
+                              root: root['id'] as String,
+                              path: '.',
+                            ),
                           ),
-                        ),
-                      ),
+                        );
+                        if (mounted) {
+                          await load();
+                        }
+                      },
               ),
             ),
         const SizedBox(height: 24),
@@ -321,7 +326,10 @@ class _FileBrowserState extends State<FileBrowser> {
       case 'ssh':
         return 'SSH Tunnel';
       case 'tailnet':
-        return 'Tailscale';
+      case 'tsnet-v1':
+      case 'tailscaled-v1':
+        final pk = resolvedRoute?['path_kind'] as String? ?? '';
+        return pk.isEmpty ? 'Tailscale' : 'Tailscale ($pk)';
       case 'direct-lan-v1':
       case 'lan':
         final kind = widget.core.network?['kind'] as String? ?? '';

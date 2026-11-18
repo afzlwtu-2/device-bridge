@@ -284,19 +284,30 @@ class _BridgeHomeState extends State<BridgeHome> {
   }
 
   Future<void> pair() async {
-    if (widget.core.network == null) {
+    var tailnetPeers = <Map<String, dynamic>>[];
+    try {
+      final st = await widget.core.run(['tailnet', 'status']) as Map;
+      tailnetPeers = (st['peers'] as List? ?? const [])
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+    } catch (_) {
+      /* app-only tailnet may be off */
+    }
+    if (widget.core.network == null && tailnetPeers.isEmpty) {
       await selectNetwork();
     }
-    if (widget.core.network == null || !mounted) {
+    if ((widget.core.network == null && tailnetPeers.isEmpty) || !mounted) {
       return;
     }
-    final invite = await showDialog<String>(
+    final result = await showDialog<PairInvitationResult>(
       context: context,
-      builder: (_) => const PairInvitationDialog(),
+      builder: (_) => PairInvitationDialog(tailnetPeers: tailnetPeers),
     );
-    if (invite == null || !mounted) {
+    if (result == null || !mounted) {
       return;
     }
+    final invite = result.invite;
+    final tailnetEndpoint = result.tailnetEndpoint;
     await task(() async {
       final value = jsonDecode(invite) as Map;
       final approved = await showDialog<bool>(
@@ -304,7 +315,7 @@ class _BridgeHomeState extends State<BridgeHome> {
         builder: (context) => AlertDialog(
           title: Text('Pair with ${value['name']}?'),
           content: SelectableText(
-            'Verify this fingerprint on your other device:\n\n${value['id']}\n\nThe other device must separately approve your access.',
+            'Verify this fingerprint on your other device:\n\n${value['id']}\n${tailnetEndpoint != null ? '\nRoute: Tailscale ($tailnetEndpoint)\n' : ''}\nThe other device must separately approve your access.',
           ),
           actions: [
             TextButton(
@@ -319,7 +330,29 @@ class _BridgeHomeState extends State<BridgeHome> {
         ),
       );
       if (approved == true) {
-        await widget.core.run(['pair', '-'], input: invite);
+        if (tailnetEndpoint != null && tailnetEndpoint.isNotEmpty) {
+          await widget.core.run([
+            '--transport',
+            'tailnet',
+            '--endpoint',
+            tailnetEndpoint,
+            '--approve-remote',
+            'pair',
+            '-',
+          ], input: invite);
+          await widget.core.run([
+            'connection',
+            value['id'] as String,
+            '-',
+          ], input: jsonEncode({
+            'peer_id': value['id'],
+            'transport': 'tailnet',
+            'endpoint': tailnetEndpoint,
+            'remote_approved': true,
+          }));
+        } else {
+          await widget.core.run(['pair', '-'], input: invite);
+        }
         await refreshPeers();
       }
     });

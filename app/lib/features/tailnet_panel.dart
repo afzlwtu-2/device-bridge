@@ -20,6 +20,7 @@ class _TailnetPanelState extends State<TailnetPanel>
   Timer? retry;
   int retries = 0;
   double? liveMiB;
+  final Map<String, Map<String, dynamic>> probeResults = {};
   StreamSubscription<Map<String, dynamic>>? progressSub;
   @override
   void initState() {
@@ -131,6 +132,62 @@ class _TailnetPanelState extends State<TailnetPanel>
             Text('Status: ${status!['state']}'),
             for (final ip in status!['ips'] as List? ?? [])
               SelectableText('Tailscale IP: $ip'),
+            const SizedBox(height: 12),
+            if ((status!['peers'] as List? ?? []).isNotEmpty) ...[
+              Text(
+                'Tailscale peers (tap Probe to check Direct vs DERP)',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 6),
+              for (final peer in (status!['peers'] as List? ?? []))
+                for (final ip in (peer['ips'] as List? ?? []))
+                  if (!(ip as String).contains(':'))
+                    Card(
+                      child: ListTile(
+                        dense: true,
+                        leading: Icon(
+                          peer['online'] == true
+                              ? Icons.computer
+                              : Icons.cloud_off,
+                        ),
+                        title: Text('${peer['name']} · $ip'),
+                        subtitle: Text(
+                          probeResults.containsKey(ip)
+                              ? 'Path: ${probeResults[ip]!['kind']}'
+                                '${(probeResults[ip]!['endpoint'] as String? ?? '').isNotEmpty ? ' (${probeResults[ip]!['endpoint']})' : ''}'
+                                '${(probeResults[ip]!['relay'] as String? ?? '').isNotEmpty ? ' · relay ${probeResults[ip]!['relay']}' : ''}'
+                                ' · ${(((probeResults[ip]!['rtt_seconds'] as num? ?? 0)) * 1000).toStringAsFixed(1)} ms'
+                              : (peer['online'] == true ? 'Online' : 'Offline'),
+                        ),
+                        trailing: OutlinedButton(
+                          onPressed: system || busy
+                              ? null
+                              : () async {
+                                  setState(() => busy = true);
+                                  try {
+                                    final res = await widget.core.run([
+                                      'tailnet',
+                                      'probe',
+                                      '$ip:8731',
+                                    ]) as Map;
+                                    final p = res['path'] as Map?;
+                                    if (p != null && mounted) {
+                                      probeResults[ip] =
+                                          Map<String, dynamic>.from(p);
+                                    }
+                                    error = null;
+                                  } catch (e) {
+                                    error = _formatError(e);
+                                  }
+                                  if (mounted) {
+                                    setState(() => busy = false);
+                                  }
+                                },
+                          child: const Text('Probe'),
+                        ),
+                      ),
+                    ),
+            ],
           ],
           if (error != null) Text(error!),
           const SizedBox(height: 16),

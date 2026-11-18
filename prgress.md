@@ -20,12 +20,17 @@ Laptop `/home/afzl/@Projects/mine/device-bridge` is the sole authoritative repos
   - Root cause 1: `MainActivity.onStop()` immediately killed `libbridge_tailnet.so` when Chrome opened (`context canceled`).
   - Root cause 2 (diagnosed via POCO `dumpsys dropbox`): destroying `libbridge_agent.so` / `libbridge_tailnet.so` in `onStop()` threw uncaught `java.io.InterruptedIOException: read interrupted by close() on another thread` in unguarded background `BufferedReader` threads (`LanCoordinator.kt`, `TailnetCoordinator.kt`), crashing the app process when Chrome opened (`ApplicationExitInfo` `APP CRASH` at 15:17:25).
   - Fixed by guarding all reader threads in `LanCoordinator.kt`, `TailnetCoordinator.kt`, and `CoreRuntime.kt`, plus `awaitingLogin()` + 120s grace period. Verified directly on **POCO (`JBKJF6JFAAIZUGP7`)**: app survived `KEYCODE_HOME`, resumed `HOT` (`149ms`), kept `libbridge_tailnet.so` running across `onStop()`, and had zero new crash entries in `dumpsys activity exit-info`.
+- **Live POCO ↔ Laptop Direct Tailscale (`tsnet` ↔ system `tailscaled`) pairing, probe & file transfer E2E**:
+  - Added Tailscale peer path probe UI in `tailnet_panel.dart`, Tailscale peer picker (`Connect via`) in `pair_dialog.dart` / `main.dart`, and `'finish'` support in `bridge.dart`.
+  - **Physical POCO (`JBKJF6JFAAIZUGP7`, `devicebridge-phone` `100.127.71.119`) ↔ Laptop (`probook-450-g9` `100.100.78.84:8731`) E2E (`bridge-agent --system-tailnet --no-discovery`, temporary scoped `tailscale0` UFW rule added & deleted)**:
+    - Laptop `tailscale ping`: direct (`via 10.100.102.33:51593`).
+    - Phone `TailnetPanel` Probe: `probook-450-g9 · 100.100.78.84`, `Path: direct (10.100.102.69:41641) · 257.9 ms`.
+    - Phone `Pair device` -> `Connect via: Tailscale · probook-450-g9 · 100.100.78.84` paired cleanly over Tailscale mTLS without mDNS, approved & finished, opened `DeviceDetail` (`Tailscale · direct`, `Handshake 33.3 ms`), toggled hidden files (`.hidden-tailnet.txt`), pulled 2 MiB `payload-2mib.bin` in MT Manager dual-pane browser (`Verified download (direct) · 1.39 MiB/s`, SHA-256 `b60901579c8a33196620a6548d7d28858cccee8f7d7e717d9b9d68681849f729` exact match), and removed test peer cleanly.
 - **Builds & verification (Android-only target focus)**:
   - `go test -count=1 -race ./...` PASS; `scripts/phone_build_test.sh` (`termux-20261118T102655Z-30055.log`, `go1.27.2 android/arm64`) PASS; `flutter analyze` (0 issues) PASS; `flutter test` (5/5) PASS; `bash scripts/build_apps.sh` PASS.
-  - `artifacts/android-arm64/devicebridge.apk`: `24,163,813` bytes, SHA-256 `42eb1077bebd588df1becd20f159d6e1aaa02db148f58a4459c0cd3895e7107f`, `apksigner verify --print-certs` PASS. Installed (`adb install -r`) on `JBKJF6JFAAIZUGP7` (`stay_on_while_plugged_in=3` enabled for USB sessions).
-- **Keep device awake (`MainActivity.kt`)**: added `WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON` in `onResume()` and cleared it in `onPause()` so the Android screen stays awake during foreground DeviceBridge sessions (`dumpsys window windows` verified).
+  - `artifacts/android-arm64/devicebridge.apk`: `24,170,569` bytes, SHA-256 `50941713aa7e967d3802ffa5e0dea52d43a0fdb62d47b5871e5508a56f1307ca`, `apksigner verify --print-certs` PASS. Installed (`adb install -r`) on `JBKJF6JFAAIZUGP7` (`stay_on_while_plugged_in=3`).
+- **Keep device awake (`MainActivity.kt`)**: added `WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON` in `onResume()` and cleared it in `onPause()` so the Android screen stays awake during foreground DeviceBridge sessions.
 
 ## Pending / next steps
 
-1. Once user unlocks POCO phone (`JBKJF6JFAAIZUGP7`), tap `Connections -> Tailscale -> Enable app-only Tailscale -> Log in to Tailscale` to complete interactive `login.tailscale.com` authentication and verify `Running` state persists across app relaunch + tailnet transfer.
-2. Physical dual-pane UI + ADB/Hotspot/Wi-Fi fallback E2E on unlocked POCO, then M3–M6.
+1. Live interactive touch drag-and-drop & Hotspot/ADB fallback physical switch tests on POCO, then M3–M6.
