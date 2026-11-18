@@ -38,20 +38,6 @@ class AppearanceSurface extends StatelessWidget {
   );
 }
 
-/// Unobstructed illustrated meadow footer for the matte paper theme.
-class MatteMeadowFooter extends StatelessWidget {
-  const MatteMeadowFooter({super.key});
-  @override
-  Widget build(BuildContext context) => const Padding(
-    padding: EdgeInsets.only(top: 8),
-    child: SizedBox(
-      height: 104,
-      width: double.infinity,
-      child: CustomPaint(painter: _MatteMeadowPainter()),
-    ),
-  );
-}
-
 class _EdgeGlow extends CustomPainter {
   const _EdgeGlow({required this.isRed});
   final bool isRed;
@@ -344,48 +330,7 @@ class _MattePaperArt extends CustomPainter {
       canvas.drawLine(Offset(x, y), Offset(x + 0.9, y + 0.15), grain);
     }
 
-    // Crisp, unwashed botanicals with varied sizes behind scrollable lists/cards.
-    _drawGrassTuft(canvas, Offset(size.width * 0.14, size.height * 0.35), 0.95);
-    _drawGrassTuft(canvas, Offset(size.width * 0.85, size.height * 0.34), 0.85);
-    _drawGrassTuft(canvas, Offset(size.width * 0.16, size.height * 0.76), 1.0);
-    _drawGrassTuft(canvas, Offset(size.width * 0.82, size.height * 0.73), 0.9);
-    _drawDots(canvas, Offset(size.width * 0.90, size.height * 0.58));
-    _drawDots(canvas, Offset(size.width * 0.10, size.height * 0.57));
-
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.10, size.height * 0.28),
-      _MatteMeadowArt.gold,
-      0.78,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.91, size.height * 0.26),
-      _MatteMeadowArt.cream,
-      0.92,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.08, size.height * 0.70),
-      _MatteMeadowArt.cream,
-      1.06,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.89, size.height * 0.67),
-      _MatteMeadowArt.gold,
-      0.72,
-    );
-    _drawComicRays(canvas, Offset(size.width * 0.92, size.height * 0.42), 0.42);
-    _drawCoolCrow(
-      canvas,
-      Offset(size.width * 0.84, size.height * 0.49),
-      0.74,
-    );
-
-    // Topbar flowers tucked cleanly in the open header band (no bird here).
-    _drawGrassTuft(canvas, Offset(size.width * 0.49, 80), 0.72);
-    _drawDots(canvas, Offset(size.width * 0.45, 76));
+    // Topbar background flowers tucked in the open header band.
     _drawFlower(
       canvas,
       Offset(size.width * 0.54, 54),
@@ -399,40 +344,65 @@ class _MattePaperArt extends CustomPainter {
       0.50,
     );
 
-    // Bottombar meadow strip with varied flowers and a single full-sized bird.
-    final bottomGround = size.height - 8;
-    _drawGrassTuft(canvas, Offset(size.width * 0.14, bottomGround - 6), 0.85);
-    _drawGrassTuft(canvas, Offset(size.width * 0.35, bottomGround - 8), 0.80);
-    _drawGrassTuft(canvas, Offset(size.width * 0.67, bottomGround - 6), 0.85);
-    _drawDots(canvas, Offset(size.width * 0.30, bottomGround - 2));
-    _drawDots(canvas, Offset(size.width * 0.85, bottomGround - 2));
-
+    // Outer-edge background flowers framing lists without crossing list text.
     _drawFlower(
       canvas,
-      Offset(size.width * 0.05, bottomGround - 22),
-      _MatteMeadowArt.cream,
-      0.74,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.24, bottomGround - 26),
-      _MatteMeadowArt.gold,
-      0.94,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.76, bottomGround - 24),
+      Offset(size.width * 0.95, size.height * 0.25),
       _MatteMeadowArt.cream,
       0.86,
     );
     _drawFlower(
       canvas,
-      Offset(size.width * 0.94, bottomGround - 18),
+      Offset(size.width * 0.03, size.height * 0.64),
+      _MatteMeadowArt.gold,
+      0.96,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.95, size.height * 0.66),
+      _MatteMeadowArt.gold,
+      0.74,
+    );
+
+    // Background flowers and single bird perched cleanly above the bottom bar.
+    final aboveBottom = size.height - 118;
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.08, aboveBottom - 20),
+      _MatteMeadowArt.cream,
+      0.98,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.19, aboveBottom - 10),
+      _MatteMeadowArt.gold,
+      0.76,
+    );
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.92, aboveBottom - 16),
+      _MatteMeadowArt.cream,
+      0.82,
+    );
+    _drawCoolCrow(
+      canvas,
+      Offset(size.width * 0.78, aboveBottom - 14),
+      0.74,
+    );
+
+    // Bottom corner flowers framing the navigation bar (no bird inside bottom bar).
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.04, size.height - 20),
       _MatteMeadowArt.gold,
       0.68,
     );
-    _drawComicRays(canvas, Offset(size.width * 0.58, bottomGround - 48), 0.42);
-    _drawCoolCrow(canvas, Offset(size.width * 0.50, bottomGround - 20), 0.70);
+    _drawFlower(
+      canvas,
+      Offset(size.width * 0.96, size.height - 20),
+      _MatteMeadowArt.cream,
+      0.68,
+    );
   }
 
   @override
@@ -444,67 +414,6 @@ abstract final class _MatteMeadowArt {
   static const cream = Color(0xfff7f3dd);
   static const gold = Color(0xffe5b93c);
   static const leaf = Color(0xff5c7e22);
-}
-
-class _MatteMeadowPainter extends CustomPainter {
-  const _MatteMeadowPainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final groundY = size.height - 16;
-    _drawGrassTuft(canvas, Offset(size.width * 0.28, groundY - 10), 1.0);
-    _drawGrassTuft(canvas, Offset(size.width * 0.52, groundY - 18), 0.9);
-    _drawGrassTuft(canvas, Offset(size.width * 0.72, groundY - 14), 0.95);
-    _drawDots(canvas, Offset(size.width * 0.16, groundY - 4));
-    _drawDots(canvas, Offset(size.width * 0.84, groundY - 2));
-
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.09, groundY - 42),
-      _MatteMeadowArt.cream,
-      1.08,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.20, groundY - 20),
-      _MatteMeadowArt.gold,
-      0.80,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.80, groundY - 24),
-      _MatteMeadowArt.cream,
-      0.92,
-    );
-    _drawFlower(
-      canvas,
-      Offset(size.width * 0.91, groundY - 40),
-      _MatteMeadowArt.gold,
-      1.04,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _MatteMeadowPainter oldDelegate) => false;
-}
-
-void _drawGrassTuft(Canvas canvas, Offset base, double scale) {
-  final p = Paint()
-    ..color = _MatteMeadowArt.ink
-    ..strokeWidth = 2.0 * scale
-    ..strokeCap = StrokeCap.round;
-  canvas.drawLine(base, base + Offset(-7 * scale, -8 * scale), p);
-  canvas.drawLine(base, base + Offset(0, -11 * scale), p);
-  canvas.drawLine(base, base + Offset(7 * scale, -8 * scale), p);
-}
-
-void _drawDots(Canvas canvas, Offset at) {
-  final p = Paint()..color = _MatteMeadowArt.ink;
-  canvas.drawOval(Rect.fromCenter(center: at, width: 3.5, height: 5), p);
-  canvas.drawOval(
-    Rect.fromCenter(center: at + const Offset(6, 0.5), width: 3.5, height: 5),
-    p,
-  );
 }
 
 void _drawFlower(Canvas canvas, Offset center, Color petalColor, double s) {
@@ -653,20 +562,6 @@ void _drawCoolCrow(Canvas canvas, Offset center, double s) {
   canvas.drawLine(const Offset(13, -26), const Offset(16, -21), shine);
   canvas.drawLine(const Offset(27, -25), const Offset(30, -20), shine);
 
-  canvas.restore();
-}
-
-void _drawComicRays(Canvas canvas, Offset origin, double tilt) {
-  final p = Paint()
-    ..color = _MatteMeadowArt.ink
-    ..strokeWidth = 3.2
-    ..strokeCap = StrokeCap.round;
-  canvas.save();
-  canvas.translate(origin.dx, origin.dy);
-  canvas.rotate(tilt);
-  canvas.drawLine(const Offset(-14, -10), const Offset(-26, -22), p);
-  canvas.drawLine(const Offset(-2, -16), const Offset(-4, -32), p);
-  canvas.drawLine(const Offset(10, -10), const Offset(20, -22), p);
   canvas.restore();
 }
 

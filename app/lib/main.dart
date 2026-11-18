@@ -603,8 +603,6 @@ class _BridgeHomeState extends State<BridgeHome> {
       const Text(
         'Pulls are one-time downloads. They never register a folder for synchronization.',
       ),
-      if (Theme.of(context).scaffoldBackgroundColor == Colors.transparent)
-        const MatteMeadowFooter(),
     ],
   );
   Widget devices() => ListView(
@@ -645,8 +643,6 @@ class _BridgeHomeState extends State<BridgeHome> {
           ),
         ),
       ],
-      if (Theme.of(context).scaffoldBackgroundColor == Colors.transparent)
-        const MatteMeadowFooter(),
     ],
   );
   List<Widget> peerCards() => peers
@@ -743,8 +739,6 @@ class _BridgeHomeState extends State<BridgeHome> {
           Text(title, style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 12),
           Text(detail, textAlign: TextAlign.center),
-          if (Theme.of(context).scaffoldBackgroundColor == Colors.transparent)
-            const MatteMeadowFooter(),
         ],
       ),
     ),
