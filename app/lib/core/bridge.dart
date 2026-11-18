@@ -295,12 +295,15 @@ class LocalCore implements CoreBridge {
           '--approve-remote',
         ]);
       } else if (transport == 'adb' || transport == 'ssh') {
-        args.addAll([
-          '--transport',
-          transport,
-          '--endpoint',
-          connection['endpoint'] as String,
-        ]);
+        final ep = (connection['endpoint'] as String? ?? '').isNotEmpty
+            ? connection['endpoint'] as String
+            : (transport == 'adb'
+                  ? connection['adb_endpoint'] as String? ?? ''
+                  : connection['ssh_endpoint'] as String? ?? '');
+        args.addAll(['--transport', transport]);
+        if (ep.isNotEmpty) {
+          args.addAll(['--endpoint', ep]);
+        }
       }
       if (connection['fallback_approved'] == true) {
         args.add('--allow-route-fallback');

@@ -1,36 +1,36 @@
 {
   "files": {
     "artifacts/android-arm64/devicebridge.apk": {
-      "bytes": 24138029,
-      "sha256": "6bf5c2d4e886044dcb03e03bbad240ab6d60e3025fb2745113b11cb08a2f714c"
+      "bytes": 24163813,
+      "sha256": "42eb1077bebd588df1becd20f159d6e1aaa02db148f58a4459c0cd3895e7107f"
     },
     "artifacts/linux/devicebridge-linux-x64.tar.gz": {
-      "bytes": 29378861,
-      "sha256": "286d433e3554953fe32302b5fefe0c30ce6f27df453825f743810d644a3da325"
+      "bytes": 29408451,
+      "sha256": "68f713c0469a43fa6ef2ace16e2bfd4e30fe73cbdc98efebc51f9b3d9d8441b2"
     },
     "artifacts/linux/bridge-agent": {
       "bytes": 16713432,
-      "sha256": "a32a02e5c1c7dbe04d6482a621d384a5dec38441facd50abcc14d013f1109d9b"
+      "sha256": "48963db60927cf5dcba730a8ad86d8cbfc4cac20265d702d935b9b101f37af53"
     },
     "artifacts/linux/bridge-cli": {
-      "bytes": 15928168,
-      "sha256": "ace7ac8454b644c8fefafc725bfd759c32415ad8878aabe586595827641a5156"
+      "bytes": 15932216,
+      "sha256": "a36734f164f1478093ee76c3036f8793646116384a7d1b4aab2493ae7830982a"
     },
     "artifacts/android-arm64/devicebridge-debug.apk": {
-      "bytes": 86572971,
-      "sha256": "00937538a1905690ed8344b42cab1f73ff3a5d2a5e0a7665759bd2a3bf9a4b00"
+      "bytes": 86589685,
+      "sha256": "5d2f6846712e264791be4d34d90df1a536982206e3097d3938f309fcb82db393"
     },
     "artifacts/termux-arm64/bridge-agent": {
       "bytes": 16375088,
-      "sha256": "c5cfe0fc96b454031daac401110cbebc83f7efa96caf9ff4f1ca4fd0a0563c3e"
+      "sha256": "ee7663da00c3dc7ced79791d154bc3229c472fe841e8b1dcd90ac0a78a097d05"
     },
     "artifacts/termux-arm64/bridge-cli": {
-      "bytes": 15548944,
-      "sha256": "7c486a9952a47926a2742c05cac37b455cc644a00816aab3b7d3caf8086a579d"
+      "bytes": 15551576,
+      "sha256": "9e4a97589588ad0fb371c6495e1d07cde572a538afbcd177289252cdc1fb9f18"
     }
   },
   "android_signing": "development key; optimized build",
-  "core_sha256": "48f866a3d812926c563287bf06546127529174356016e8f15c010a143e5d7d97",
-  "source_sha256_excluding_docs_artifacts": "8ac06f79ba592e67354119eda44638302e140dd82d89edc3ba7783f891e29d65",
+  "core_sha256": "aa3957cdb461616cdd791e8add57c26fa49384c1fe8025d0cd9440db26f1336c",
+  "source_sha256_excluding_docs_artifacts": "8abf6dc98cceda50970de5dc077327bf40e1390dbcf13b3ab7d8847391ea1a7e",
   "termux_artifacts_not_built": []
 }

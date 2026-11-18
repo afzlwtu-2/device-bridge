@@ -148,14 +148,18 @@ class TailnetCoordinator(private val context: Context) {
                 }
                 val process = builder.start(); child = process
                 Thread {
-                    process.inputStream.bufferedReader().use { reader ->
-                        if (reader.readLine() != null) control(target)
-                        while (reader.readLine() != null) { /* drain, never print login URLs */ }
-                    }
+                    try {
+                        process.inputStream.bufferedReader().use { reader ->
+                            if (reader.readLine() != null) control(target)
+                            while (reader.readLine() != null) { /* drain, never print login URLs */ }
+                        }
+                    } catch (_: Exception) { /* stream closed during stop() */ }
                 }.start()
                 Thread {
-                    process.errorStream.bufferedReader().use { reader -> reader.forEachLine { /* never persist node logs/secrets */ } }
-                    process.waitFor()
+                    try {
+                        process.errorStream.bufferedReader().use { reader -> reader.forEachLine { /* never persist node logs/secrets */ } }
+                    } catch (_: Exception) { /* stream closed during stop() */ }
+                    try { process.waitFor() } catch (_: Exception) {}
                     main.post { if (owner == generation) signature = "" }
                 }.start()
             } catch (_: Exception) { main.post { if (owner == generation) signature = "" } }

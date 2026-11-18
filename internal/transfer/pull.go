@@ -33,6 +33,8 @@ type Progress struct {
 	TotalBytes    int64   `json:"total_bytes"`
 	MiBPerSecond  float64 `json:"mib_per_second"`
 	ElapsedMillis int64   `json:"elapsed_ms"`
+	Method        string  `json:"method,omitempty"`
+	Transport     string  `json:"transport,omitempty"`
 }
 type Receipt struct {
 	Destination   string  `json:"destination"`
@@ -40,6 +42,7 @@ type Receipt struct {
 	Bytes         int64   `json:"bytes"`
 	SHA256        string  `json:"manifest_sha256"`
 	Mode          string  `json:"mode,omitempty"`
+	Transport     string  `json:"transport,omitempty"`
 	MiBPerSecond  float64 `json:"mib_per_second"`
 	ElapsedMillis int64   `json:"elapsed_ms"`
 }
@@ -315,7 +318,7 @@ func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, 
 			}
 			if progress != nil {
 				mib, ms := rateMiB(sessionBytes, started)
-				progress(Progress{File: entry.Path, VerifiedBytes: complete + offset, TotalBytes: m.Bytes, MiBPerSecond: mib, ElapsedMillis: ms})
+				progress(Progress{File: entry.Path, VerifiedBytes: complete + offset, TotalBytes: m.Bytes, MiBPerSecond: mib, ElapsedMillis: ms, Method: "direct"})
 			}
 		}
 		actual, e := digestFile(ctx, f)

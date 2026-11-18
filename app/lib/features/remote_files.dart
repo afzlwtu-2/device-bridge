@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
@@ -237,12 +238,20 @@ class _FileBrowserState extends State<FileBrowser> {
   String? received;
   double? receivedMiB;
   String? receivedMode;
+  String? receivedTransport;
   String? routeNotice;
   Map<String, dynamic>? liveProgress;
   StreamSubscription<Map<String, dynamic>>? progressSub;
 
   late String sourcePath;
   bool showHidden = false;
+  String activeSide = 'source';
+  String preferredMethod = 'auto'; // 'auto' | 'tar'
+  Map<String, dynamic>? connectionConfig;
+  Map<String, dynamic>? resolvedRoute;
+  Map<String, dynamic>? interruptedPull;
+  bool hoverTargetPane = false;
+  String? hoverTargetEntryId;
 
   // Target pane state: 'downloads' | 'local' | 'termux'
   String targetMode = 'downloads';
@@ -266,14 +275,79 @@ class _FileBrowserState extends State<FileBrowser> {
       setState(() {
         if (p['route_switched'] == true) {
           routeNotice =
-              'Route disrupted · resumed over ${p['to']} (${p['endpoint']})';
+              'Route disrupted · resumed over ${connectionDisplayName('${p['to'] ?? ''}')} (${p['endpoint']})';
         } else {
           liveProgress = p;
         }
       });
     });
     loadSource();
+    loadActiveRoute();
     loadTargetCapabilities();
+  }
+
+  Future<void> loadActiveRoute() async {
+    try {
+      final cfg = await widget.core.run([
+        'connection',
+        widget.peer['id'] as String,
+      ]);
+      if (cfg is Map) {
+        connectionConfig = Map<String, dynamic>.from(cfg);
+      }
+    } catch (_) {
+      /* keep best-effort connection metadata */
+    }
+    try {
+      final res = await widget.core.run([
+        'resolve',
+        widget.peer['id'] as String,
+      ]);
+      if (res is Map) {
+        resolvedRoute = Map<String, dynamic>.from(res);
+      }
+    } catch (_) {
+      /* offline or pending route */
+    }
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  String connectionDisplayName(String transport) {
+    switch (transport) {
+      case 'adb':
+        return 'USB / Wireless ADB';
+      case 'ssh':
+        return 'SSH Tunnel';
+      case 'tailnet':
+        return 'Tailscale';
+      case 'direct-lan-v1':
+      case 'lan':
+        final kind = widget.core.network?['kind'] as String? ?? '';
+        if (kind == 'wifi_direct') {
+          return 'Wi-Fi Direct';
+        }
+        if (kind == 'hotspot') {
+          return 'Hotspot';
+        }
+        return 'Wi-Fi LAN';
+      default:
+        return transport.isEmpty ? 'Wi-Fi LAN' : transport;
+    }
+  }
+
+  String activeConnectionSummary() {
+    final t =
+        (resolvedRoute?['transport'] as String?) ??
+        (connectionConfig?['transport'] as String?) ??
+        'lan';
+    final name = connectionDisplayName(t);
+    final ep =
+        (resolvedRoute?['endpoint'] as String?) ??
+        (connectionConfig?['endpoint'] as String?) ??
+        '';
+    return ep.isEmpty ? name : '$name · $ep';
   }
 
   @override
@@ -483,7 +557,13 @@ class _FileBrowserState extends State<FileBrowser> {
     }
   }
 
-  Future<void> pull(String path) async {
+  Future<void> pull(
+    String path, {
+    String? targetDirOverride,
+    String? targetDocOverride,
+    String? targetSubLabel,
+    bool skipConfirm = false,
+  }) async {
     final name = path == '.' ? widget.root : path.split('/').last;
     final usingSaf = Platform.isAndroid && targetMode != 'downloads';
     if (usingSaf && targetSafUri == null) {
@@ -493,46 +573,56 @@ class _FileBrowserState extends State<FileBrowser> {
       );
       return;
     }
+    final destPosixDir = targetDirOverride ?? targetPosixPath;
+    final destSafDoc =
+        targetDocOverride ?? (safStack.isEmpty ? null : safStack.last);
+    final baseSafLabel =
+        '${targetMode == 'termux' ? 'Termux' : 'SAF'}: ${targetSafName ?? 'selected folder'}';
     final targetLabel = usingSaf
-        ? '${targetMode == 'termux' ? 'Termux' : 'SAF'}: ${targetSafName ?? 'selected folder'}'
-        : targetPosixPath;
-    final approved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Pull $name?'),
-        content: Text(
-          'Download a verified copy into:\n$targetLabel\n\nExisting files will not be overwritten. This does not enable synchronization.',
+        ? (targetSubLabel == null ? baseSafLabel : '$baseSafLabel/$targetSubLabel')
+        : destPosixDir;
+    if (!skipConfirm) {
+      final approved = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('Pull $name?'),
+          content: Text(
+            'Download a verified copy into:\n$targetLabel\n\nExisting files will not be overwritten. This does not enable synchronization.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Pull'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Pull'),
-          ),
-        ],
-      ),
-    );
-    if (approved != true || !mounted) {
-      return;
+      );
+      if (approved != true || !mounted) {
+        return;
+      }
     }
     setState(() {
       busy = true;
       error = null;
+      interruptedPull = null;
       routeNotice = null;
       liveProgress = null;
       receivedMiB = null;
       receivedMode = null;
+      receivedTransport = null;
     });
+    final cmd = preferredMethod == 'tar' ? 'pull-tar' : 'pull';
     try {
       final destination = usingSaf
           ? '${widget.core.downloads}/$name-${DateTime.now().millisecondsSinceEpoch}'
-          : '$targetPosixPath/$name';
+          : '$destPosixDir/$name';
       final receipt =
           await widget.core.run([
-                'pull',
+                cmd,
                 widget.peer['id'] as String,
                 widget.root,
                 path,
@@ -543,17 +633,29 @@ class _FileBrowserState extends State<FileBrowser> {
         await widget.core.exportToTargetTree(
           destination,
           targetSafUri!,
-          documentId: safStack.isEmpty ? null : safStack.last,
+          documentId: destSafDoc,
         );
-        received = '${targetSafName ?? targetMode}/$name';
+        received = '${targetSubLabel ?? targetSafName ?? targetMode}/$name';
       } else {
         received = destination;
       }
       receivedMiB = (receipt['mib_per_second'] as num?)?.toDouble();
       receivedMode = receipt['mode'] as String?;
+      receivedTransport =
+          (receipt['transport'] as String?) ??
+          (connectionConfig?['transport'] as String?) ??
+          'lan';
+      await loadActiveRoute();
       await loadTarget();
     } catch (e) {
       error = e.toString();
+      interruptedPull = {
+        'path': path,
+        'name': name,
+        'targetDir': destPosixDir,
+        'targetDoc': destSafDoc,
+        'targetLabel': targetLabel,
+      };
     }
     if (mounted) {
       setState(() {
@@ -563,6 +665,75 @@ class _FileBrowserState extends State<FileBrowser> {
     }
   }
 
+  Future<void> continueInterruptedOn(String transport) async {
+    final pending = interruptedPull;
+    if (pending == null || busy) {
+      return;
+    }
+    final peerId = widget.peer['id'] as String;
+    final currentCfg = Map<String, dynamic>.from(connectionConfig ?? {});
+    String endpoint = '';
+    bool remoteApproved = currentCfg['remote_approved'] == true;
+    if (transport == 'adb') {
+      endpoint =
+          (currentCfg['adb_endpoint'] as String? ?? '').isNotEmpty
+          ? currentCfg['adb_endpoint'] as String
+          : '127.0.0.1:8731';
+    } else if (transport == 'ssh') {
+      endpoint =
+          (currentCfg['ssh_endpoint'] as String? ?? '').isNotEmpty
+          ? currentCfg['ssh_endpoint'] as String
+          : '127.0.0.1:8731';
+    } else if (transport == 'tailnet') {
+      endpoint = currentCfg['endpoint'] as String? ?? '';
+      remoteApproved = true;
+    }
+    if ((transport == 'adb' || transport == 'ssh' || transport == 'tailnet') &&
+        endpoint.isEmpty) {
+      final changed = await showDialog<bool>(
+        context: context,
+        builder: (_) => ConnectionPicker(core: widget.core, peer: peerId),
+      );
+      if (changed != true) {
+        return;
+      }
+      await loadActiveRoute();
+    } else {
+      final updated = <String, dynamic>{
+        'peer_id': peerId,
+        'transport': transport,
+        'endpoint': transport == 'lan' ? '' : endpoint,
+        'remote_approved': remoteApproved,
+        'fallback_approved': true,
+        'fallback_transports': ['lan', 'adb', 'ssh', if (remoteApproved) 'tailnet'],
+        if (transport == 'adb') 'adb_endpoint': endpoint,
+        if (transport == 'ssh') 'ssh_endpoint': endpoint,
+      };
+      try {
+        await widget.core.run([
+          'connection',
+          peerId,
+          '-',
+        ], input: jsonEncode(updated));
+        await loadActiveRoute();
+      } catch (e) {
+        if (mounted) {
+          setState(() => error = e.toString());
+        }
+        return;
+      }
+    }
+    if (!mounted) {
+      return;
+    }
+    await pull(
+      pending['path'] as String,
+      targetDirOverride: pending['targetDir'] as String?,
+      targetDocOverride: pending['targetDoc'] as String?,
+      skipConfirm: true,
+    );
+  }
+
   String metadata(Map<dynamic, dynamic> entry) {
     final bytes = (entry['size'] as num? ?? 0).toInt();
     final size = bytes < 1024
@@ -570,13 +741,7 @@ class _FileBrowserState extends State<FileBrowser> {
         : bytes < 1024 * 1024
         ? '${(bytes / 1024).toStringAsFixed(1)} KiB'
         : '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MiB';
-    final modified = DateTime.tryParse(entry['modified'] as String? ?? '')
-        ?.toLocal();
-    if (modified == null) {
-      return size;
-    }
-    final locale = MaterialLocalizations.of(context);
-    return '$size · ${locale.formatShortDate(modified)} ${locale.formatTimeOfDay(TimeOfDay.fromDateTime(modified))}';
+    return size;
   }
 
   bool _visibleName(String name) {
@@ -589,82 +754,235 @@ class _FileBrowserState extends State<FileBrowser> {
     return true;
   }
 
+  Widget _sourceRowTile(Map<dynamic, dynamic> e) {
+    final map = Map<String, dynamic>.from(e);
+    final isDir = map['kind'] == 'directory';
+    final name = '${map['name']}';
+    final rowContent = ListTile(
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+      leading: Icon(
+        isDir ? Icons.folder_outlined : Icons.insert_drive_file_outlined,
+        size: 18,
+      ),
+      title: Text(
+        name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 13),
+      ),
+      subtitle: Text(
+        isDir ? 'folder · hold to drag' : '${metadata(map)} · hold to drag',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 11),
+      ),
+      onTap: () {
+        setState(() => activeSide = 'source');
+        if (!busy && isDir) {
+          sourcePath = map['path'] as String;
+          loadSource();
+        }
+      },
+      trailing: (isDir || map['kind'] == 'file')
+          ? IconButton(
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              onPressed: busy ? null : () => pull(map['path'] as String),
+              icon: const Icon(Icons.download_outlined, size: 18),
+              tooltip: 'Pull to target',
+            )
+          : null,
+    );
+    return LongPressDraggable<Map<String, dynamic>>(
+      data: map,
+      feedback: Material(
+        elevation: 6,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color: Theme.of(context).colorScheme.primaryContainer,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isDir ? Icons.folder : Icons.insert_drive_file,
+                size: 18,
+                color: Theme.of(context).colorScheme.onPrimaryContainer,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                name,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onPrimaryContainer,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.45, child: rowContent),
+      child: rowContent,
+    );
+  }
+
   Widget sourcePane() {
     final visibleEntries = entries
         .where((e) => _visibleName('${e['name']}'))
         .toList();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-          child: Row(
-            children: [
-              const Icon(Icons.devices, size: 18),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  'Source · ${widget.peer['name']} · ${widget.root}/$sourcePath',
-                  style: Theme.of(context).textTheme.titleSmall,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              if (sourcePath != '.')
-                IconButton(
-                  tooltip: 'Source parent folder',
-                  icon: const Icon(Icons.arrow_upward, size: 18),
-                  onPressed: busy
-                      ? null
-                      : () {
-                          final parts = sourcePath.split('/');
-                          parts.removeLast();
-                          sourcePath = parts.isEmpty ? '.' : parts.join('/');
-                          loadSource();
-                        },
-                ),
-            ],
-          ),
-        ),
-        Expanded(
-          child: ListView(
-            children: [
-              for (final e in visibleEntries)
-                ListTile(
-                  dense: true,
-                  leading: Icon(
-                    e['kind'] == 'directory'
-                        ? Icons.folder_outlined
-                        : Icons.insert_drive_file_outlined,
+    final isActive = activeSide == 'source';
+    final cs = Theme.of(context).colorScheme;
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTap: () => setState(() => activeSide = 'source'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            color: isActive
+                ? cs.primary.withValues(alpha: 0.12)
+                : Colors.transparent,
+            padding: const EdgeInsets.fromLTRB(8, 6, 4, 4),
+            child: Row(
+              children: [
+                const Icon(Icons.devices, size: 16),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    'Source · ${widget.peer['name']} · ${widget.root}/$sourcePath',
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  title: Text('${e['name']}'),
-                  subtitle: Text(
-                    e['kind'] == 'file' ? metadata(e as Map) : '${e['kind']}',
+                ),
+                if (sourcePath != '.')
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 28,
+                      minHeight: 28,
+                    ),
+                    tooltip: 'Source parent folder',
+                    icon: const Icon(Icons.arrow_upward, size: 16),
+                    onPressed: busy
+                        ? null
+                        : () {
+                            final parts = sourcePath.split('/');
+                            parts.removeLast();
+                            sourcePath = parts.isEmpty ? '.' : parts.join('/');
+                            loadSource();
+                          },
                   ),
-                  onTap: busy || e['kind'] != 'directory'
-                      ? null
-                      : () {
-                          sourcePath = e['path'] as String;
-                          loadSource();
-                        },
-                  trailing: e['kind'] == 'file' || e['kind'] == 'directory'
-                      ? IconButton(
-                          onPressed: busy
-                              ? null
-                              : () => pull(e['path'] as String),
-                          icon: const Icon(Icons.download_outlined),
-                          tooltip: 'Pull to target',
-                        )
-                      : null,
-                ),
-              if (next.isNotEmpty)
-                TextButton(
-                  onPressed: busy ? null : () => loadSource(more: true),
-                  child: const Text('Load more'),
-                ),
-            ],
+              ],
+            ),
           ),
+          const Divider(height: 1),
+          Expanded(
+            child: ListView(
+              children: [
+                if (visibleEntries.isEmpty && !busy)
+                  const ListTile(
+                    dense: true,
+                    title: Text('Folder empty', style: TextStyle(fontSize: 12)),
+                  ),
+                for (final e in visibleEntries) _sourceRowTile(e as Map),
+                if (next.isNotEmpty)
+                  TextButton(
+                    onPressed: busy ? null : () => loadSource(more: true),
+                    child: const Text('Load more'),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _targetRowTile(Map<String, dynamic> e) {
+    final isDir = e['kind'] == 'directory';
+    final rowId = (e['document_id'] as String?) ?? (e['path'] as String?) ?? '${e['name']}';
+    final isHovered = hoverTargetEntryId == rowId;
+    final tile = Container(
+      decoration: isHovered
+          ? BoxDecoration(
+              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.18),
+              border: Border.all(color: Theme.of(context).colorScheme.primary),
+            )
+          : null,
+      child: ListTile(
+        dense: true,
+        visualDensity: VisualDensity.compact,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+        leading: Icon(
+          isDir ? Icons.folder_outlined : Icons.insert_drive_file_outlined,
+          size: 18,
         ),
-      ],
+        title: Text(
+          '${e['name']}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 13),
+        ),
+        subtitle: Text(
+          e['kind'] == 'file' ? metadata(e) : 'folder',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 11),
+        ),
+        onTap: () {
+          setState(() => activeSide = 'target');
+          if (!isDir) {
+            return;
+          }
+          if (Platform.isAndroid && targetMode != 'downloads') {
+            safStack.add(e['document_id'] as String);
+          } else {
+            targetPosixPath = e['path'] as String;
+          }
+          loadTarget();
+        },
+      ),
+    );
+    if (!isDir) {
+      return tile;
+    }
+    return DragTarget<Map<String, dynamic>>(
+      onWillAcceptWithDetails: (_) {
+        setState(() => hoverTargetEntryId = rowId);
+        return !busy;
+      },
+      onLeave: (_) {
+        if (hoverTargetEntryId == rowId) {
+          setState(() => hoverTargetEntryId = null);
+        }
+      },
+      onAcceptWithDetails: (details) {
+        setState(() {
+          hoverTargetEntryId = null;
+          hoverTargetPane = false;
+        });
+        final remotePath = details.data['path'] as String?;
+        if (remotePath == null || busy) {
+          return;
+        }
+        if (Platform.isAndroid && targetMode != 'downloads') {
+          pull(
+            remotePath,
+            targetDocOverride: e['document_id'] as String?,
+            targetSubLabel: '${e['name']}',
+          );
+        } else {
+          pull(remotePath, targetDirOverride: e['path'] as String?);
+        }
+      },
+      builder: (_, _, _) => tile,
     );
   }
 
@@ -679,244 +997,405 @@ class _FileBrowserState extends State<FileBrowser> {
             targetPosixPath != widget.core.homeDir &&
             targetPosixPath != '/') ||
         (Platform.isAndroid && targetMode != 'downloads' && safStack.isNotEmpty);
+    final isActive = activeSide == 'target';
+    final cs = Theme.of(context).colorScheme;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-          child: Row(
+    return DragTarget<Map<String, dynamic>>(
+      onWillAcceptWithDetails: (_) {
+        setState(() => hoverTargetPane = true);
+        return !busy;
+      },
+      onLeave: (_) => setState(() => hoverTargetPane = false),
+      onAcceptWithDetails: (details) {
+        setState(() => hoverTargetPane = false);
+        final remotePath = details.data['path'] as String?;
+        if (remotePath != null && !busy) {
+          pull(remotePath);
+        }
+      },
+      builder: (context, candidateData, rejectedData) => Container(
+        decoration: hoverTargetPane || candidateData.isNotEmpty
+            ? BoxDecoration(
+                border: Border.all(color: cs.primary, width: 2),
+                color: cs.primary.withValues(alpha: 0.06),
+              )
+            : null,
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onTap: () => setState(() => activeSide = 'target'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(Icons.save_alt, size: 18),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  'Target · This device (${targetMode == 'downloads' ? 'App downloads' : targetMode == 'termux' ? 'Termux' : 'Local'})',
-                  style: Theme.of(context).textTheme.titleSmall,
-                  overflow: TextOverflow.ellipsis,
+              Container(
+                color: isActive
+                    ? cs.primary.withValues(alpha: 0.12)
+                    : Colors.transparent,
+                padding: const EdgeInsets.fromLTRB(8, 6, 4, 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.save_alt, size: 16),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        'Target · ${targetMode == 'downloads' ? 'Downloads' : targetMode == 'termux' ? 'Termux' : 'Local'}',
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (canGoUp)
+                      IconButton(
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 28,
+                          minHeight: 28,
+                        ),
+                        tooltip: 'Target parent folder',
+                        icon: const Icon(Icons.arrow_upward, size: 16),
+                        onPressed: targetBusy
+                            ? null
+                            : () {
+                                if (Platform.isAndroid &&
+                                    targetMode != 'downloads') {
+                                  safStack.removeLast();
+                                } else {
+                                  targetPosixPath = Directory(
+                                    targetPosixPath,
+                                  ).parent.path;
+                                }
+                                loadTarget();
+                              },
+                      ),
+                    IconButton(
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 28,
+                        minHeight: 28,
+                      ),
+                      tooltip: 'New folder',
+                      icon: const Icon(
+                        Icons.create_new_folder_outlined,
+                        size: 16,
+                      ),
+                      onPressed: targetBusy ? null : createNewTargetFolder,
+                    ),
+                  ],
                 ),
               ),
-              if (canGoUp)
-                IconButton(
-                  tooltip: 'Target parent folder',
-                  icon: const Icon(Icons.arrow_upward, size: 18),
-                  onPressed: targetBusy
-                      ? null
-                      : () {
-                          if (Platform.isAndroid && targetMode != 'downloads') {
-                            safStack.removeLast();
-                          } else {
-                            targetPosixPath = Directory(
-                              targetPosixPath,
-                            ).parent.path;
-                          }
-                          loadTarget();
-                        },
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                child: Row(
+                  children: [
+                    ChoiceChip(
+                      visualDensity: VisualDensity.compact,
+                      label: const Text('Downloads', style: TextStyle(fontSize: 11)),
+                      selected: targetMode == 'downloads',
+                      onSelected: (_) => switchTargetMode('downloads'),
+                    ),
+                    const SizedBox(width: 6),
+                    ChoiceChip(
+                      visualDensity: VisualDensity.compact,
+                      label: Text(
+                        Platform.isAndroid ? 'SAF Folder' : 'Home',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      selected: targetMode == 'local',
+                      onSelected: (_) => switchTargetMode('local'),
+                    ),
+                    const SizedBox(width: 6),
+                    ChoiceChip(
+                      visualDensity: VisualDensity.compact,
+                      label: const Text(
+                        'Termux Storage',
+                        style: TextStyle(fontSize: 11),
+                      ),
+                      selected: targetMode == 'termux',
+                      onSelected: (_) => switchTargetMode('termux'),
+                    ),
+                  ],
                 ),
-              IconButton(
-                tooltip: 'New folder',
-                icon: const Icon(Icons.create_new_folder_outlined, size: 18),
-                onPressed: targetBusy ? null : createNewTargetFolder,
               ),
+              if (targetBusy) const LinearProgressIndicator(),
+              if (candidateData.isNotEmpty)
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: cs.primaryContainer,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    'Drop to pull into ${targetMode == 'downloads' ? 'Downloads' : targetSafName ?? targetMode}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: cs.onPrimaryContainer,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              if (targetError != null)
+                Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Text(targetError!, style: const TextStyle(fontSize: 12)),
+                ),
+              if (Platform.isAndroid &&
+                  targetMode != 'downloads' &&
+                  targetSafUri == null)
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: OutlinedButton.icon(
+                    onPressed: () =>
+                        pickTargetFolder(termux: targetMode == 'termux'),
+                    icon: const Icon(Icons.folder_open, size: 16),
+                    label: Text(
+                      targetMode == 'termux'
+                          ? 'Grant Termux folder via SAF'
+                          : 'Choose target folder',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                )
+              else
+                Expanded(
+                  child: ListView(
+                    children: [
+                      if (visibleTargets.isEmpty && !targetBusy)
+                        const ListTile(
+                          dense: true,
+                          title: Text(
+                            'Target folder empty · drag Source item here',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        ),
+                      for (final e in visibleTargets) _targetRowTile(e),
+                    ],
+                  ),
+                ),
             ],
           ),
         ),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            children: [
-              ChoiceChip(
-                label: const Text('Downloads'),
-                selected: targetMode == 'downloads',
-                onSelected: (_) => switchTargetMode('downloads'),
-              ),
-              const SizedBox(width: 8),
-              ChoiceChip(
-                label: Text(Platform.isAndroid ? 'SAF Folder' : 'Home'),
-                selected: targetMode == 'local',
-                onSelected: (_) => switchTargetMode('local'),
-              ),
-              const SizedBox(width: 8),
-              ChoiceChip(
-                label: const Text('Termux Storage'),
-                selected: targetMode == 'termux',
-                onSelected: (_) => switchTargetMode('termux'),
-              ),
-            ],
-          ),
-        ),
-        if (targetBusy) const LinearProgressIndicator(),
-        if (targetError != null)
-          Padding(
-            padding: const EdgeInsets.all(8),
-            child: Text(targetError!),
-          ),
-        if (Platform.isAndroid &&
-            targetMode != 'downloads' &&
-            targetSafUri == null)
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: OutlinedButton.icon(
-              onPressed: () => pickTargetFolder(termux: targetMode == 'termux'),
-              icon: const Icon(Icons.folder_open),
-              label: Text(
-                targetMode == 'termux'
-                    ? 'Grant Termux folder via SAF'
-                    : 'Choose target folder',
-              ),
-            ),
-          )
-        else
-          Expanded(
-            child: ListView(
-              children: [
-                if (visibleTargets.isEmpty && !targetBusy)
-                  const ListTile(
-                    dense: true,
-                    title: Text('Target folder is empty'),
-                  ),
-                for (final e in visibleTargets)
-                  ListTile(
-                    dense: true,
-                    leading: Icon(
-                      e['kind'] == 'directory'
-                          ? Icons.folder_outlined
-                          : Icons.insert_drive_file_outlined,
-                    ),
-                    title: Text('${e['name']}'),
-                    subtitle: Text(
-                      e['kind'] == 'file' ? metadata(e) : 'folder',
-                    ),
-                    onTap: e['kind'] != 'directory'
-                        ? null
-                        : () {
-                            if (Platform.isAndroid &&
-                                targetMode != 'downloads') {
-                              safStack.add(e['document_id'] as String);
-                            } else {
-                              targetPosixPath = e['path'] as String;
-                            }
-                            loadTarget();
-                          },
-                  ),
-              ],
-            ),
-          ),
-      ],
+      ),
     );
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text(
-        sourcePath == '.' ? widget.root : sourcePath.split('/').last,
-      ),
-      actions: [
-        IconButton(
-          tooltip: showHidden ? 'Hide hidden files' : 'Show hidden files',
-          icon: Icon(
-            showHidden ? Icons.visibility : Icons.visibility_off_outlined,
-          ),
-          onPressed: () => setState(() => showHidden = !showHidden),
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final liveMethodRaw = (liveProgress?['method'] as String?) ?? '';
+    final liveMethodLabel = liveMethodRaw.isNotEmpty
+        ? liveMethodRaw.toUpperCase()
+        : (preferredMethod == 'tar' ? 'TAR' : 'AUTO');
+    final liveViaRaw = (liveProgress?['transport'] as String?) ?? '';
+    final liveViaLabel = liveViaRaw.isNotEmpty
+        ? connectionDisplayName(liveViaRaw)
+        : connectionDisplayName(
+            (resolvedRoute?['transport'] as String?) ??
+                (connectionConfig?['transport'] as String?) ??
+                'lan',
+          );
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          sourcePath == '.' ? widget.root : sourcePath.split('/').last,
         ),
-        IconButton(
-          onPressed: busy ? null : () => pull(sourcePath),
-          icon: const Icon(Icons.download),
-          tooltip: 'Pull this folder',
-        ),
-      ],
-    ),
-    body: Column(
-      children: [
-        if (busy)
-          LinearProgressIndicator(
-            value:
-                liveProgress != null &&
-                    ((liveProgress!['total_bytes'] as num? ?? 0) > 0)
-                ? ((liveProgress!['verified_bytes'] as num? ?? 0) /
-                          (liveProgress!['total_bytes'] as num))
-                      .clamp(0.0, 1.0)
-                : null,
-          ),
-        if (busy && routeNotice != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Text(routeNotice!, textAlign: TextAlign.center),
-          ),
-        if (busy && liveProgress != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            child: Text(
-              '${(((liveProgress!['verified_bytes'] as num? ?? 0)) / (1024 * 1024)).toStringAsFixed(1)} / ${(((liveProgress!['total_bytes'] as num? ?? 0)) / (1024 * 1024)).toStringAsFixed(1)} MiB · ${((liveProgress!['mib_per_second'] as num? ?? 0)).toStringAsFixed(2)} MiB/s · ${liveProgress!['file'] ?? ''}',
-              textAlign: TextAlign.center,
+        actions: [
+          IconButton(
+            tooltip: showHidden ? 'Hide hidden files' : 'Show hidden files',
+            icon: Icon(
+              showHidden ? Icons.visibility : Icons.visibility_off_outlined,
             ),
+            onPressed: () => setState(() => showHidden = !showHidden),
           ),
-        if (busy)
-          TextButton(
-            onPressed: widget.core.cancel,
-            child: const Text('Cancel operation'),
+          IconButton(
+            onPressed: busy ? null : () => pull(sourcePath),
+            icon: const Icon(Icons.download),
+            tooltip: 'Pull this folder',
           ),
-        if (error != null)
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: SelectableText(error!),
-          ),
-        if (received != null)
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
+        ],
+      ),
+      body: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            color: cs.surfaceContainerHighest.withValues(alpha: 0.4),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Text(
-                  'Verified download${receivedMode == 'tar' ? ' (streaming tar)' : ''}\n${received!.split('/').last}\nSaved in DeviceBridge${receivedMiB != null && receivedMiB! > 0 ? ' · ${receivedMiB!.toStringAsFixed(2)} MiB/s' : ''}',
-                  textAlign: TextAlign.center,
-                ),
-                if (targetMode == 'downloads')
-                  TextButton(
-                    onPressed: () async {
-                      try {
-                        final saved = await widget.core.saveDownload(received!);
-                        if (saved != null && context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                'Copy saved to your selected destination',
-                              ),
+                ActionChip(
+                  visualDensity: VisualDensity.compact,
+                  avatar: const Icon(Icons.settings_ethernet, size: 15),
+                  label: Text(
+                    activeConnectionSummary(),
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          final changed = await showDialog<bool>(
+                            context: context,
+                            builder: (_) => ConnectionPicker(
+                              core: widget.core,
+                              peer: widget.peer['id'] as String,
                             ),
                           );
-                        }
-                      } catch (e) {
-                        if (mounted) {
-                          setState(() => error = e.toString());
-                        }
-                      }
-                    },
-                    child: const Text('Save a copy…'),
+                          if (changed == true) {
+                            await loadActiveRoute();
+                          }
+                        },
+                ),
+                ChoiceChip(
+                  visualDensity: VisualDensity.compact,
+                  label: const Text(
+                    'Auto (TAR/Direct)',
+                    style: TextStyle(fontSize: 11),
                   ),
+                  selected: preferredMethod == 'auto',
+                  onSelected: busy
+                      ? null
+                      : (_) => setState(() => preferredMethod = 'auto'),
+                ),
+                ChoiceChip(
+                  visualDensity: VisualDensity.compact,
+                  label: const Text('Force TAR', style: TextStyle(fontSize: 11)),
+                  selected: preferredMethod == 'tar',
+                  onSelected: busy
+                      ? null
+                      : (_) => setState(() => preferredMethod = 'tar'),
+                ),
               ],
             ),
           ),
-        Expanded(
-          child: LayoutBuilder(
-            builder: (context, constraints) => constraints.maxWidth >= 720
-                ? Row(
-                    children: [
-                      Expanded(child: sourcePane()),
-                      const VerticalDivider(width: 1),
-                      Expanded(child: targetPane()),
-                    ],
-                  )
-                : Column(
-                    children: [
-                      Expanded(child: sourcePane()),
-                      const Divider(height: 1),
-                      Expanded(child: targetPane()),
-                    ],
+          if (busy)
+            LinearProgressIndicator(
+              value:
+                  liveProgress != null &&
+                      ((liveProgress!['total_bytes'] as num? ?? 0) > 0)
+                  ? ((liveProgress!['verified_bytes'] as num? ?? 0) /
+                            (liveProgress!['total_bytes'] as num))
+                        .clamp(0.0, 1.0)
+                  : null,
+            ),
+          if (busy && routeNotice != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+              child: Text(
+                routeNotice!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
+          if (busy && liveProgress != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Text(
+                '${(((liveProgress!['verified_bytes'] as num? ?? 0)) / (1024 * 1024)).toStringAsFixed(1)} / ${(((liveProgress!['total_bytes'] as num? ?? 0)) / (1024 * 1024)).toStringAsFixed(1)} MiB · ${((liveProgress!['mib_per_second'] as num? ?? 0)).toStringAsFixed(2)} MiB/s · Method: $liveMethodLabel · Via: $liveViaLabel · ${liveProgress!['file'] ?? ''}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
+          if (busy)
+            TextButton(
+              onPressed: widget.core.cancel,
+              child: const Text('Cancel operation'),
+            ),
+          if (interruptedPull != null)
+            Card(
+              margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'Connection interrupted pulling "${interruptedPull!['name']}" — continue on another connection:',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        for (final opt in [
+                          ('lan', 'Wi-Fi / Direct LAN'),
+                          ('adb', 'USB / Wireless ADB'),
+                          ('ssh', 'SSH Tunnel'),
+                          ('tailnet', 'Tailscale'),
+                        ])
+                          OutlinedButton.icon(
+                            onPressed: busy
+                                ? null
+                                : () => continueInterruptedOn(opt.$1),
+                            icon: const Icon(Icons.alt_route, size: 15),
+                            label: Text('Continue on ${opt.$2}'),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          if (error != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: SelectableText(error!, style: const TextStyle(fontSize: 12)),
+            ),
+          if (received != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Column(
+                children: [
+                  Text(
+                    'Verified download${receivedMode == 'tar' ? ' (streaming tar)' : ' (direct)'}\n${received!.split('/').last}\nVia ${connectionDisplayName(receivedTransport ?? 'lan')}${receivedMiB != null && receivedMiB! > 0 ? ' · ${receivedMiB!.toStringAsFixed(2)} MiB/s' : ''}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12),
                   ),
+                  if (targetMode == 'downloads')
+                    TextButton(
+                      onPressed: () async {
+                        try {
+                          final saved = await widget.core.saveDownload(
+                            received!,
+                          );
+                          if (saved != null && context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Copy saved to your selected destination',
+                                ),
+                              ),
+                            );
+                          }
+                        } catch (e) {
+                          if (mounted) {
+                            setState(() => error = e.toString());
+                          }
+                        }
+                      },
+                      child: const Text('Save a copy…'),
+                    ),
+                ],
+              ),
+            ),
+          const Divider(height: 1),
+          Expanded(
+            child: Row(
+              children: [
+                Expanded(child: sourcePane()),
+                const VerticalDivider(width: 2, thickness: 1.5),
+                Expanded(child: targetPane()),
+              ],
+            ),
           ),
-        ),
-      ],
-    ),
-  );
+        ],
+      ),
+    );
+  }
 }

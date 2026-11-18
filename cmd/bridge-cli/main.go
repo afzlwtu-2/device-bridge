@@ -454,6 +454,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if c.endpoint == "" && (*transportID == "adb" || *transportID == "ssh") {
+		if savedConn, ce := s.Connection(peer.ID, nil); ce == nil {
+			if *transportID == "adb" && savedConn.AdbEndpoint != "" {
+				c.endpoint = savedConn.AdbEndpoint
+			} else if *transportID == "ssh" && savedConn.SshEndpoint != "" {
+				c.endpoint = savedConn.SshEndpoint
+			} else if savedConn.Transport == *transportID && savedConn.Endpoint != "" {
+				c.endpoint = savedConn.Endpoint
+			}
+		}
+	}
 	cl, candidate, err := c.connect(peer.ID, a[0] != "finish")
 	if err != nil {
 		return err
@@ -502,7 +513,12 @@ func run() error {
 		if err = cl.JSON(ctx, "/v1/files/manifest", url.Values{"root": {a[2]}, "path": {a[3]}}, &manifest); err != nil {
 			return err
 		}
-		emitProgress := func(v transfer.Progress) { _ = json.NewEncoder(os.Stderr).Encode(v) }
+		emitProgress := func(v transfer.Progress) {
+			if v.Transport == "" {
+				v.Transport = *transportID
+			}
+			_ = json.NewEncoder(os.Stderr).Encode(v)
+		}
 		useTar := a[0] == "pull-tar" || transfer.ShouldUseTar(manifest)
 		var receipt transfer.Receipt
 		if useTar {
@@ -618,6 +634,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		receipt.Transport = usedTransport
 		_ = s.RecordRate(peer.ID, usedTransport, receipt.MiBPerSecond)
 		return output(receipt)
 	default:

@@ -193,13 +193,16 @@ void main() {
       expect(core.calls.any((c) => c.first == 'pull'), isFalse);
       await tester.tap(find.widgetWithText(FilledButton, 'Pull'));
       await tester.pumpAndSettle();
-      expect(core.calls.last, [
-        'pull',
-        'laptop',
-        'approved',
-        'hello.txt',
-        '/private/downloads/hello.txt',
-      ]);
+      expect(
+        core.calls.where((c) => c.first == 'pull').last,
+        [
+          'pull',
+          'laptop',
+          'approved',
+          'hello.txt',
+          '/private/downloads/hello.txt',
+        ],
+      );
       expect(
         find.textContaining('Verified download (streaming tar)'),
         findsOneWidget,
@@ -248,4 +251,97 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'MT Manager side-by-side panes, method switch, and interrupted connection resume',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final core = _InterruptibleCore();
+      await tester.pumpWidget(DeviceBridgeApp(core: core));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Laptop'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Approved'));
+      await tester.pumpAndSettle();
+
+      // Side-by-side Source and Target panes share vertical row even in 390dp portrait
+      final srcBox = tester.getRect(find.textContaining('Source · Laptop'));
+      final dstBox = tester.getRect(find.textContaining('Target · Downloads'));
+      expect((srcBox.top - dstBox.top).abs() < 20, isTrue);
+      expect(srcBox.left < dstBox.left, isTrue);
+      expect(find.textContaining('Wi-Fi LAN'), findsWidgets);
+
+      // Force TAR selection works
+      await tester.tap(find.text('Force TAR'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.download_outlined));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Pull'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Connection interrupted pulling "hello.txt"'),
+        findsOneWidget,
+      );
+      expect(find.text('Continue on USB / Wireless ADB'), findsOneWidget);
+
+      // Continue interrupted transfer over USB / Wireless ADB
+      core.failPull = false;
+      await tester.tap(find.text('Continue on USB / Wireless ADB'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Verified download (direct)'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Via USB / Wireless ADB'), findsOneWidget);
+    },
+  );
+}
+
+class _InterruptibleCore extends FakeCore {
+  bool failPull = true;
+  String activeTransport = 'lan';
+
+  @override
+  Future<dynamic> run(List<String> arguments, {String? input}) async {
+    calls.add(arguments);
+    if (arguments.first == 'connection' &&
+        arguments.length > 2 &&
+        arguments[2] == '-') {
+      activeTransport = 'adb';
+      return {'transport': 'adb', 'adb_endpoint': '127.0.0.1:8731'};
+    }
+    if (arguments.first == 'connection') {
+      return {
+        'transport': activeTransport,
+        if (activeTransport == 'adb') 'adb_endpoint': '127.0.0.1:8731',
+      };
+    }
+    if (arguments.first == 'resolve') {
+      return {
+        'transport': activeTransport == 'adb' ? 'adb' : 'direct-lan-v1',
+        'endpoint': activeTransport == 'adb'
+            ? '127.0.0.1:8731'
+            : '192.168.50.3:8731',
+        'interface': 'test0',
+        'rtt': 1000000,
+        'mib_per_second': 18.2,
+      };
+    }
+    if (arguments.first == 'pull' || arguments.first == 'pull-tar') {
+      if (failPull) {
+        throw StateError('connection reset by peer');
+      }
+      return {
+        'destination': '/private/downloads/hello.txt',
+        'mode': 'chunked',
+        'transport': activeTransport,
+        'mib_per_second': 18.2,
+      };
+    }
+    return super.run(arguments, input: input);
+  }
 }

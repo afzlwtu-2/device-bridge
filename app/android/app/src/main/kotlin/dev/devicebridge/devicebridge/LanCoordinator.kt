@@ -148,20 +148,24 @@ class LanCoordinator(private val context: Context, private val event: (Map<Strin
                 }
                 val process = builder.start(); child = process
                 Thread {
-                    process.inputStream.bufferedReader().use { reader ->
-                        val line = reader.readLine()
-                        if (line != null) {
-                            val ready = JSONObject(line)
-                            main.post { if (owner == generation) event(mapOf("state" to if(ready.optBoolean("discovery")) "active" else "receiver_error", "error" to ready.optString("discovery_error"), "network" to selected, "endpoint" to ready.optString("endpoint"), "device_id" to ready.optString("id"))) }
+                    try {
+                        process.inputStream.bufferedReader().use { reader ->
+                            val line = reader.readLine()
+                            if (line != null) {
+                                val ready = JSONObject(line)
+                                main.post { if (owner == generation) event(mapOf("state" to if(ready.optBoolean("discovery")) "active" else "receiver_error", "error" to ready.optString("discovery_error"), "network" to selected, "endpoint" to ready.optString("endpoint"), "device_id" to ready.optString("id"))) }
+                            }
+                            while (reader.readLine() != null) { /* drain, never log keys */ }
                         }
-                        while (reader.readLine() != null) { /* drain, never log keys */ }
-                    }
+                    } catch (_: Exception) { /* stream closed during stopReceiver() */ }
                 }.start()
                 Thread {
-                    val error = process.errorStream.bufferedReader().use { reader ->
-                        val tail = StringBuilder(); reader.forEachLine { tail.append(it.take(1024)); if (tail.length > 4096) tail.delete(0, tail.length - 4096) }; tail.toString()
-                    }
-                    val code = process.waitFor()
+                    val error = try {
+                        process.errorStream.bufferedReader().use { reader ->
+                            val tail = StringBuilder(); reader.forEachLine { tail.append(it.take(1024)); if (tail.length > 4096) tail.delete(0, tail.length - 4096) }; tail.toString()
+                        }
+                    } catch (_: Exception) { "" }
+                    val code = try { process.waitFor() } catch (_: Exception) { -1 }
                     main.post { if (owner == generation) { signature = ""; event(mapOf("state" to "receiver_error", "network" to selected, "error" to "Listener stopped ($code). ${error.takeLast(1024)}")) } }
                 }.start()
             } catch (e: Exception) { main.post { if (owner == generation) { signature = ""; event(mapOf("state" to "receiver_error", "network" to selected, "error" to e.message)) } } }

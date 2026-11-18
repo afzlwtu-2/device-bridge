@@ -62,37 +62,41 @@ object CoreRuntime {
             val stdout = readers.submit<String> { child.inputStream.bufferedReader().use { it.readText() } }
             val stderr = readers.submit<String> {
                 val tail = StringBuilder()
-                child.errorStream.bufferedReader().use { reader ->
-                    reader.forEachLine { line ->
-                        if (onProgress != null && line.startsWith("{")) {
-                            try {
-                                val obj = JSONObject(line)
-                                if (obj.has("verified_bytes")) {
-                                    onProgress(mapOf(
-                                        "file" to obj.optString("file"),
-                                        "verified_bytes" to obj.optLong("verified_bytes"),
-                                        "total_bytes" to obj.optLong("total_bytes"),
-                                        "mib_per_second" to obj.optDouble("mib_per_second", 0.0),
-                                        "elapsed_ms" to obj.optLong("elapsed_ms", 0L),
-                                    ))
-                                    return@forEachLine
-                                }
-                                if (obj.optBoolean("route_switched", false)) {
-                                    onProgress(mapOf(
-                                        "route_switched" to true,
-                                        "from" to obj.optString("from"),
-                                        "to" to obj.optString("to"),
-                                        "endpoint" to obj.optString("endpoint"),
-                                    ))
-                                    return@forEachLine
-                                }
-                            } catch (_: Exception) { /* fall through to error tail */ }
+                try {
+                    child.errorStream.bufferedReader().use { reader ->
+                        reader.forEachLine { line ->
+                            if (onProgress != null && line.startsWith("{")) {
+                                try {
+                                    val obj = JSONObject(line)
+                                    if (obj.has("verified_bytes")) {
+                                        onProgress(mapOf(
+                                            "file" to obj.optString("file"),
+                                            "verified_bytes" to obj.optLong("verified_bytes"),
+                                            "total_bytes" to obj.optLong("total_bytes"),
+                                            "mib_per_second" to obj.optDouble("mib_per_second", 0.0),
+                                            "elapsed_ms" to obj.optLong("elapsed_ms", 0L),
+                                            "method" to obj.optString("method"),
+                                            "transport" to obj.optString("transport"),
+                                        ))
+                                        return@forEachLine
+                                    }
+                                    if (obj.optBoolean("route_switched", false)) {
+                                        onProgress(mapOf(
+                                            "route_switched" to true,
+                                            "from" to obj.optString("from"),
+                                            "to" to obj.optString("to"),
+                                            "endpoint" to obj.optString("endpoint"),
+                                        ))
+                                        return@forEachLine
+                                    }
+                                } catch (_: Exception) { /* fall through to error tail */ }
+                            }
+                            if (tail.isNotEmpty()) tail.append('\n')
+                            tail.append(line)
+                            if (tail.length > 65536) tail.delete(0, tail.length - 65536)
                         }
-                        if (tail.isNotEmpty()) tail.append('\n')
-                        tail.append(line)
-                        if (tail.length > 65536) tail.delete(0, tail.length - 65536)
                     }
-                }
+                } catch (_: Exception) { /* stream closed during cancel() */ }
                 tail.toString()
             }
             child.outputStream.bufferedWriter().use { it.write(input) }

@@ -332,7 +332,12 @@ class _BridgeHomeState extends State<BridgeHome> {
         children: [
           const Icon(Icons.hub_outlined),
           const SizedBox(width: 12),
-          Text(['DeviceBridge', 'Devices', 'Share', 'Sync'][tab]),
+          Flexible(
+            child: Text(
+              ['DeviceBridge', 'Devices', 'Share', 'Sync'][tab],
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
         ],
       ),
       actions: [

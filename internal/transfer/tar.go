@@ -320,7 +320,7 @@ func PullTar(ctx context.Context, stream io.ReadCloser, codec, peer string, m pr
 		filesDone++
 		if progress != nil {
 			mib, ms := rateMiB(complete, started)
-			progress(Progress{File: clean, VerifiedBytes: complete, TotalBytes: m.Bytes, MiBPerSecond: mib, ElapsedMillis: ms})
+			progress(Progress{File: clean, VerifiedBytes: complete, TotalBytes: m.Bytes, MiBPerSecond: mib, ElapsedMillis: ms, Method: "tar"})
 		}
 	}
 	if len(seen) != len(expected) {
