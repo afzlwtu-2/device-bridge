@@ -25,6 +25,7 @@ class _ConnectionsHubState extends State<ConnectionsHub> {
   List<Map<String, dynamic>> availableNetworks = [];
   Map<String, dynamic> caps = {};
   Map<dynamic, dynamic>? tailnetStatus;
+  Map<dynamic, dynamic>? wireguardStatus;
 
   @override
   void initState() {
@@ -46,6 +47,11 @@ class _ConnectionsHubState extends State<ConnectionsHub> {
         tailnetStatus = await widget.core.run(['tailnet', 'status']) as Map;
       } catch (_) {
         tailnetStatus = null;
+      }
+      try {
+        wireguardStatus = await widget.core.run(['wireguard', 'status']) as Map;
+      } catch (_) {
+        wireguardStatus = null;
       }
     } catch (e) {
       error = e.toString();
@@ -260,6 +266,38 @@ class _ConnectionsHubState extends State<ConnectionsHub> {
                       icon: const Icon(Icons.folder_special),
                       label: const Text('Grant Termux folder (SAF)'),
                     ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.vpn_key_outlined),
+                    title: const Text('WireGuard (Userspace / Kernel)'),
+                    subtitle: Text(
+                      wireguardStatus == null
+                          ? 'Userspace on non-rooted devices · kernel module when rooted · prefers direct LAN peer before hopping through server.'
+                          : 'Backend: ${wireguardStatus!['backend']} · Tunnel: ${wireguardStatus!['local_tunnel_ip']}\nPublic key: ${wireguardStatus!['public_key']}',
+                    ),
+                  ),
+                  if (caps['all_files_access'] != true)
+                    OutlinedButton.icon(
+                      onPressed: () => openSetup('all_files_access'),
+                      icon: const Icon(Icons.folder_copy_outlined),
+                      label: const Text('Grant full phone storage access'),
+                    ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Tip: Per-device primary and fallback connections live inside each Device card.',
+                    style: TextStyle(fontSize: 12),
+                  ),
                 ],
               ),
             ),

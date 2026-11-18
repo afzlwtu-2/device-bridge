@@ -213,9 +213,21 @@ class LocalCore implements CoreBridge {
       Platform.isAndroid ? 'Android phone' : Platform.localHostname,
     ]);
     await Directory(downloads).create(recursive: true);
-    // The export alone grants no access. Incoming pairing approval separately
-    // lets the owner select this narrowly scoped app download directory.
     await run(['export', 'downloads', downloads]);
+    if (!Platform.isAndroid) {
+      await run(['export', 'home', homeDir]);
+      await run(['export', 'filesystem', '/']);
+    } else {
+      try {
+        final caps = await platformCapabilities();
+        if (caps['all_files_access'] == true &&
+            Directory('/storage/emulated/0').existsSync()) {
+          await run(['export', 'phone_storage', '/storage/emulated/0']);
+        }
+      } catch (_) {
+        /* all-files access optional until granted by owner */
+      }
+    }
     final settings = File('$_state/network.json');
     if (await settings.exists()) {
       _network = Map<String, dynamic>.from(
@@ -295,6 +307,17 @@ class LocalCore implements CoreBridge {
           connection['endpoint'] as String,
           '--approve-remote',
         ]);
+      } else if (transport == 'wireguard') {
+        final ep = (connection['endpoint'] as String? ?? '').isNotEmpty
+            ? connection['endpoint'] as String
+            : (connection['wireguard_endpoint'] as String? ?? '');
+        args.addAll(['--transport', 'wireguard']);
+        if (ep.isNotEmpty) {
+          args.addAll(['--endpoint', ep]);
+        }
+        if (connection['remote_approved'] == true) {
+          args.add('--approve-remote');
+        }
       } else if (transport == 'adb' || transport == 'ssh') {
         final ep = (connection['endpoint'] as String? ?? '').isNotEmpty
             ? connection['endpoint'] as String

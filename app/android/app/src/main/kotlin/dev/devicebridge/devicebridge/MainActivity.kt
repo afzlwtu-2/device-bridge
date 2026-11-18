@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.Settings
 import android.view.WindowManager
@@ -115,10 +116,12 @@ class MainActivity : FlutterActivity() {
                 }
                 "platformCapabilities" -> {
                     val adbEnabled = try { Settings.Global.getInt(contentResolver, Settings.Global.ADB_ENABLED, 0) == 1 } catch (_: Exception) { false }
+                    val allFiles = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
                     result.success(mapOf(
                         "wifi_direct" to packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT),
                         "adb_enabled" to adbEnabled,
                         "termux_installed" to isTermuxInstalled(),
+                        "all_files_access" to allFiles,
                         "saf_tree_uri" to targetPrefs.getString("saf_uri", null),
                         "saf_tree_name" to targetPrefs.getString("saf_name", null),
                         "termux_tree_uri" to targetPrefs.getString("termux_uri", null),
@@ -127,7 +130,10 @@ class MainActivity : FlutterActivity() {
                 }
                 "connectionSetup" -> {
                     val kind = call.argument<String>("kind")
-                    if (kind == "wifi_direct" && !packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) {
+                    if (kind == "all_files_access" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))
+                        try { startActivity(intent); result.success(null) } catch (e: Exception) { result.error("unavailable", e.message, null) }
+                    } else if (kind == "wifi_direct" && !packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) {
                         result.error("unavailable", "This device does not report Wi-Fi Direct support", null)
                     } else {
                         val action = when (kind) {

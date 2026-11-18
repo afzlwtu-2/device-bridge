@@ -139,6 +139,9 @@ func (n *Native) List(ctx context.Context, p, token string, limit int) (protocol
 		}
 		info, e := n.root.Lstat(path.Join(p, item.Name()))
 		if e != nil {
+			if errors.Is(e, os.ErrPermission) || errors.Is(e, os.ErrNotExist) {
+				continue
+			}
 			return out, fmt.Errorf("entry changed: %w", e)
 		}
 		out.Entries = append(out.Entries, entry(path.Join(p, item.Name()), info))

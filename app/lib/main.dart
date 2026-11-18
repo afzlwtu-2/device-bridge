@@ -8,6 +8,7 @@ import 'core/bridge.dart';
 import 'features/registry.dart';
 import 'features/remote_files.dart';
 import 'features/pair_dialog.dart';
+import 'features/ssh_bootstrap.dart';
 import 'features/device_addresses.dart';
 import 'features/incoming_pair.dart';
 import 'features/connections_hub.dart';
@@ -543,6 +544,22 @@ class _BridgeHomeState extends State<BridgeHome> {
                     icon: const Icon(Icons.qr_code),
                     label: const Text('Create invitation'),
                   ),
+                  OutlinedButton.icon(
+                    onPressed: busy
+                        ? null
+                        : () async {
+                            final ok = await showDialog<bool>(
+                              context: context,
+                              builder: (_) =>
+                                  SshBootstrapDialog(core: widget.core),
+                            );
+                            if (ok == true) {
+                              await refreshPeers();
+                            }
+                          },
+                    icon: const Icon(Icons.terminal),
+                    label: const Text('Setup via SSH'),
+                  ),
                 ],
               ),
             ],
@@ -633,7 +650,9 @@ class _BridgeHomeState extends State<BridgeHome> {
                           await widget.core.run([
                             'approve',
                             p['id'] as String,
-                            allow ? 'downloads' : '',
+                            allow ? 'all' : '',
+                            '8760h',
+                            '1099511627776',
                           ]);
                           await refreshPeers();
                         });

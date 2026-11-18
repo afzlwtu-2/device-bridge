@@ -169,3 +169,11 @@ func (c *Client) OpenTar(ctx context.Context, root, path, codec string) (io.Read
 	}
 	return res.Body, actualCodec, nil
 }
+func (c *Client) OpenStream(ctx context.Context, root, path string, offset int64) (io.ReadCloser, error) {
+	q := url.Values{"root": {root}, "path": {path}, "offset": {strconv.FormatInt(offset, 10)}}
+	res, err := c.doRequest(c.StreamHTTP, ctx, "GET", "/v1/files/stream", q, nil)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
+}

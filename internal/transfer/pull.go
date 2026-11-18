@@ -20,12 +20,15 @@ import (
 	"time"
 )
 
-const ChunkSize = 1 << 20
+const ChunkSize = 4 << 20
 
 var ErrNonRetriable = errors.New("non-retriable transfer policy or integrity error")
 
 type Source interface {
 	ReadRange(context.Context, string, string, int64, int64) ([]byte, error)
+}
+type StreamSource interface {
+	OpenStream(context.Context, string, string, int64) (io.ReadCloser, error)
 }
 type Progress struct {
 	File          string  `json:"file"`
@@ -265,6 +268,8 @@ func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, 
 	var complete int64
 	var sessionBytes int64
 	count := 0
+	usedStream := false
+	buf := make([]byte, ChunkSize)
 	for _, entry := range m.Entries {
 		if err = ctx.Err(); err != nil {
 			return receipt, err
@@ -294,32 +299,107 @@ func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, 
 			f.Close()
 			return receipt, e
 		}
-		for offset < entry.Size {
-			n := min(int64(ChunkSize), entry.Size-offset)
-			chunk, e := source.ReadRange(ctx, m.Root, path.Join(m.Path, entry.Path), offset, n)
-			if e != nil {
-				f.Close()
-				return receipt, e
+		streamed := false
+		if offset < entry.Size {
+			if ss, ok := source.(StreamSource); ok {
+				rc, se := ss.OpenStream(ctx, m.Root, path.Join(m.Path, entry.Path), offset)
+				if se == nil {
+					streamed = true
+					usedStream = true
+					var sinceSync, sinceReport int64
+					for offset < entry.Size {
+						if err = ctx.Err(); err != nil {
+							rc.Close()
+							f.Close()
+							return receipt, err
+						}
+						nRead, re := rc.Read(buf)
+						if nRead > 0 {
+							if offset+int64(nRead) > entry.Size {
+								rc.Close()
+								f.Close()
+								return receipt, errors.New("stream exceeded expected file size")
+							}
+							written, we := f.Write(buf[:nRead])
+							if we != nil || written != nRead {
+								rc.Close()
+								f.Close()
+								return receipt, errors.New("staging write failed (check free space)")
+							}
+							offset += int64(nRead)
+							sessionBytes += int64(nRead)
+							sinceSync += int64(nRead)
+							sinceReport += int64(nRead)
+							if sinceSync >= 16<<20 {
+								if se = f.Sync(); se != nil {
+									rc.Close()
+									f.Close()
+									return receipt, se
+								}
+								sinceSync = 0
+							}
+							if progress != nil && (sinceReport >= 1<<20 || offset == entry.Size) {
+								mib, ms := rateMiB(sessionBytes, started)
+								progress(Progress{File: entry.Path, VerifiedBytes: complete + offset, TotalBytes: m.Bytes, MiBPerSecond: mib, ElapsedMillis: ms, Method: "stream"})
+								sinceReport = 0
+							}
+						}
+						if re == io.EOF {
+							break
+						}
+						if re != nil {
+							rc.Close()
+							f.Close()
+							return receipt, re
+						}
+					}
+					rc.Close()
+					if offset != entry.Size {
+						f.Close()
+						return receipt, errors.New("truncated file stream")
+					}
+				} else if !strings.Contains(se.Error(), "remote 404") {
+					f.Close()
+					return receipt, se
+				}
 			}
-			if int64(len(chunk)) != n {
-				f.Close()
-				return receipt, errors.New("truncated chunk")
+		}
+		if !streamed {
+			var sinceSync int64
+			for offset < entry.Size {
+				n := min(int64(ChunkSize), entry.Size-offset)
+				chunk, e := source.ReadRange(ctx, m.Root, path.Join(m.Path, entry.Path), offset, n)
+				if e != nil {
+					f.Close()
+					return receipt, e
+				}
+				if int64(len(chunk)) != n {
+					f.Close()
+					return receipt, errors.New("truncated chunk")
+				}
+				written, e := f.Write(chunk)
+				if e != nil || written != len(chunk) {
+					f.Close()
+					return receipt, errors.New("staging write failed (check free space)")
+				}
+				offset += n
+				sessionBytes += n
+				sinceSync += n
+				if sinceSync >= 16<<20 || offset == entry.Size {
+					if e = f.Sync(); e != nil {
+						f.Close()
+						return receipt, e
+					}
+					sinceSync = 0
+				}
+				if progress != nil {
+					mib, ms := rateMiB(sessionBytes, started)
+					progress(Progress{File: entry.Path, VerifiedBytes: complete + offset, TotalBytes: m.Bytes, MiBPerSecond: mib, ElapsedMillis: ms, Method: "direct"})
+				}
 			}
-			written, e := f.Write(chunk)
-			if e != nil || written != len(chunk) {
-				f.Close()
-				return receipt, errors.New("staging write failed (check free space)")
-			}
-			offset += n
-			sessionBytes += n
-			if e = f.Sync(); e != nil {
-				f.Close()
-				return receipt, e
-			}
-			if progress != nil {
-				mib, ms := rateMiB(sessionBytes, started)
-				progress(Progress{File: entry.Path, VerifiedBytes: complete + offset, TotalBytes: m.Bytes, MiBPerSecond: mib, ElapsedMillis: ms, Method: "direct"})
-			}
+		} else if e = f.Sync(); e != nil {
+			f.Close()
+			return receipt, e
 		}
 		actual, e := digestFile(ctx, f)
 		f.Close()
@@ -336,7 +416,11 @@ func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, 
 		return receipt, err
 	}
 	mib, ms := rateMiB(sessionBytes, started)
+	mode := "chunked"
+	if usedStream {
+		mode = "stream"
+	}
 	// Metadata is small and retained as a receipt; never remove user payloads.
-	receipt = Receipt{Destination: st.abs, Files: count, Bytes: complete, SHA256: st.manifestHash, Mode: "chunked", MiBPerSecond: mib, ElapsedMillis: ms}
+	receipt = Receipt{Destination: st.abs, Files: count, Bytes: complete, SHA256: st.manifestHash, Mode: mode, MiBPerSecond: mib, ElapsedMillis: ms}
 	return receipt, nil
 }

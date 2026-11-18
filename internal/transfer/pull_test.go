@@ -1,11 +1,13 @@
 package transfer
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"devicebridge/protocol"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -118,5 +120,60 @@ func TestStagingSymlinkRejected(t *testing.T) {
 	}
 	if _, err := Pull(context.Background(), &fakeSource{}, "peer", manifest(nil), dest, nil); err == nil {
 		t.Fatal("staging symlink accepted")
+	}
+}
+
+type fakeStreamSource struct {
+	fakeSource
+	cutAt int64
+}
+
+type cutReader struct {
+	r      io.Reader
+	remain int64
+}
+
+func (c *cutReader) Read(p []byte) (int, error) {
+	if c.remain <= 0 {
+		return 0, errors.New("stream cut")
+	}
+	if int64(len(p)) > c.remain {
+		p = p[:c.remain]
+	}
+	n, err := c.r.Read(p)
+	c.remain -= int64(n)
+	return n, err
+}
+
+func (s *fakeStreamSource) OpenStream(_ context.Context, _, _ string, offset int64) (io.ReadCloser, error) {
+	if s.cutAt > 0 && offset == 0 {
+		return io.NopCloser(&cutReader{r: bytes.NewReader(s.data[offset:]), remain: s.cutAt}), nil
+	}
+	return io.NopCloser(bytes.NewReader(s.data[offset:])), nil
+}
+
+func TestStreamPullAndResume(t *testing.T) {
+	t.Parallel()
+	data := make([]byte, ChunkSize+54321)
+	for i := range data {
+		data[i] = byte(i % 241)
+	}
+	s := &fakeStreamSource{fakeSource: fakeSource{data: data}, cutAt: 1 << 20}
+	dest := filepath.Join(t.TempDir(), "streamed")
+	m := manifest(data)
+	if _, err := Pull(context.Background(), s, "peer", m, dest, nil); err == nil {
+		t.Fatal("expected stream cut")
+	}
+	s.cutAt = 0
+	receipt, err := Pull(context.Background(), s, "peer", m, dest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Mode != "stream" {
+		t.Fatalf("expected mode=stream, got %q", receipt.Mode)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatal("streamed payload mismatch", err)
 	}
 }

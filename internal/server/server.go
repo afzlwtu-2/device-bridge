@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-const ChunkSize = 1 << 20
+const ChunkSize = 4 << 20
 
 type Server struct {
 	Store    *storage.Store
@@ -130,7 +130,7 @@ func (*remoteFiles) ProtocolVersion() int           { return 1 }
 func (*remoteFiles) RequiredGrants() []string       { return []string{"browse(root)", "read(root)"} }
 func (*remoteFiles) RequiredCapabilities() []string { return []string{"filesystem.read"} }
 func (*remoteFiles) FeatureFlags() []string {
-	return []string{"roots", "list", "stat", "read-range", "manifest", "preview", "tar"}
+	return []string{"roots", "list", "stat", "read-range", "manifest", "preview", "tar", "stream"}
 }
 func (*remoteFiles) RegisterUIActions() []features.Action {
 	return []features.Action{{ID: "browse", Label: "Browse files", Icon: "folder", Location: "device-detail", RequiredGrants: []string{"browse(root)"}, RequiredCapabilities: []string{"filesystem.read"}}}
@@ -143,6 +143,7 @@ func (m *remoteFiles) RegisterBackend(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/files/preview", m.s.read)
 	mux.HandleFunc("GET /v1/files/manifest", m.s.manifest)
 	mux.HandleFunc("GET /v1/files/tar", m.s.tar)
+	mux.HandleFunc("GET /v1/files/stream", m.s.stream)
 }
 func (s *Server) roots(w http.ResponseWriter, r *http.Request) {
 	if !s.paired(r) {
@@ -300,4 +301,53 @@ func (s *Server) tar(w http.ResponseWriter, r *http.Request) {
 	_ = transfer.WriteTar(r.Context(), p, rel, codec, w, func(n int64) error {
 		return s.Store.Authorized(peerID(r), p.ID(), "read", n)
 	})
+}
+func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
+	p, rel, ok := s.scoped(w, r, "read")
+	if !ok {
+		return
+	}
+	offset := int64(0)
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || v < 0 {
+			fail(w, 400, "invalid_offset")
+			return
+		}
+		offset = v
+	}
+	meta, err := p.Stat(r.Context(), rel)
+	if err != nil || meta.Kind != "file" {
+		fail(w, 404, "read_failed")
+		return
+	}
+	if offset > meta.Size {
+		fail(w, 409, "offset_past_eof")
+		return
+	}
+	remain := meta.Size - offset
+	f, err := p.OpenRead(r.Context(), rel)
+	if err != nil {
+		fail(w, 404, "read_failed")
+		return
+	}
+	defer f.Close()
+	if _, err = f.Seek(offset, io.SeekStart); err != nil {
+		fail(w, 400, "seek_failed")
+		return
+	}
+	if s.Store.Authorized(peerID(r), p.ID(), "read", remain) != nil {
+		fail(w, 403, "read_quota_or_grant_denied")
+		return
+	}
+	if s.Store.Audit(peerID(r), "stream", p.ID()+":"+rel) != nil {
+		fail(w, 500, "audit_unavailable")
+		return
+	}
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(remain, 10))
+	w.Header().Set("X-DeviceBridge-Version", "1")
+	w.WriteHeader(200)
+	_, _ = io.CopyBuffer(w, io.LimitReader(f, remain), make([]byte, transfer.ChunkSize))
 }

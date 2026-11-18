@@ -76,6 +76,19 @@ class FakeCore implements CoreBridge {
     calls.add(arguments);
     return switch (arguments.first) {
       'connection' => {'transport': 'lan'},
+      'wireguard' => {
+        'backend': 'userspace',
+        'public_key': 'mockWGPubKey==',
+        'local_tunnel_ip': '10.77.0.2/24',
+        'listen_port': 51820,
+        'peers': [],
+      },
+      'ssh-probe' => {
+        'host': arguments[1],
+        'port': 22,
+        'host_key_sha256': 'SHA256:mockhostkey',
+        'key_type': 'ssh-ed25519',
+      },
       'tailnet' => {'mode': 'app', 'state': 'Stopped', 'ips': []},
       'theme' => {'theme': arguments.length > 1 ? arguments[1] : 'system'},
       'export' => {'status': 'export_registered'},
@@ -226,6 +239,11 @@ void main() {
     expect(find.text('USB / Wireless ADB'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('SSH & Termux Bridge'), 200);
     expect(find.text('SSH & Termux Bridge'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('WireGuard (Userspace / Kernel)'),
+      200,
+    );
+    expect(find.text('WireGuard (Userspace / Kernel)'), findsOneWidget);
   });
 
   testWidgets('Matte paper and AMOLED themes render cleanly', (tester) async {

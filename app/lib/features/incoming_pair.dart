@@ -8,7 +8,7 @@ class IncomingPairDialog extends StatefulWidget {
 }
 
 class _IncomingPairDialogState extends State<IncomingPairDialog> {
-  bool downloads = false;
+  bool downloads = true;
   @override
   Widget build(BuildContext context) => AlertDialog(
     title: Text('Pair with ${widget.peer['name']}?'),
@@ -23,9 +23,9 @@ class _IncomingPairDialogState extends State<IncomingPairDialog> {
             value: downloads,
             onChanged: (v) => setState(() => downloads = v ?? false),
             title: const Text(
-              'Allow browsing and pulling DeviceBridge downloads',
+              'Grant full device storage access',
             ),
-            subtitle: const Text('Read only · 24 hours · 10 GiB limit'),
+            subtitle: const Text('Owner full storage · per-device ACLs & guest scopes coming later'),
           ),
         ],
       ),

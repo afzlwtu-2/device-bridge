@@ -22,6 +22,7 @@ class _ConnectionPickerState extends State<ConnectionPicker> {
   List<dynamic> nodes = [];
   final adbController = TextEditingController();
   final sshController = TextEditingController();
+  final wgController = TextEditingController();
 
   @override
   void initState() {
@@ -33,6 +34,7 @@ class _ConnectionPickerState extends State<ConnectionPicker> {
   void dispose() {
     adbController.dispose();
     sshController.dispose();
+    wgController.dispose();
     super.dispose();
   }
 
@@ -49,6 +51,9 @@ class _ConnectionPickerState extends State<ConnectionPicker> {
       sshController.text =
           current['ssh_endpoint'] as String? ??
           (mode == 'ssh' ? (endpoint ?? '127.0.0.1:8731') : '');
+      wgController.text =
+          current['wireguard_endpoint'] as String? ??
+          (mode == 'wireguard' ? (endpoint ?? '10.77.0.1:8731') : '');
       lastRate = (current['last_mib_per_second'] as num?)?.toDouble();
       lastRateTransport = current['last_rate_transport'] as String?;
       try {
@@ -100,6 +105,10 @@ class _ConnectionPickerState extends State<ConnectionPicker> {
                 ),
                 DropdownMenuItem(value: 'tailnet', child: Text('Tailscale')),
                 DropdownMenuItem(
+                  value: 'wireguard',
+                  child: Text('WireGuard (Userspace / Kernel · LAN-direct first)'),
+                ),
+                DropdownMenuItem(
                   value: 'adb',
                   child: Text('USB / Wireless ADB tunnel'),
                 ),
@@ -149,6 +158,27 @@ class _ConnectionPickerState extends State<ConnectionPicker> {
                 decoration: const InputDecoration(
                   labelText: 'SSH forwarded loopback endpoint',
                   hintText: '127.0.0.1:8731',
+                ),
+              ),
+            ] else if (mode == 'wireguard') ...[
+              const SizedBox(height: 12),
+              TextField(
+                controller: wgController,
+                decoration: const InputDecoration(
+                  labelText: 'WireGuard tunnel endpoint',
+                  hintText: '10.77.0.1:8731',
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Uses userspace wireguard-go on non-rooted devices and kernel WireGuard module when rooted. Connects direct P2P on the same LAN before external servers.',
+                style: TextStyle(fontSize: 12),
+              ),
+              CheckboxListTile(
+                value: approved,
+                onChanged: (v) => setState(() => approved = v ?? false),
+                title: const Text(
+                  'Allow remote server hop when outside local LAN',
                 ),
               ),
             ] else ...[
@@ -259,6 +289,7 @@ class _ConnectionPickerState extends State<ConnectionPicker> {
                 try {
                   final adbEp = adbController.text.trim();
                   final sshEp = sshController.text.trim();
+                  final wgEp = wgController.text.trim();
                   String? selectedEp = endpoint;
                   if (mode == 'tailnet' && (!approved || endpoint == null)) {
                     setState(
@@ -271,9 +302,12 @@ class _ConnectionPickerState extends State<ConnectionPicker> {
                     selectedEp = adbEp.isEmpty ? '127.0.0.1:8731' : adbEp;
                   } else if (mode == 'ssh') {
                     selectedEp = sshEp.isEmpty ? '127.0.0.1:8731' : sshEp;
+                  } else if (mode == 'wireguard') {
+                    selectedEp = wgEp.isEmpty ? '10.77.0.1:8731' : wgEp;
                   }
                   final fallbacks = <String>[
                     if (mode != 'lan') 'lan',
+                    if (wgEp.isNotEmpty) 'wireguard',
                     if (adbEp.isNotEmpty) 'adb',
                     if (sshEp.isNotEmpty) 'ssh',
                     if (approved && endpoint != null) 'tailnet',
@@ -288,6 +322,7 @@ class _ConnectionPickerState extends State<ConnectionPicker> {
                       'fallback_transports': fallbacks,
                       if (adbEp.isNotEmpty) 'adb_endpoint': adbEp,
                       if (sshEp.isNotEmpty) 'ssh_endpoint': sshEp,
+                      if (wgEp.isNotEmpty) 'wireguard_endpoint': wgEp,
                     }),
                   );
                   if (context.mounted) {

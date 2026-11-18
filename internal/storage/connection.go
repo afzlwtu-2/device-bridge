@@ -18,6 +18,7 @@ type Connection struct {
 	FallbackTransports []string `json:"fallback_transports,omitempty"`
 	AdbEndpoint        string   `json:"adb_endpoint,omitempty"`
 	SshEndpoint        string   `json:"ssh_endpoint,omitempty"`
+	WireGuardEndpoint  string   `json:"wireguard_endpoint,omitempty"`
 	LastMiBPerSecond   float64  `json:"last_mib_per_second,omitempty"`
 	LastRateTransport  string   `json:"last_rate_transport,omitempty"`
 	LastRateObservedAt int64    `json:"last_rate_observed_at,omitempty"`
@@ -66,6 +67,18 @@ func validTailnetEndpoint(ep string) bool {
 	return netip.MustParsePrefix("100.64.0.0/10").Contains(ip) || netip.MustParsePrefix("fd7a:115c:a1e0::/48").Contains(ip)
 }
 
+func validWireGuardEndpoint(ep string) bool {
+	if ep == "" {
+		return false
+	}
+	host, port, err := net.SplitHostPort(ep)
+	if err != nil || port == "" {
+		return false
+	}
+	ip, ie := netip.ParseAddr(host)
+	return ie == nil && (ip.IsPrivate() || ip.IsLoopback() || netip.MustParsePrefix("100.64.0.0/10").Contains(ip) || netip.MustParsePrefix("fd00::/8").Contains(ip))
+}
+
 func (s *Store) Connection(peer string, update *Connection) (Connection, error) {
 	var out Connection
 	out.Transport = "lan"
@@ -75,18 +88,24 @@ func (s *Store) Connection(peer string, update *Connection) (Connection, error) 
 	}
 	if update != nil {
 		switch update.Transport {
-		case "lan", "tailnet", "adb", "ssh":
+		case "lan", "tailnet", "wireguard", "adb", "ssh":
 		default:
 			return out, errors.New("unsupported connection choice")
 		}
 		if update.Transport == "tailnet" && (!validTailnetEndpoint(update.Endpoint) || !update.RemoteApproved) {
 			return out, errors.New("tailnet endpoint and explicit internet/relay consent required")
 		}
+		if update.Transport == "wireguard" && !validWireGuardEndpoint(update.Endpoint) {
+			return out, errors.New("wireguard requires a private/tunnel endpoint")
+		}
 		if (update.Transport == "adb" || update.Transport == "ssh") && (update.Endpoint == "" || !validLoopbackEndpoint(update.Endpoint)) {
 			return out, errors.New("ADB/SSH tunnel requires an explicit 127.0.0.1:port endpoint")
 		}
 		if !validLoopbackEndpoint(update.AdbEndpoint) || !validLoopbackEndpoint(update.SshEndpoint) {
 			return out, errors.New("fallback ADB/SSH tunnel must use 127.0.0.1:port")
+		}
+		if update.WireGuardEndpoint != "" && !validWireGuardEndpoint(update.WireGuardEndpoint) {
+			return out, errors.New("invalid fallback WireGuard endpoint")
 		}
 		if update.Endpoint != "" && update.Transport == "tailnet" && !validTailnetEndpoint(update.Endpoint) {
 			return out, errors.New("invalid tailnet endpoint")
@@ -97,6 +116,10 @@ func (s *Store) Connection(peer string, update *Connection) (Connection, error) 
 			switch t {
 			case "lan", "adb", "ssh":
 				cleanedFallback = append(cleanedFallback, t)
+			case "wireguard":
+				if update.WireGuardEndpoint != "" || (update.Transport == "wireguard" && validWireGuardEndpoint(update.Endpoint)) {
+					cleanedFallback = append(cleanedFallback, t)
+				}
 			case "tailnet":
 				if !update.RemoteApproved || !validTailnetEndpoint(update.Endpoint) {
 					return out, errors.New("tailnet fallback requires explicit remote approval and tailnet endpoint")
@@ -114,6 +137,7 @@ func (s *Store) Connection(peer string, update *Connection) (Connection, error) 
 			FallbackTransports: cleanedFallback,
 			AdbEndpoint:        update.AdbEndpoint,
 			SshEndpoint:        update.SshEndpoint,
+			WireGuardEndpoint:  update.WireGuardEndpoint,
 		}
 		b, e := json.Marshal(stored)
 		if e != nil {

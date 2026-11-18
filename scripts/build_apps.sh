@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 bash scripts/check.sh
 bash scripts/build_android_core.sh
 bash scripts/build_tsnet.sh
+bash scripts/build_wg.sh
 cd app
 flutter analyze
 flutter test

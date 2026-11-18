@@ -50,6 +50,8 @@ class _DeviceDetailState extends State<DeviceDetail> {
 
   String routeTitle(String? transport) => switch (transport) {
     'direct-lan-v1' => 'Authenticated direct LAN',
+    'wireguard' || 'wireguard-v1' =>
+      'WireGuard · ${route!['path_kind'] ?? 'direct-lan/tunnel'}',
     'adb' => 'Authenticated ADB loopback tunnel',
     'ssh' => 'Authenticated SSH loopback tunnel',
     _ => 'Tailscale · ${route!['path_kind'] ?? 'unknown'}',
@@ -330,6 +332,10 @@ class _FileBrowserState extends State<FileBrowser> {
       case 'tailscaled-v1':
         final pk = resolvedRoute?['path_kind'] as String? ?? '';
         return pk.isEmpty ? 'Tailscale' : 'Tailscale ($pk)';
+      case 'wireguard':
+      case 'wireguard-v1':
+        final pk = resolvedRoute?['path_kind'] as String? ?? '';
+        return pk.isEmpty ? 'WireGuard' : 'WireGuard ($pk)';
       case 'direct-lan-v1':
       case 'lan':
         final kind = widget.core.network?['kind'] as String? ?? '';
@@ -695,8 +701,17 @@ class _FileBrowserState extends State<FileBrowser> {
     } else if (transport == 'tailnet') {
       endpoint = currentCfg['endpoint'] as String? ?? '';
       remoteApproved = true;
+    } else if (transport == 'wireguard') {
+      endpoint = currentCfg['wireguard_endpoint'] as String? ?? '';
+      if (endpoint.isEmpty && currentCfg['transport'] == 'wireguard') {
+        endpoint = currentCfg['endpoint'] as String? ?? '';
+      }
+      remoteApproved = true;
     }
-    if ((transport == 'adb' || transport == 'ssh' || transport == 'tailnet') &&
+    if ((transport == 'adb' ||
+            transport == 'ssh' ||
+            transport == 'tailnet' ||
+            transport == 'wireguard') &&
         endpoint.isEmpty) {
       final changed = await showDialog<bool>(
         context: context,
@@ -1333,6 +1348,7 @@ class _FileBrowserState extends State<FileBrowser> {
                       children: [
                         for (final opt in [
                           ('lan', 'Wi-Fi / Direct LAN'),
+                          ('wireguard', 'WireGuard'),
                           ('adb', 'USB / Wireless ADB'),
                           ('ssh', 'SSH Tunnel'),
                           ('tailnet', 'Tailscale'),
@@ -1361,7 +1377,7 @@ class _FileBrowserState extends State<FileBrowser> {
               child: Column(
                 children: [
                   Text(
-                    'Verified download${receivedMode == 'tar' ? ' (streaming tar)' : ' (direct)'}\n${received!.split('/').last}\nVia ${connectionDisplayName(receivedTransport ?? 'lan')}${receivedMiB != null && receivedMiB! > 0 ? ' · ${receivedMiB!.toStringAsFixed(2)} MiB/s' : ''}',
+                    'Verified download${receivedMode == 'tar' ? ' (streaming tar)' : receivedMode == 'stream' ? ' (TCP stream)' : ' (direct)'}\n${received!.split('/').last}\nVia ${connectionDisplayName(receivedTransport ?? 'lan')}${receivedMiB != null && receivedMiB! > 0 ? ' · ${receivedMiB!.toStringAsFixed(2)} MiB/s' : ''}',
                     textAlign: TextAlign.center,
                     style: const TextStyle(fontSize: 12),
                   ),

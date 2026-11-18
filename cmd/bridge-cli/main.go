@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"devicebridge/internal/auth"
+	"devicebridge/internal/bootstrap"
 	"devicebridge/internal/client"
 	"devicebridge/internal/discovery"
 	"devicebridge/internal/platform"
@@ -13,6 +14,7 @@ import (
 	"devicebridge/internal/transport/direct"
 	"devicebridge/internal/transport/tailnet"
 	"devicebridge/internal/transport/tailscaled"
+	"devicebridge/internal/transport/wireguard"
 	"devicebridge/protocol"
 	"encoding/json"
 	"errors"
@@ -174,6 +176,7 @@ func run() error {
 	transportID := flag.String("transport", "lan", "lan, adb, ssh, or explicitly selected tailnet")
 	controlSocket := flag.String("tailnet-socket", "", "private app-only tsnet control socket")
 	tailnetMode := flag.String("tailnet-mode", "auto", "auto prefers existing system tailscaled; app explicitly selects tsnet")
+	wgBackend := flag.String("wg-backend", wireguard.BackendAuto, "WireGuard backend: auto, userspace, or kernel")
 	remoteApproved := flag.Bool("approve-remote", false, "explicitly allow internet/relay data for this request")
 	allowFallback := flag.Bool("allow-route-fallback", false, "allow approved alternate-route resume on disruption")
 	flag.Parse()
@@ -281,7 +284,24 @@ func run() error {
 			return e
 		}
 		return output(map[string]string{"theme": selected})
-	case "init", "identity":
+	case "init":
+		if ex, e := s.Exports(); e == nil && len(ex) == 0 {
+			if runtime.GOOS != "android" {
+				if home, he := os.UserHomeDir(); he == nil && home != "" {
+					_ = s.Export("home", home)
+				}
+				_ = s.Export("filesystem", "/")
+			} else {
+				if _, se := os.ReadDir("/storage/emulated/0"); se == nil {
+					_ = s.Export("phone_storage", "/storage/emulated/0")
+				}
+				if _, te := os.ReadDir("/data/data/com.termux/files/home"); te == nil {
+					_ = s.Export("termux_home", "/data/data/com.termux/files/home")
+				}
+			}
+		}
+		return output(protocol.Device{Version: 1, ID: id.ID, Name: id.Name, Features: []string{"remote-files-v1"}})
+	case "identity":
 		return output(protocol.Device{Version: 1, ID: id.ID, Name: id.Name, Features: []string{"remote-files-v1"}})
 	case "networks":
 		interfaces, e := net.Interfaces()
@@ -336,7 +356,15 @@ func run() error {
 			return errors.New("approve FULL_DEVICE_ID [ROOT_IDS_COMMA_SEPARATED] [TTL=24h] [BYTE_QUOTA=10737418240]")
 		}
 		roots := []string{}
-		if len(a) > 2 && a[2] != "" {
+		if len(a) > 2 && a[2] == "all" {
+			ex, exErr := s.Exports()
+			if exErr != nil {
+				return exErr
+			}
+			for _, e := range ex {
+				roots = append(roots, e.ID)
+			}
+		} else if len(a) > 2 && a[2] != "" {
 			roots = strings.Split(a[2], ",")
 		}
 		ttl := 24 * time.Hour
@@ -372,6 +400,94 @@ func run() error {
 			return err
 		}
 		return output(map[string]string{"status": "removed"})
+	case "ssh-probe":
+		if len(a) < 2 || len(a) > 3 {
+			return errors.New("ssh-probe HOST [PORT]")
+		}
+		port := 22
+		if len(a) == 3 {
+			_, _ = fmt.Sscan(a[2], &port)
+		}
+		probe, pe := bootstrap.InspectHost(context.Background(), a[1], port)
+		if pe != nil {
+			return pe
+		}
+		return output(probe)
+	case "ssh-bootstrap":
+		if len(a) != 2 || a[1] != "-" {
+			return errors.New("ssh-bootstrap - (reads JSON request from stdin)")
+		}
+		rawReq, re := io.ReadAll(io.LimitReader(os.Stdin, 65536))
+		if re != nil {
+			return re
+		}
+		var req bootstrap.Request
+		if re = json.Unmarshal(rawReq, &req); re != nil {
+			return re
+		}
+		req.LocalIface = *iface
+		req.LocalCIDR = *cidr
+		res, be := bootstrap.Bootstrap(context.Background(), s, id, req)
+		if be != nil {
+			return be
+		}
+		return output(res)
+	case "wireguard":
+		if len(a) < 2 {
+			return errors.New("wireguard status|init|add-peer|probe")
+		}
+		switch a[1] {
+		case "status", "init":
+			tunnelIP := ""
+			if len(a) > 2 {
+				tunnelIP = a[2]
+			}
+			cfg, we := wireguard.LoadOrInitConfig(*state, tunnelIP, 51820)
+			if we != nil {
+				return we
+			}
+			return output(map[string]any{
+				"backend":         wireguard.DetectBackend(*wgBackend),
+				"public_key":      cfg.PublicKey,
+				"local_tunnel_ip": cfg.LocalTunnelIP,
+				"listen_port":     cfg.ListenPort,
+				"peers":           cfg.Peers,
+			})
+		case "add-peer":
+			if len(a) != 3 || a[2] != "-" {
+				return errors.New("wireguard add-peer - (reads PeerConfig JSON from stdin)")
+			}
+			rawP, re := io.ReadAll(io.LimitReader(os.Stdin, 16384))
+			if re != nil {
+				return re
+			}
+			var peerCfg wireguard.PeerConfig
+			if re = json.Unmarshal(rawP, &peerCfg); re != nil {
+				return re
+			}
+			cfg, we := wireguard.UpsertPeer(*state, peerCfg)
+			if we != nil {
+				return we
+			}
+			return output(map[string]any{"status": "peer_saved", "peers": cfg.Peers})
+		case "probe":
+			if len(a) != 3 {
+				return errors.New("wireguard probe TUNNEL_IP:PORT")
+			}
+			wp := &wireguard.Provider{
+				StateDir:       *state,
+				Control:        tailnetipc.Client{Socket: filepath.Join(*state, "wireguard", "control.sock")},
+				RemoteApproved: *remoteApproved,
+				BackendMode:    *wgBackend,
+			}
+			cand, we := wp.Probe(context.Background(), transport.Candidate{Endpoint: a[2], Transport: wp.ID()})
+			if we != nil {
+				return we
+			}
+			return output(cand)
+		default:
+			return errors.New("unknown wireguard subcommand")
+		}
 	}
 	var p *direct.Provider
 	switch *transportID {
@@ -386,7 +502,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-	case "tailnet":
+	case "tailnet", "wireguard":
 	default:
 		return errors.New("unsupported selected transport")
 	}
@@ -404,6 +520,16 @@ func run() error {
 		c.overlay, err = openOverlay(ctx, *state, *controlSocket, *tailnetMode, *remoteApproved)
 		if err != nil {
 			return err
+		}
+		if err = reg.Register(c.overlay); err != nil {
+			return err
+		}
+	} else if *transportID == "wireguard" {
+		c.overlay = &wireguard.Provider{
+			StateDir:       *state,
+			Control:        tailnetipc.Client{Socket: filepath.Join(*state, "wireguard", "control.sock")},
+			RemoteApproved: *remoteApproved,
+			BackendMode:    *wgBackend,
 		}
 		if err = reg.Register(c.overlay); err != nil {
 			return err
@@ -454,12 +580,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if c.endpoint == "" && (*transportID == "adb" || *transportID == "ssh") {
+	if c.endpoint == "" && (*transportID == "adb" || *transportID == "ssh" || *transportID == "wireguard") {
 		if savedConn, ce := s.Connection(peer.ID, nil); ce == nil {
 			if *transportID == "adb" && savedConn.AdbEndpoint != "" {
 				c.endpoint = savedConn.AdbEndpoint
 			} else if *transportID == "ssh" && savedConn.SshEndpoint != "" {
 				c.endpoint = savedConn.SshEndpoint
+			} else if *transportID == "wireguard" && savedConn.WireGuardEndpoint != "" {
+				c.endpoint = savedConn.WireGuardEndpoint
 			} else if savedConn.Transport == *transportID && savedConn.Endpoint != "" {
 				c.endpoint = savedConn.Endpoint
 			}
@@ -591,6 +719,32 @@ func run() error {
 									return nil, "", nil, e
 								}
 								ac := &command{state: s, identity: id, provider: lp, endpoint: rEp, ctx: actx}
+								acl, cand, e := ac.connect(peer.ID, true)
+								if e != nil {
+									return nil, "", nil, e
+								}
+								return acl, cand.Endpoint, acl.Close, nil
+							},
+						})
+					case "wireguard":
+						wEp := savedConn.WireGuardEndpoint
+						if wEp == "" && savedConn.Transport == "wireguard" {
+							wEp = savedConn.Endpoint
+						}
+						if wEp == "" {
+							continue
+						}
+						wgEp := wEp
+						alts = append(alts, transfer.AlternateSource{
+							Name: "wireguard",
+							Open: func(actx context.Context) (transfer.Source, string, func(), error) {
+								ov := &wireguard.Provider{
+									StateDir:       *state,
+									Control:        tailnetipc.Client{Socket: filepath.Join(*state, "wireguard", "control.sock")},
+									RemoteApproved: true,
+									BackendMode:    *wgBackend,
+								}
+								ac := &command{state: s, identity: id, overlay: ov, endpoint: wgEp, ctx: actx}
 								acl, cand, e := ac.connect(peer.ID, true)
 								if e != nil {
 									return nil, "", nil, e

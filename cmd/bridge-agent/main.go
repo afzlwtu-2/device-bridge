@@ -54,10 +54,20 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if len(exports) == 0 {
+		if home, he := os.UserHomeDir(); he == nil && home != "" {
+			_ = s.Export("home", home)
+		}
+		_ = s.Export("filesystem", "/")
+		if _, se := os.ReadDir("/storage/emulated/0"); se == nil {
+			_ = s.Export("phone_storage", "/storage/emulated/0")
+		}
+		exports, _ = s.Exports()
+	}
 	for _, e := range exports {
 		f, err := filesproviders.NewNative(e.ID, e.Path)
 		if err != nil {
-			return err
+			continue
 		}
 		if err = providers.Register(f); err != nil {
 			f.Close()
