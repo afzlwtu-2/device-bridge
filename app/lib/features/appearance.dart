@@ -22,7 +22,7 @@ class AppearanceSurface extends StatelessWidget {
     children: [
       if (appearance == 'matte')
         const ColoredBox(
-          color: Color(0xffb5be68),
+          color: Color(0xffa3ad4c),
           child: CustomPaint(painter: _MattePaperArt()),
         ),
       child,
@@ -50,68 +50,6 @@ class MatteMeadowFooter extends StatelessWidget {
       child: CustomPaint(painter: _MatteMeadowPainter()),
     ),
   );
-}
-
-/// Olive matte-paper textured container with subtle corner sprouts for the bottom bar.
-class MatteNavBarSurface extends StatelessWidget {
-  const MatteNavBarSurface({super.key, required this.child});
-  final Widget child;
-  @override
-  Widget build(BuildContext context) => CustomPaint(
-    painter: _MatteNavBarPainter(),
-    child: child,
-  );
-}
-
-class _MatteNavBarPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xff929e3a));
-    // Subtle paper grain.
-    final grain = Paint()
-      ..color = const Color(0x141b1e14)
-      ..strokeWidth = 0.7;
-    var value = 192837;
-    for (var i = 0; i < 360; i++) {
-      value = (value * 48271) % 2147483647;
-      final x = value / 2147483647 * size.width;
-      value = (value * 48271) % 2147483647;
-      final y = value / 2147483647 * size.height;
-      canvas.drawLine(Offset(x, y), Offset(x + 0.8, y + 0.15), grain);
-    }
-    // Delicate ink grass blades & tiny dots tucked into the bottom edges.
-    final ink = Paint()
-      ..color = const Color(0xff1b1e14)
-      ..strokeWidth = 1.7
-      ..strokeCap = StrokeCap.round;
-    for (final bx in [18.0, size.width - 18.0]) {
-      final by = size.height - 8;
-      canvas.drawLine(Offset(bx, by), Offset(bx - 5, by - 7), ink);
-      canvas.drawLine(Offset(bx, by), Offset(bx, by - 9), ink);
-      canvas.drawLine(Offset(bx, by), Offset(bx + 5, by - 7), ink);
-    }
-    canvas.drawCircle(
-      Offset(34, size.height - 12),
-      2.6,
-      Paint()..color = const Color(0xffe5b93c),
-    );
-    canvas.drawCircle(
-      Offset(size.width - 34, size.height - 12),
-      2.6,
-      Paint()..color = const Color(0xfff7f3dd),
-    );
-    // Crisp top ink border matching AppBar.
-    canvas.drawLine(
-      Offset.zero,
-      Offset(size.width, 0),
-      Paint()
-        ..color = const Color(0xff1b1e14)
-        ..strokeWidth = 2.0,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _MatteNavBarPainter oldDelegate) => false;
 }
 
 class _EdgeGlow extends CustomPainter {
@@ -480,7 +418,6 @@ ThemeData mattePaperTheme() {
   const ink = Color(0xff1b1e14),
       cream = Color(0xfff7f3dd),
       olive = Color(0xff4e5c1f),
-      oliveBar = Color(0xff929e3a),
       gold = Color(0xffe5b93c);
   final scheme = ColorScheme.fromSeed(seedColor: olive).copyWith(
     primary: olive,
@@ -505,11 +442,11 @@ ThemeData mattePaperTheme() {
     useMaterial3: true,
     scaffoldBackgroundColor: Colors.transparent,
     appBarTheme: const AppBarTheme(
-      backgroundColor: oliveBar,
+      backgroundColor: Colors.transparent,
       foregroundColor: ink,
       surfaceTintColor: Colors.transparent,
       elevation: 0,
-      shape: Border(bottom: BorderSide(color: ink, width: 2.0)),
+      scrolledUnderElevation: 0,
     ),
     navigationBarTheme: NavigationBarThemeData(
       backgroundColor: Colors.transparent,

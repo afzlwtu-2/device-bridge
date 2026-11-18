@@ -411,28 +411,23 @@ class _BridgeHomeState extends State<BridgeHome> {
         ),
       ),
     ),
-    bottomNavigationBar: () {
-      final bar = NavigationBar(
-        selectedIndex: tab,
-        onDestinationSelected: (v) => setState(() => tab = v),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home),
-            label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.devices_outlined),
-            label: 'Devices',
-          ),
-          NavigationDestination(icon: Icon(Icons.send_outlined), label: 'Share'),
-          NavigationDestination(icon: Icon(Icons.sync_outlined), label: 'Sync'),
-        ],
-      );
-      return Theme.of(context).appBarTheme.shape != null
-          ? MatteNavBarSurface(child: bar)
-          : bar;
-    }(),
+    bottomNavigationBar: NavigationBar(
+      selectedIndex: tab,
+      onDestinationSelected: (v) => setState(() => tab = v),
+      destinations: const [
+        NavigationDestination(
+          icon: Icon(Icons.home_outlined),
+          selectedIcon: Icon(Icons.home),
+          label: 'Home',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.devices_outlined),
+          label: 'Devices',
+        ),
+        NavigationDestination(icon: Icon(Icons.send_outlined), label: 'Share'),
+        NavigationDestination(icon: Icon(Icons.sync_outlined), label: 'Sync'),
+      ],
+    ),
   );
   Widget home() => ListView(
     padding: const EdgeInsets.all(24),
@@ -508,7 +503,7 @@ class _BridgeHomeState extends State<BridgeHome> {
       const Text(
         'Pulls are one-time downloads. They never register a folder for synchronization.',
       ),
-      if (Theme.of(context).appBarTheme.shape != null)
+      if (Theme.of(context).scaffoldBackgroundColor == Colors.transparent)
         const MatteMeadowFooter(),
     ],
   );
@@ -550,7 +545,7 @@ class _BridgeHomeState extends State<BridgeHome> {
           ),
         ),
       ],
-      if (Theme.of(context).appBarTheme.shape != null)
+      if (Theme.of(context).scaffoldBackgroundColor == Colors.transparent)
         const MatteMeadowFooter(),
     ],
   );
@@ -620,7 +615,7 @@ class _BridgeHomeState extends State<BridgeHome> {
           Text(title, style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 12),
           Text(detail, textAlign: TextAlign.center),
-          if (Theme.of(context).appBarTheme.shape != null)
+          if (Theme.of(context).scaffoldBackgroundColor == Colors.transparent)
             const MatteMeadowFooter(),
         ],
       ),
