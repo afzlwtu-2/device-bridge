@@ -340,6 +340,8 @@ void main() {
     final core = FakeCore();
     await tester.pumpWidget(DeviceBridgeApp(core: core));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Devices').last);
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Pair device'));
     await tester.pumpAndSettle();
     await tester.enterText(
@@ -373,6 +375,12 @@ void main() {
       }
       expect(find.text('Terminal'), findsNothing);
       expect(find.text('File manager'), findsNothing);
+      expect(find.text('Find devices'), findsNothing);
+      expect(find.text('Pair device'), findsNothing);
+      expect(find.text('Create invitation'), findsNothing);
+      expect(find.text('Setup via SSH'), findsNothing);
+      expect(find.text('Select LAN'), findsOneWidget);
+      expect(find.text('Local storage & readiness'), findsOneWidget);
       expect(find.text('Laptop'), findsNothing);
       expect(find.textContaining('10.0.0.5:8731'), findsNothing);
       expect(core.calls.any((c) => c.first == 'list'), isFalse);
@@ -385,6 +393,8 @@ void main() {
 
       await tester.tap(find.text('Devices').last);
       await tester.pumpAndSettle();
+      expect(find.text('Create invitation'), findsOneWidget);
+      expect(find.text('Setup via SSH'), findsOneWidget);
       await tester.ensureVisible(find.text('Laptop'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Laptop'));
@@ -463,6 +473,10 @@ void main() {
       expect(find.text('Remove arch-laptop?'), findsNothing);
       expect(find.textContaining('This device is revoked'), findsOneWidget);
       expect(find.text('Revoke device'), findsNothing);
+      await tester.tap(find.text('Direct Wi-Fi LAN'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Connection failed ·'), findsOneWidget);
+      expect(find.text('Failed'), findsOneWidget);
       final detailScroll = find.descendant(
         of: find.byType(ListView).last,
         matching: find.byType(Scrollable),
@@ -477,7 +491,7 @@ void main() {
   );
 
   testWidgets(
-    'Device details shows OSI Layer 4, device info, toggles, and target SSH commands',
+    'Device details filters usable connections, shows connection details, toggles, and target SSH commands',
     (tester) async {
       final core = FakeCore();
       await tester.pumpWidget(DeviceBridgeApp(core: core));
@@ -487,11 +501,27 @@ void main() {
       await tester.tap(find.text('Laptop'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Connection & OSI Layer 4'), findsOneWidget);
+      expect(find.text('Connection details'), findsOneWidget);
       expect(
-        find.textContaining('TCP (TLS 1.3 mTLS) · UDP 8732 (mDNS discovery)'),
+        find.textContaining('Method: Direct Wi-Fi LAN · TLS 1.3 mTLS'),
         findsOneWidget,
       );
+      expect(find.text('Direct Wi-Fi LAN'), findsOneWidget);
+      expect(find.textContaining('192.168.50.2/24'), findsNothing);
+      expect(find.text('192.168.50.3:8731'), findsOneWidget);
+      expect(find.text('WireGuard'), findsNothing);
+      expect(find.text('USB / Wireless ADB'), findsNothing);
+      expect(find.text('SSH tunnel'), findsNothing);
+      await tester.ensureVisible(find.text('Direct Wi-Fi LAN'));
+      await tester.tap(find.text('Direct Wi-Fi LAN'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining(
+          'Connection successful · Ping 1.0 ms · 192.168.50.3:8731',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('1.0 ms'), findsOneWidget);
 
       final detailScroll = find.descendant(
         of: find.byType(ListView).last,
@@ -599,7 +629,7 @@ void main() {
     await tester.tap(find.text('Matte paper'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
-    expect(find.text('Find devices'), findsOneWidget);
+    expect(find.text('Select LAN'), findsOneWidget);
 
     await tester.tap(find.byTooltip('Appearance'));
     await tester.pumpAndSettle();

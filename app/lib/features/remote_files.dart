@@ -29,8 +29,13 @@ class DeviceDetail extends StatefulWidget {
 class _DeviceDetailState extends State<DeviceDetail> {
   bool busy = true;
   String? offlineNote;
+  String? testingTransport, testedTransport, testMessage;
+  bool? testSuccess;
+  double? testPingMs;
   List<dynamic> roots = [];
   List<dynamic> tailnetNodes = [];
+  List<dynamic> wgPeers = [];
+  bool tailnetRunning = false;
   Map<String, dynamic>? route;
   Map<String, dynamic>? connectionCfg;
   @override
@@ -63,9 +68,17 @@ class _DeviceDetailState extends State<DeviceDetail> {
     }
     try {
       final st = await widget.core.run(['tailnet', 'status']) as Map;
+      tailnetRunning = st['state'] == 'Running';
       tailnetNodes = st['peers'] as List? ?? [];
     } catch (_) {
+      tailnetRunning = false;
       tailnetNodes = [];
+    }
+    try {
+      final wg = await widget.core.run(['wireguard', 'status']) as Map;
+      wgPeers = wg['peers'] as List? ?? [];
+    } catch (_) {
+      wgPeers = [];
     }
     if (widget.peer['status'] == 'revoked') {
       route = null;
@@ -101,7 +114,12 @@ class _DeviceDetailState extends State<DeviceDetail> {
     setState(() {
       busy = true;
       offlineNote = null;
+      testingTransport = transport;
+      testSuccess = null;
+      testPingMs = null;
+      testMessage = 'Testing ${_methodLabel(transport)}…';
     });
+    final sw = Stopwatch()..start();
     try {
       final current = connectionCfg ?? <String, dynamic>{};
       await widget.core.run(
@@ -117,6 +135,58 @@ class _DeviceDetailState extends State<DeviceDetail> {
       offlineNote = _friendlyError(e);
     }
     await load();
+    sw.stop();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      testingTransport = null;
+      testedTransport = transport;
+      if (route != null) {
+        final rttNs = route!['rtt'] as num? ?? 0;
+        final ms = rttNs > 0
+            ? rttNs / 1000000.0
+            : sw.elapsedMicroseconds / 1000.0;
+        testSuccess = true;
+        testPingMs = ms;
+        testMessage =
+            'Connection successful · Ping ${ms.toStringAsFixed(1)} ms · ${route!['endpoint']}';
+      } else {
+        testSuccess = false;
+        testPingMs = null;
+        testMessage =
+            'Connection failed · ${offlineNote ?? 'Device not reachable'}';
+      }
+    });
+  }
+
+  Widget? _connectionTrailing(String id) {
+    if (testingTransport == id) {
+      return const SizedBox(
+        width: 18,
+        height: 18,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+    if (testedTransport == id && testSuccess == true && testPingMs != null) {
+      return Text(
+        '${testPingMs!.toStringAsFixed(1)} ms',
+        style: TextStyle(
+          color: Theme.of(context).colorScheme.primary,
+          fontWeight: FontWeight.w600,
+        ),
+      );
+    }
+    if (testedTransport == id && testSuccess == false) {
+      return Text(
+        'Failed',
+        style: TextStyle(
+          color: Theme.of(context).colorScheme.error,
+          fontWeight: FontWeight.w600,
+        ),
+      );
+    }
+    return null;
   }
 
   String routeTitle(String? transport) => switch (transport) {
@@ -135,18 +205,6 @@ class _DeviceDetailState extends State<DeviceDetail> {
     'adb' => 'USB / Wireless ADB',
     'ssh' => 'SSH tunnel',
     _ => transport,
-  };
-
-  String _layer4Summary(String transport) => switch (transport) {
-    'direct-lan-v1' || 'lan' =>
-      'TCP (TLS 1.3 mTLS) · UDP 8732 (mDNS discovery)',
-    'tailnet' =>
-      'UDP (WireGuard tsnet/Tailscale) + TCP (TLS 1.3 mTLS)',
-    'wireguard' || 'wireguard-v1' =>
-      'UDP 51820 (WireGuard) + TCP (TLS 1.3 mTLS)',
-    'adb' => 'TCP loopback (ADB forward · TLS 1.3 mTLS)',
-    'ssh' => 'TCP/22 (SSH port-forward) + TCP (TLS 1.3 mTLS)',
-    _ => 'TCP (TLS 1.3 mTLS)',
   };
 
   String? _hostFromEndpoint(Object? raw) {
@@ -175,16 +233,90 @@ class _DeviceDetailState extends State<DeviceDetail> {
     final fallbacks = (connectionCfg?['fallback_transports'] as List? ?? const [])
         .whereType<String>()
         .toList();
+    final peerLower = '${widget.peer['name'] ?? ''}'.trim().toLowerCase();
     String? tailnetEp;
-    for (final node in tailnetNodes) {
-      final ips = (node['ips'] as List? ?? const [])
-          .whereType<String>()
-          .where((ip) => !ip.contains(':'));
-      if (ips.isNotEmpty) {
-        tailnetEp = '${ips.first}:8731';
+    if (tailnetRunning) {
+      String? fallbackTailnetEp;
+      for (final node in tailnetNodes) {
+        if (node['online'] != true) {
+          continue;
+        }
+        final ips = (node['ips'] as List? ?? const [])
+            .whereType<String>()
+            .where((ip) => !ip.contains(':'));
+        if (ips.isEmpty) {
+          continue;
+        }
+        final ep = '${ips.first}:8731';
+        final nodeName = '${node['name'] ?? ''}'.trim().toLowerCase();
+        if (peerLower.isNotEmpty &&
+            nodeName.isNotEmpty &&
+            (nodeName == peerLower ||
+                nodeName.contains(peerLower) ||
+                peerLower.contains(nodeName))) {
+          tailnetEp = ep;
+          break;
+        }
+        fallbackTailnetEp ??= ep;
+      }
+      if (tailnetEp == null &&
+          tailnetNodes.where((n) => n['online'] == true).length == 1) {
+        tailnetEp = fallbackTailnetEp;
+      }
+    }
+    if (tailnetEp == null &&
+        activeTransport == 'tailnet' &&
+        '${connectionCfg?['endpoint'] ?? ''}'.isNotEmpty) {
+      tailnetEp = connectionCfg!['endpoint'] as String;
+    }
+    String? wgPeerEp;
+    for (final p in wgPeers) {
+      final ep = '${p['endpoint'] ?? p['tunnel_ip'] ?? ''}'.trim();
+      if (ep.isNotEmpty) {
+        wgPeerEp = ep.contains(':') ? ep : '$ep:8731';
         break;
       }
     }
+    String? lanSavedEp;
+    String? loopbackEp;
+    for (final addr in addresses) {
+      final ep = '${addr['endpoint'] ?? ''}'.trim();
+      if (ep.startsWith('127.0.0.1:')) {
+        loopbackEp ??= ep;
+      } else if (ep.isNotEmpty) {
+        lanSavedEp ??= ep;
+      }
+    }
+    final localIface = '${widget.core.network?['interface'] ?? ''}';
+    final localKind = '${widget.core.network?['kind'] ?? ''}';
+    final lanTitle = (localKind == 'wifi_direct' || localIface.startsWith('p2p'))
+        ? 'Wi-Fi Direct'
+        : ((localKind == 'hotspot' ||
+                  localIface.startsWith('ap') ||
+                  localIface.startsWith('swlan') ||
+                  localIface.startsWith('rndis'))
+              ? 'Mobile Hotspot'
+              : 'Direct Wi-Fi LAN');
+    final lanTargetIp =
+        (route?['transport'] == 'direct-lan-v1'
+            ? route!['endpoint'] as String?
+            : null) ??
+        lanSavedEp ??
+        'Discovered on ${localIface.isNotEmpty ? localIface : 'LAN'}';
+    final canLan =
+        widget.core.network != null ||
+        lanSavedEp != null ||
+        activeTransport == 'lan';
+    final canTailscale = tailnetEp != null || activeTransport == 'tailnet';
+    final effectiveWgEp = (wgEp != null && wgEp.isNotEmpty) ? wgEp : wgPeerEp;
+    final canWireguard =
+        effectiveWgEp != null || activeTransport == 'wireguard';
+    final effectiveAdbEp = (adbEp != null && adbEp.isNotEmpty)
+        ? adbEp
+        : loopbackEp;
+    final canAdb = effectiveAdbEp != null || activeTransport == 'adb';
+    final canSsh =
+        (sshEp != null && sshEp.isNotEmpty) || activeTransport == 'ssh';
     final activeEndpoint =
         (route?['endpoint'] as String?) ??
         (connectionCfg?['endpoint'] as String?) ??
@@ -271,19 +403,21 @@ class _DeviceDetailState extends State<DeviceDetail> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Connection & OSI Layer 4',
+                            'Connection details',
                             style: Theme.of(context).textTheme.titleSmall,
                           ),
                           const SizedBox(height: 6),
                           SelectableText(
-                            'Method: ${_methodLabel(effectiveTransport)}',
-                          ),
-                          SelectableText(
-                            'OSI Layer 4: ${_layer4Summary(effectiveTransport)}',
+                            'Method: ${_methodLabel(effectiveTransport)} · TLS 1.3 mTLS',
                           ),
                           if (activeEndpoint != null &&
                               activeEndpoint.isNotEmpty)
                             SelectableText('Endpoint: $activeEndpoint'),
+                          if (route?['interface'] != null &&
+                              '${route!['interface']}'.isNotEmpty)
+                            SelectableText(
+                              'Interface: ${route!['interface']}',
+                            ),
                           if (route?['path_kind'] != null)
                             SelectableText('Path: ${route!['path_kind']}'),
                           if (recordedSpeed > 0 && route == null)
@@ -373,21 +507,52 @@ class _DeviceDetailState extends State<DeviceDetail> {
                       ],
                     ),
                   ),
-                  ListTile(
-                    leading: Icon(
-                      activeTransport == 'lan'
-                          ? Icons.radio_button_checked
-                          : Icons.radio_button_unchecked,
+                  if (testingTransport != null)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 16),
+                      child: LinearProgressIndicator(),
                     ),
-                    title: const Text('Direct Wi-Fi LAN'),
-                    subtitle: Text(
-                      widget.core.network == null
-                          ? 'Approve a Wi-Fi network first'
-                          : '${widget.core.network!['interface']} · ${widget.core.network!['cidr']}',
+                  if (testMessage != null)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                      child: Row(
+                        children: [
+                          Icon(
+                            testSuccess == true
+                                ? Icons.check_circle_outline
+                                : (testSuccess == false
+                                      ? Icons.error_outline
+                                      : Icons.sync),
+                            size: 18,
+                            color: testSuccess == true
+                                ? Theme.of(context).colorScheme.primary
+                                : (testSuccess == false
+                                      ? Theme.of(context).colorScheme.error
+                                      : null),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: SelectableText(
+                              testMessage!,
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    onTap: busy ? null : () => selectConnection('lan'),
-                  ),
-                  if (tailnetNodes.isNotEmpty || activeTransport == 'tailnet')
+                  if (canLan)
+                    ListTile(
+                      leading: Icon(
+                        activeTransport == 'lan'
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                      ),
+                      title: Text(lanTitle),
+                      subtitle: Text(lanTargetIp),
+                      trailing: _connectionTrailing('lan'),
+                      onTap: busy ? null : () => selectConnection('lan'),
+                    ),
+                  if (canTailscale)
                     ListTile(
                       leading: Icon(
                         activeTransport == 'tailnet'
@@ -396,8 +561,9 @@ class _DeviceDetailState extends State<DeviceDetail> {
                       ),
                       title: const Text('Tailscale'),
                       subtitle: Text(
-                        tailnetEp ?? 'Connected node',
+                        tailnetEp ?? 'Tailscale peer unavailable',
                       ),
+                      trailing: _connectionTrailing('tailnet'),
                       onTap: busy || tailnetEp == null
                           ? null
                           : () => selectConnection(
@@ -406,51 +572,68 @@ class _DeviceDetailState extends State<DeviceDetail> {
                               remoteApproved: true,
                             ),
                     ),
-                  ListTile(
-                    leading: Icon(
-                      activeTransport == 'wireguard'
-                          ? Icons.radio_button_checked
-                          : Icons.radio_button_unchecked,
+                  if (canWireguard)
+                    ListTile(
+                      leading: Icon(
+                        activeTransport == 'wireguard'
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                      ),
+                      title: const Text('WireGuard'),
+                      subtitle: Text(effectiveWgEp ?? 'Configured tunnel'),
+                      trailing: _connectionTrailing('wireguard'),
+                      onTap: busy || effectiveWgEp == null
+                          ? null
+                          : () => selectConnection(
+                              'wireguard',
+                              endpoint: effectiveWgEp,
+                            ),
                     ),
-                    title: const Text('WireGuard'),
-                    subtitle: Text(wgEp ?? '10.77.0.1:8731'),
-                    onTap: busy
-                        ? null
-                        : () => selectConnection(
-                            'wireguard',
-                            endpoint: wgEp ?? '10.77.0.1:8731',
-                          ),
-                  ),
-                  ListTile(
-                    leading: Icon(
-                      activeTransport == 'adb'
-                          ? Icons.radio_button_checked
-                          : Icons.radio_button_unchecked,
+                  if (canAdb)
+                    ListTile(
+                      leading: Icon(
+                        activeTransport == 'adb'
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                      ),
+                      title: const Text('USB / Wireless ADB'),
+                      subtitle: Text(effectiveAdbEp ?? 'ADB loopback tunnel'),
+                      trailing: _connectionTrailing('adb'),
+                      onTap: busy || effectiveAdbEp == null
+                          ? null
+                          : () => selectConnection(
+                              'adb',
+                              endpoint: effectiveAdbEp,
+                            ),
                     ),
-                    title: const Text('USB / Wireless ADB'),
-                    subtitle: Text(adbEp ?? '127.0.0.1:8731'),
-                    onTap: busy
-                        ? null
-                        : () => selectConnection(
-                            'adb',
-                            endpoint: adbEp ?? '127.0.0.1:8731',
-                          ),
-                  ),
-                  ListTile(
-                    leading: Icon(
-                      activeTransport == 'ssh'
-                          ? Icons.radio_button_checked
-                          : Icons.radio_button_unchecked,
+                  if (canSsh)
+                    ListTile(
+                      leading: Icon(
+                        activeTransport == 'ssh'
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                      ),
+                      title: const Text('SSH tunnel'),
+                      subtitle: Text(sshEp ?? 'Configured SSH tunnel'),
+                      trailing: _connectionTrailing('ssh'),
+                      onTap: busy || sshEp == null
+                          ? null
+                          : () => selectConnection(
+                              'ssh',
+                              endpoint: sshEp,
+                            ),
                     ),
-                    title: const Text('SSH tunnel'),
-                    subtitle: Text(sshEp ?? '127.0.0.1:8731'),
-                    onTap: busy
-                        ? null
-                        : () => selectConnection(
-                            'ssh',
-                            endpoint: sshEp ?? '127.0.0.1:8731',
-                          ),
-                  ),
+                  if (!canLan &&
+                      !canTailscale &&
+                      !canWireguard &&
+                      !canAdb &&
+                      !canSsh)
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
+                      child: Text(
+                        'No active connection path detected. Use Custom… to configure a tunnel.',
+                      ),
+                    ),
                 ],
               ),
             ),

@@ -109,7 +109,7 @@ class _BridgeHomeState extends State<BridgeHome> {
   bool busy = true;
   String? error;
   List<dynamic> peers = [], candidates = [];
-  Map<String, dynamic>? identity;
+  Map<String, dynamic>? identity, capabilities;
   StreamSubscription<Map<String, dynamic>>? networkEvents;
   String? listenerState;
   Timer? networkRefresh;
@@ -149,6 +149,9 @@ class _BridgeHomeState extends State<BridgeHome> {
     identity = Map<String, dynamic>.from(
       await widget.core.run(['identity']) as Map,
     );
+    try {
+      capabilities = await widget.core.platformCapabilities();
+    } catch (_) {}
     await refreshPeers();
   });
   @override
@@ -452,18 +455,7 @@ class _BridgeHomeState extends State<BridgeHome> {
           ],
         ),
         IconButton(
-          onPressed: busy
-              ? null
-              : () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => ConnectionsHub(
-                      core: widget.core,
-                      listenerState: listenerState,
-                      onSelectNetwork: selectNetwork,
-                    ),
-                  ),
-                ),
+          onPressed: busy ? null : _openConnections,
           icon: const Icon(Icons.wifi),
           tooltip: 'Connections',
         ),
@@ -547,91 +539,167 @@ class _BridgeHomeState extends State<BridgeHome> {
       ],
     ),
   );
-  Widget home() => ListView(
-    padding: const EdgeInsets.all(24),
-    children: [
-      Text(
-        'Your devices. One connection.',
-        style: Theme.of(context).textTheme.headlineMedium,
+  Future<void> _openConnections() => Navigator.push(
+    context,
+    MaterialPageRoute<void>(
+      builder: (_) => ConnectionsHub(
+        core: widget.core,
+        listenerState: listenerState,
+        onSelectNetwork: selectNetwork,
       ),
-      const SizedBox(height: 10),
-      const Text(
-        'Browse approved folders and bring files home over your local network.',
-      ),
-      const SizedBox(height: 24),
-      Card(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                identity?['name'] as String? ?? 'Starting the core…',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                widget.core.network == null
-                    ? 'Choose a local network to begin'
-                    : 'Approved LAN · ${widget.core.network!['interface']} · ${widget.core.network!['cidr']}',
-              ),
-              const SizedBox(height: 16),
-              if (listenerState != null)
-                Text(switch (listenerState) {
-                  'active' => 'Discoverable on this LAN while the app is open',
-                  'approval_required' => 'New network · approval required',
-                  'offline' => 'Wi-Fi disconnected · transfers paused',
-                  'receiver_error' =>
-                    'LAN listener unavailable · choose network to retry',
-                  _ => 'Recovering LAN connection…',
-                }),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  FilledButton.icon(
-                    onPressed: busy ? null : discover,
-                    icon: const Icon(Icons.radar),
-                    label: const Text('Find devices'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: busy ? null : pair,
-                    icon: const Icon(Icons.link),
-                    label: const Text('Pair device'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: busy ? null : invite,
-                    icon: const Icon(Icons.qr_code),
-                    label: const Text('Create invitation'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: busy
-                        ? null
-                        : () async {
-                            final ok = await showDialog<bool>(
-                              context: context,
-                              builder: (_) =>
-                                  SshBootstrapDialog(core: widget.core),
-                            );
-                            if (ok == true) {
-                              await refreshPeers();
-                            }
-                          },
-                    icon: const Icon(Icons.terminal),
-                    label: const Text('Setup via SSH'),
-                  ),
+    ),
+  );
+
+  String _shortFingerprint(String? id) {
+    if (id == null || id.isEmpty) {
+      return '—';
+    }
+    if (id.length <= 20) {
+      return id;
+    }
+    return '${id.substring(0, 12)}…${id.substring(id.length - 6)}';
+  }
+
+  Widget home() {
+    final fullId = identity?['id'] as String?;
+    final pairedCount = peers.where((p) => p['status'] == 'paired').length;
+    final pendingCount = peers.where((p) => p['status'] == 'pending').length;
+    final revokedCount = peers.where((p) => p['status'] == 'revoked').length;
+    final safName = capabilities?['saf_tree_name'] as String?;
+    final termuxName = capabilities?['termux_tree_name'] as String?;
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        Text(
+          'Your devices. One connection.',
+          style: Theme.of(context).textTheme.headlineMedium,
+        ),
+        const SizedBox(height: 10),
+        const Text(
+          'Browse approved folders and bring files home over your local network.',
+        ),
+        const SizedBox(height: 24),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  identity?['name'] as String? ?? 'Starting the core…',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Expanded(
+                      child: SelectableText(
+                        'Device ID: ${_shortFingerprint(fullId)}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                    if (fullId != null && fullId.isNotEmpty)
+                      IconButton(
+                        tooltip: 'Copy device ID',
+                        icon: const Icon(Icons.copy_outlined, size: 18),
+                        onPressed: () {
+                          Clipboard.setData(ClipboardData(text: fullId));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Device ID copied'),
+                              duration: Duration(seconds: 2),
+                            ),
+                          );
+                        },
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  widget.core.network == null
+                      ? 'Choose a local network to begin'
+                      : 'Approved LAN · ${widget.core.network!['interface']} · ${widget.core.network!['cidr']}',
+                ),
+                if (listenerState != null) ...[
+                  const SizedBox(height: 6),
+                  Text(switch (listenerState) {
+                    'active' => 'Discoverable on this LAN while the app is open',
+                    'approval_required' => 'New network · approval required',
+                    'offline' => 'Wi-Fi disconnected · transfers paused',
+                    'receiver_error' =>
+                      'LAN listener unavailable · choose network to retry',
+                    _ => 'Recovering LAN connection…',
+                  }),
                 ],
-              ),
-            ],
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: busy ? null : selectNetwork,
+                      icon: const Icon(Icons.lan_outlined),
+                      label: const Text('Select LAN'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: busy ? null : _openConnections,
+                      icon: const Icon(Icons.hub_outlined),
+                      label: const Text('Transports'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
-      ),
-      const SizedBox(height: 24),
-      const Text(
-        'Pulls are one-time downloads. They never register a folder for synchronization.',
-      ),
-    ],
-  );
+        const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Local storage & readiness',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                SelectableText('Downloads: ${widget.core.downloads}'),
+                const SizedBox(height: 4),
+                Text(
+                  'All files access: ${capabilities?['all_files_access'] == true ? 'granted' : 'not granted'}'
+                  '${safName != null && safName.isNotEmpty ? ' · SAF: $safName' : ''}',
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'ADB: ${capabilities?['adb_enabled'] == true ? 'enabled' : 'off'}'
+                  ' · Termux: ${capabilities?['termux_installed'] == true ? (termuxName != null && termuxName.isNotEmpty ? termuxName : 'installed') : 'not detected'}',
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.devices_outlined),
+            title: Text('$pairedCount paired · $pendingCount pending'),
+            subtitle: Text(
+              '${candidates.length} active on LAN'
+              '${revokedCount > 0 ? ' · $revokedCount revoked' : ''}',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => setState(() => tab = 2),
+          ),
+        ),
+        const SizedBox(height: 20),
+        const Text(
+          'Pulls are one-time downloads. They never register a folder for synchronization.',
+        ),
+      ],
+    );
+  }
+
   Widget devices() => ListView(
     padding: const EdgeInsets.all(24),
     children: [
@@ -644,9 +712,30 @@ class _BridgeHomeState extends State<BridgeHome> {
             icon: const Icon(Icons.radar),
             label: const Text('Discover on LAN'),
           ),
-          OutlinedButton(
+          OutlinedButton.icon(
             onPressed: busy ? null : pair,
-            child: const Text('Pair device'),
+            icon: const Icon(Icons.link),
+            label: const Text('Pair device'),
+          ),
+          OutlinedButton.icon(
+            onPressed: busy ? null : invite,
+            icon: const Icon(Icons.qr_code),
+            label: const Text('Create invitation'),
+          ),
+          OutlinedButton.icon(
+            onPressed: busy
+                ? null
+                : () async {
+                    final ok = await showDialog<bool>(
+                      context: context,
+                      builder: (_) => SshBootstrapDialog(core: widget.core),
+                    );
+                    if (ok == true) {
+                      await refreshPeers();
+                    }
+                  },
+            icon: const Icon(Icons.terminal),
+            label: const Text('Setup via SSH'),
           ),
         ],
       ),
