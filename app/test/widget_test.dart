@@ -468,15 +468,21 @@ void main() {
       expect(find.text('arch-laptop'), findsNothing);
       await tester.tap(find.text('Devices').last);
       await tester.pumpAndSettle();
+      expect(
+        find.textContaining('No active devices yet.'),
+        findsOneWidget,
+      );
+      expect(find.text('Revoked devices (1)'), findsOneWidget);
       await tester.tap(find.text('arch-laptop'));
       await tester.pumpAndSettle();
       expect(find.text('Remove arch-laptop?'), findsNothing);
       expect(find.textContaining('This device is revoked'), findsOneWidget);
       expect(find.text('Revoke device'), findsNothing);
-      await tester.tap(find.text('Direct Wi-Fi LAN'));
-      await tester.pumpAndSettle();
-      expect(find.textContaining('Connection failed ·'), findsOneWidget);
-      expect(find.text('Failed'), findsOneWidget);
+      expect(
+        find.text('Device is revoked — remove or re-pair to use connections.'),
+        findsOneWidget,
+      );
+      expect(find.text('Direct Wi-Fi LAN'), findsNothing);
       final detailScroll = find.descendant(
         of: find.byType(ListView).last,
         matching: find.byType(Scrollable),

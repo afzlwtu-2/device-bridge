@@ -18,10 +18,12 @@ class DeviceDetail extends StatefulWidget {
     required this.core,
     required this.peer,
     required this.registry,
+    this.candidates = const [],
   });
   final CoreBridge core;
   final Map<String, dynamic> peer;
   final FeatureRegistry registry;
+  final List<dynamic> candidates;
   @override
   State<DeviceDetail> createState() => _DeviceDetailState();
 }
@@ -207,6 +209,36 @@ class _DeviceDetailState extends State<DeviceDetail> {
     _ => transport,
   };
 
+  bool _inSameSubnet(String? endpoint, String? cidr) {
+    if (endpoint == null || endpoint.isEmpty || cidr == null || cidr.isEmpty) {
+      return false;
+    }
+    final host = _hostFromEndpoint(endpoint);
+    final slash = cidr.indexOf('/');
+    if (host == null || slash <= 0) {
+      return false;
+    }
+    final ip = InternetAddress.tryParse(host);
+    final netIp = InternetAddress.tryParse(cidr.substring(0, slash));
+    final prefixLen = int.tryParse(cidr.substring(slash + 1));
+    if (ip == null ||
+        netIp == null ||
+        prefixLen == null ||
+        ip.type != InternetAddressType.IPv4 ||
+        netIp.type != InternetAddressType.IPv4 ||
+        prefixLen < 0 ||
+        prefixLen > 32) {
+      return false;
+    }
+    int toU32(InternetAddress a) {
+      final b = a.rawAddress;
+      return (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3];
+    }
+
+    final mask = prefixLen == 0 ? 0 : (~0 << (32 - prefixLen)) & 0xFFFFFFFF;
+    return (toU32(ip) & mask) == (toU32(netIp) & mask);
+  }
+
   String? _hostFromEndpoint(Object? raw) {
     final ep = '${raw ?? ''}'.trim();
     if (ep.isEmpty) {
@@ -277,18 +309,29 @@ class _DeviceDetailState extends State<DeviceDetail> {
         break;
       }
     }
-    String? lanSavedEp;
+    final localIface = '${widget.core.network?['interface'] ?? ''}';
+    final localCidr = widget.core.network?['cidr'] as String?;
+    final localKind = '${widget.core.network?['kind'] ?? ''}';
+    String? discoveredLanEp;
+    for (final v in widget.candidates) {
+      if (v['device_id'] == widget.peer['id']) {
+        final ep = '${v['endpoint'] ?? ''}'.trim();
+        if (ep.isNotEmpty && (localCidr == null || _inSameSubnet(ep, localCidr))) {
+          discoveredLanEp = ep;
+          break;
+        }
+      }
+    }
+    String? currentSubnetSavedEp;
     String? loopbackEp;
     for (final addr in addresses) {
       final ep = '${addr['endpoint'] ?? ''}'.trim();
       if (ep.startsWith('127.0.0.1:')) {
         loopbackEp ??= ep;
-      } else if (ep.isNotEmpty) {
-        lanSavedEp ??= ep;
+      } else if (ep.isNotEmpty && _inSameSubnet(ep, localCidr)) {
+        currentSubnetSavedEp ??= ep;
       }
     }
-    final localIface = '${widget.core.network?['interface'] ?? ''}';
-    final localKind = '${widget.core.network?['kind'] ?? ''}';
     final lanTitle = (localKind == 'wifi_direct' || localIface.startsWith('p2p'))
         ? 'Wi-Fi Direct'
         : ((localKind == 'hotspot' ||
@@ -301,27 +344,37 @@ class _DeviceDetailState extends State<DeviceDetail> {
         (route?['transport'] == 'direct-lan-v1'
             ? route!['endpoint'] as String?
             : null) ??
-        lanSavedEp ??
-        'Discovered on ${localIface.isNotEmpty ? localIface : 'LAN'}';
-    final canLan =
-        widget.core.network != null ||
-        lanSavedEp != null ||
-        activeTransport == 'lan';
-    final canTailscale = tailnetEp != null || activeTransport == 'tailnet';
+        discoveredLanEp ??
+        currentSubnetSavedEp ??
+        'Not seen on current Wi-Fi';
+    final canLan = !isRevoked &&
+        (widget.core.network != null ||
+            discoveredLanEp != null ||
+            currentSubnetSavedEp != null ||
+            activeTransport == 'lan');
+    final canTailscale =
+        !isRevoked && (tailnetEp != null || activeTransport == 'tailnet');
     final effectiveWgEp = (wgEp != null && wgEp.isNotEmpty) ? wgEp : wgPeerEp;
     final canWireguard =
-        effectiveWgEp != null || activeTransport == 'wireguard';
+        !isRevoked && (effectiveWgEp != null || activeTransport == 'wireguard');
     final effectiveAdbEp = (adbEp != null && adbEp.isNotEmpty)
         ? adbEp
         : loopbackEp;
-    final canAdb = effectiveAdbEp != null || activeTransport == 'adb';
+    final canAdb =
+        !isRevoked && (effectiveAdbEp != null || activeTransport == 'adb');
     final canSsh =
-        (sshEp != null && sshEp.isNotEmpty) || activeTransport == 'ssh';
+        !isRevoked && ((sshEp != null && sshEp.isNotEmpty) || activeTransport == 'ssh');
     final activeEndpoint =
         (route?['endpoint'] as String?) ??
-        (connectionCfg?['endpoint'] as String?) ??
-        (addresses.isNotEmpty ? '${addresses.first['endpoint']}' : null);
-    String? defaultHost = _hostFromEndpoint(route?['endpoint']);
+        (activeTransport != 'lan'
+            ? (connectionCfg?['endpoint'] as String?)
+            : null) ??
+        discoveredLanEp ??
+        currentSubnetSavedEp;
+    String? defaultHost = _hostFromEndpoint(route?['endpoint']) ??
+        _hostFromEndpoint(discoveredLanEp) ??
+        _hostFromEndpoint(currentSubnetSavedEp) ??
+        _hostFromEndpoint(tailnetEp);
     if (defaultHost == null) {
       for (final addr in addresses) {
         defaultHost = _hostFromEndpoint(addr['endpoint']);
@@ -330,7 +383,6 @@ class _DeviceDetailState extends State<DeviceDetail> {
         }
       }
     }
-    defaultHost ??= _hostFromEndpoint(tailnetEp);
     final recordedSpeed =
         (route?['mib_per_second'] as num?) ??
         (connectionCfg?['last_mib_per_second'] as num?) ??
@@ -628,10 +680,12 @@ class _DeviceDetailState extends State<DeviceDetail> {
                       !canWireguard &&
                       !canAdb &&
                       !canSsh)
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
                       child: Text(
-                        'No active connection path detected. Use Custom… to configure a tunnel.',
+                        isRevoked
+                            ? 'Device is revoked — remove or re-pair to use connections.'
+                            : 'No active connection path detected. Use Custom… to configure a tunnel.',
                       ),
                     ),
                 ],
@@ -659,7 +713,16 @@ class _DeviceDetailState extends State<DeviceDetail> {
                   for (final addr in addresses)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 4),
-                      child: SelectableText('LAN ${addr['endpoint']}'),
+                      child: SelectableText(() {
+                        final ep = '${addr['endpoint'] ?? ''}';
+                        if (ep.startsWith('127.0.0.1:')) {
+                          return 'Loopback tunnel: $ep';
+                        }
+                        if (_inSameSubnet(ep, localCidr)) {
+                          return 'Current Wi-Fi: $ep';
+                        }
+                        return 'Previous router: $ep';
+                      }()),
                     ),
                   if (addresses.isEmpty)
                     const Text('No saved addresses yet.'),

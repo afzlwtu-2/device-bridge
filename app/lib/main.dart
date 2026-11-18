@@ -700,124 +700,138 @@ class _BridgeHomeState extends State<BridgeHome> {
     );
   }
 
-  Widget devices() => ListView(
-    padding: const EdgeInsets.all(24),
-    children: [
-      Wrap(
-        spacing: 12,
-        runSpacing: 12,
-        children: [
-          FilledButton.icon(
-            onPressed: busy ? null : discover,
-            icon: const Icon(Icons.radar),
-            label: const Text('Discover on LAN'),
+  Widget devices() {
+    final activePeers = peers.where((p) => p['status'] != 'revoked').toList();
+    final revokedPeers = peers.where((p) => p['status'] == 'revoked').toList();
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            FilledButton.icon(
+              onPressed: busy ? null : discover,
+              icon: const Icon(Icons.radar),
+              label: const Text('Discover on LAN'),
+            ),
+            OutlinedButton.icon(
+              onPressed: busy ? null : pair,
+              icon: const Icon(Icons.link),
+              label: const Text('Pair device'),
+            ),
+            OutlinedButton.icon(
+              onPressed: busy ? null : invite,
+              icon: const Icon(Icons.qr_code),
+              label: const Text('Create invitation'),
+            ),
+            OutlinedButton.icon(
+              onPressed: busy
+                  ? null
+                  : () async {
+                      final ok = await showDialog<bool>(
+                        context: context,
+                        builder: (_) => SshBootstrapDialog(core: widget.core),
+                      );
+                      if (ok == true) {
+                        await refreshPeers();
+                      }
+                    },
+              icon: const Icon(Icons.terminal),
+              label: const Text('Setup via SSH'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 20),
+        ...activePeers.map(_peerCard),
+        if (activePeers.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 24),
+            child: Text(
+              'No active devices yet. Pair using an invitation from your other device.',
+            ),
           ),
-          OutlinedButton.icon(
-            onPressed: busy ? null : pair,
-            icon: const Icon(Icons.link),
-            label: const Text('Pair device'),
-          ),
-          OutlinedButton.icon(
-            onPressed: busy ? null : invite,
-            icon: const Icon(Icons.qr_code),
-            label: const Text('Create invitation'),
-          ),
-          OutlinedButton.icon(
-            onPressed: busy
-                ? null
-                : () async {
-                    final ok = await showDialog<bool>(
-                      context: context,
-                      builder: (_) => SshBootstrapDialog(core: widget.core),
-                    );
-                    if (ok == true) {
-                      await refreshPeers();
-                    }
-                  },
-            icon: const Icon(Icons.terminal),
-            label: const Text('Setup via SSH'),
+        if (candidates.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          const Text('LAN advertisements · identity verified when connecting'),
+          ...candidates.map(
+            (v) => ListTile(
+              leading: const Icon(Icons.wifi),
+              title: Text('${v['endpoint']}'),
+              subtitle: Text('${v['device_id']}'),
+            ),
           ),
         ],
-      ),
-      const SizedBox(height: 20),
-      ...peerCards(),
-      if (peers.isEmpty)
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 24),
-          child: Text(
-            'No paired devices yet. Pair using an invitation from your other device.',
+        if (revokedPeers.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          const Divider(),
+          const SizedBox(height: 8),
+          Text(
+            'Revoked devices (${revokedPeers.length})',
+            style: Theme.of(context).textTheme.titleMedium,
           ),
-        ),
-      if (candidates.isNotEmpty) ...[
-        const SizedBox(height: 24),
-        const Text('LAN advertisements · identity verified when connecting'),
-        ...candidates.map(
-          (v) => ListTile(
-            leading: const Icon(Icons.wifi),
-            title: Text('${v['endpoint']}'),
-            subtitle: Text('${v['device_id']}'),
-          ),
-        ),
+          const SizedBox(height: 8),
+          ...revokedPeers.map(_peerCard),
+        ],
       ],
-    ],
+    );
+  }
+
+  Widget _peerCard(dynamic p) => Card(
+    child: ListTile(
+      leading: Icon(
+        p['status'] == 'revoked' ? Icons.block_outlined : Icons.computer,
+      ),
+      title: Text('${p['name']}'),
+      subtitle: DeviceAddresses(
+        peer: Map<String, dynamic>.from(p),
+        candidates: candidates,
+      ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: busy
+          ? null
+          : () async {
+              if (p['status'] == 'pending') {
+                final allow = await showDialog<bool>(
+                  context: context,
+                  builder: (_) =>
+                      IncomingPairDialog(peer: Map<String, dynamic>.from(p)),
+                );
+                if (allow != null) {
+                  await task(() async {
+                    await widget.core.run([
+                      'approve',
+                      p['id'] as String,
+                      allow ? 'all' : '',
+                      '8760h',
+                      '1099511627776',
+                    ]);
+                    await refreshPeers();
+                  });
+                }
+              } else if (p['status'] == 'outbound') {
+                await task(() async {
+                  await widget.core.run(['finish', p['id'] as String]);
+                  await refreshPeers();
+                });
+              } else if (p['status'] == 'paired' ||
+                  p['status'] == 'revoked') {
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => DeviceDetail(
+                      core: widget.core,
+                      peer: Map<String, dynamic>.from(p),
+                      registry: registry,
+                      candidates: candidates,
+                    ),
+                  ),
+                );
+                await task(refreshPeers);
+              }
+            },
+    ),
   );
-  List<Widget> peerCards() => peers
-      .map(
-        (p) => Card(
-          child: ListTile(
-            leading: const Icon(Icons.computer),
-            title: Text('${p['name']}'),
-            subtitle: DeviceAddresses(
-              peer: Map<String, dynamic>.from(p),
-              candidates: candidates,
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: busy
-                ? null
-                : () async {
-                    if (p['status'] == 'pending') {
-                      final allow = await showDialog<bool>(
-                        context: context,
-                        builder: (_) => IncomingPairDialog(
-                          peer: Map<String, dynamic>.from(p),
-                        ),
-                      );
-                      if (allow != null) {
-                        await task(() async {
-                          await widget.core.run([
-                            'approve',
-                            p['id'] as String,
-                            allow ? 'all' : '',
-                            '8760h',
-                            '1099511627776',
-                          ]);
-                          await refreshPeers();
-                        });
-                      }
-                    } else if (p['status'] == 'outbound') {
-                      await task(() async {
-                        await widget.core.run(['finish', p['id'] as String]);
-                        await refreshPeers();
-                      });
-                    } else if (p['status'] == 'paired' ||
-                        p['status'] == 'revoked') {
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute<void>(
-                          builder: (_) => DeviceDetail(
-                            core: widget.core,
-                            peer: Map<String, dynamic>.from(p),
-                            registry: registry,
-                          ),
-                        ),
-                      );
-                      await task(refreshPeers);
-                    }
-                  },
-          ),
-        ),
-      )
-      .toList();
   Widget unavailable(String title, String detail, IconData icon) => Center(
     child: Padding(
       padding: const EdgeInsets.all(32),
