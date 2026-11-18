@@ -17,8 +17,6 @@ import 'features/matte_editor.dart';
 import 'features/settings_screen.dart';
 import 'features/phone_files.dart';
 
-import 'dart:io';
-
 void main() => runApp(DeviceBridgeApp(core: LocalCore()));
 
 class DeviceBridgeApp extends StatefulWidget {
@@ -591,12 +589,6 @@ class _BridgeHomeState extends State<BridgeHome> {
                 spacing: 12,
                 runSpacing: 12,
                 children: [
-                  if (Platform.isAndroid)
-                    OutlinedButton.icon(
-                      onPressed: busy ? null : () => setState(() => tab = 1),
-                      icon: const Icon(Icons.folder_open_outlined),
-                      label: const Text('File manager'),
-                    ),
                   FilledButton.icon(
                     onPressed: busy ? null : discover,
                     icon: const Icon(Icons.radar),

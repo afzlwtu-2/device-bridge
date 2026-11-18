@@ -351,6 +351,7 @@ void main() {
         expect(find.text(label), findsWidgets);
       }
       expect(find.text('Terminal'), findsNothing);
+      expect(find.text('File manager'), findsNothing);
       expect(find.textContaining('10.0.0.5:8731'), findsNothing);
       expect(core.calls.any((c) => c.first == 'list'), isFalse);
 
