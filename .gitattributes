@@ -1,0 +1,5 @@
+# Preserve the supplied authoritative document and verbatim license/test records.
+# Source code and authored documentation retain normal whitespace checking.
+DeviceBridge_Final_Termux_Agent_Plan_v4.md -whitespace
+docs/licenses/** -whitespace
+docs/test-evidence/** -whitespace

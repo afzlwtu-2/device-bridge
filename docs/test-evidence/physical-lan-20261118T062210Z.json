@@ -1,0 +1,113 @@
+{
+  "run": "20261118T062210Z",
+  "phone_snapshot": "/data/data/com.termux/files/usr/tmp/devicebridge-build.IZZx3Jme",
+  "laptop_cidr": "10.100.102.69/24",
+  "phone_cidr": "10.100.102.33/24",
+  "checks": [
+    "phone discovered laptop by DNS-SD without peer IP entry",
+    "mutual pairing with explicit fixture root grant",
+    "phone pulled file and nested folder; all SHA-256 hashes match including empty/unicode files",
+    "revoked phone denied"
+  ],
+  "cleanup": "owned laptop agent stopped; no phone daemon started",
+  "acceptance": "physical Termux CLI, not Flutter GUI",
+  "agent": {
+    "approved_lan": "10.100.102.0/24",
+    "endpoint": "10.100.102.69:8731",
+    "id": "3f7b8bccc08ce73a836a0009332ec9b182749aa7a8773e90006e01b897784e43",
+    "interface": "wlan0",
+    "name": "DeviceBridge laptop fixture",
+    "transport": "direct-lan-v1"
+  },
+  "discovery": [
+    {
+      "device_id": "3f7b8bccc08ce73a836a0009332ec9b182749aa7a8773e90006e01b897784e43",
+      "endpoint": "10.100.102.69:8731",
+      "interface": "wlan0",
+      "transport": "direct-lan-v1",
+      "observed": "2026-11-18T06:22:13.659716247Z",
+      "cost": {
+        "Metered": false,
+        "Internet": false,
+        "Relayed": false,
+        "Known": true
+      },
+      "direct": true,
+      "rtt": 0,
+      "bytes_per_second": 0
+    }
+  ],
+  "route": {
+    "device_id": "3f7b8bccc08ce73a836a0009332ec9b182749aa7a8773e90006e01b897784e43",
+    "endpoint": "10.100.102.69:8731",
+    "interface": "wlan0",
+    "transport": "direct-lan-v1",
+    "observed": "2026-11-18T06:22:24.699001709Z",
+    "cost": {
+      "Metered": false,
+      "Internet": false,
+      "Relayed": false,
+      "Known": true
+    },
+    "direct": true,
+    "rtt": 450032616,
+    "bytes_per_second": 0
+  },
+  "roots": [
+    {
+      "id": "fixture",
+      "name": "fixture",
+      "writable": false
+    }
+  ],
+  "listing": {
+    "entries": [
+      {
+        "kind": "directory",
+        "modified": "2026-11-18T06:22:10.183950016Z",
+        "name": "nested",
+        "path": "nested",
+        "size": 50
+      },
+      {
+        "kind": "file",
+        "modified": "2026-11-18T06:22:10.183697004Z",
+        "name": "hello 空格.txt",
+        "path": "hello 空格.txt",
+        "size": 31
+      },
+      {
+        "kind": "file",
+        "modified": "2026-11-18T06:22:10.183697004Z",
+        "name": "empty",
+        "path": "empty",
+        "size": 0
+      }
+    ]
+  },
+  "single": {
+    "receipt": {
+      "destination": "/data/data/com.termux/files/usr/tmp/devicebridge-build.IZZx3Jme/e2e-20261118T062210Z/single",
+      "files": 1,
+      "bytes": 31,
+      "manifest_sha256": "392ca6cc16e1bb9513ffbc88b931de8fc6514cb4e99489a1eb4900ca3c4a3e75"
+    },
+    "elapsed_including_ssh_and_discovery_seconds": 1.482438
+  },
+  "folder": {
+    "receipt": {
+      "destination": "/data/data/com.termux/files/usr/tmp/devicebridge-build.IZZx3Jme/e2e-20261118T062210Z/folder",
+      "files": 3,
+      "bytes": 4194335,
+      "manifest_sha256": "6bd1f01150d8dba0f5a6efb02e85663d6a0e1d63f44127af63199080132f9c99"
+    },
+    "elapsed_including_ssh_and_discovery_seconds": 4.098625
+  },
+  "verified_sha256": {
+    "hello 空格.txt": "3b25db7ca30addecf9a3f6f1696fe275716dda904e44985fca2f001859a0933c",
+    "empty": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "nested/binary.bin": "2b07811057df887086f06a67edc6ebf911de8b6741156e7a2eb1416a4b8b1b2e"
+  },
+  "result": "PASS",
+  "agent_stderr": ""
+}

@@ -1,0 +1,7 @@
+{
+  "apk_sha256": "3e1979631b42f7a27bc2b133b18f555307cf0a056dedf26615265a083ef910a6",
+  "apk_bytes": 11929443,
+  "core_sha256": "fddf337af6bae5d8e91d4442c445bfc36dd8a41097630f49d0c909abdc525390",
+  "core_matches": true,
+  "signing": "development key; optimized build"
+}

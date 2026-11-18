@@ -1,0 +1,31 @@
+{
+  "run": "20261118T063157Z",
+  "level": "physical standalone Flutter Android GUI, real core and LAN",
+  "checks": [],
+  "result": "FAIL",
+  "agent": {
+    "approved_lan": "10.100.102.0/24",
+    "endpoint": "10.100.102.69:8731",
+    "id": "83cbf38c6a16b828c144ef45800e86ae76f33279fb4690c308ffea3204533f13",
+    "interface": "wlan0",
+    "name": "Laptop GUI fixture",
+    "transport": "direct-lan-v1"
+  },
+  "home_labels": [
+    "DeviceBridge",
+    "Approved network",
+    "Your devices. One connection.",
+    "Browse approved folders and bring files home over your local network.",
+    "Android phone\nChoose a local network to begin",
+    "Find devices",
+    "Pair device",
+    "0 paired devices",
+    "Pulls are one-time downloads. They never register a folder for synchronization.",
+    "Home\nTab 1 of 4",
+    "Devices\nTab 2 of 4",
+    "Share\nTab 3 of 4",
+    "Sync\nTab 4 of 4"
+  ],
+  "error": "UI did not reach: Verify this fingerprint",
+  "cleanup": "owned laptop listener stopped; owned UI temp XML removed; app left open"
+}

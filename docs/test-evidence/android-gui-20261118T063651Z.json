@@ -1,0 +1,48 @@
+{
+  "run": "20261118T063651Z",
+  "level": "physical standalone Flutter Android GUI, real core and LAN",
+  "checks": [
+    "app paired via actual invitation/fingerprint/owner approval UI",
+    "device-detail browser listed granted laptop folder without peer IP entry",
+    "standalone app pulled verified nested folder; app-UID bytes match"
+  ],
+  "result": "PASS",
+  "agent": {
+    "approved_lan": "10.100.102.0/24",
+    "endpoint": "10.100.102.69:8731",
+    "id": "b67f1c4296f540259f75d474278febfe5ce35a8c235b5067e05f9b67bdf19607",
+    "interface": "wlan0",
+    "name": "Laptop GUI fixture",
+    "transport": "direct-lan-v1"
+  },
+  "home_labels": [
+    "DeviceBridge",
+    "Approved network",
+    "Your devices. One connection.",
+    "Browse approved folders and bring files home over your local network.",
+    "Android phone\nApproved LAN · wlan0 · 10.100.102.33/24",
+    "Find devices",
+    "Pair device",
+    "0 paired devices",
+    "Pulls are one-time downloads. They never register a folder for synchronization.",
+    "Home\nTab 1 of 4",
+    "Devices\nTab 2 of 4",
+    "Share\nTab 3 of 4",
+    "Sync\nTab 4 of 4"
+  ],
+  "foreground_service_observation": "ACTIVITY MANAGER SERVICES (dumpsys activity services)\n  User 0 active services:\n  * ServiceRecord{8cf5577 u0 dev.devicebridge.devicebridge/.TransferService c:dev.devicebridge.devicebridge}\n    intent={cmp=dev.devicebridge.devicebridge/.TransferService}\n    packageName=dev.devicebridge.devicebridge\n    processName=dev.devicebridge.devicebridge\n    targetSdkVersion=36\n    baseDir=/data/app/~~NPAJdFXcC2B8-Po7Xipdcw==/dev.devicebridge.devicebridge-3NBsB_83ghf-DNRyzGO80Q==/base.apk\n    dataDir=/data/user/0/dev.devicebridge.devicebridge\n    app=ProcessRecord{36e63ac 6354:dev.devicebridge.devicebridge/u0a408}\n    useNewWiuLogic_forCapabilities()=true\n    useNewWiuLogic_forStart()=true\n    useNewBfslLogic()=true\n    mAllowWiu_noBinding=PROC_STATE_TOP\n    mAllowWiu_inBindService=DENIED\n    mAllowWiu_byBindings=DENIED\n    getFgsAllowWiu_legacy=PROC_STATE_TOP\n    getFgsAllowWiu_new=PROC_STATE_TOP\n    getFgsAllowWiu_forStart=PROC_STATE_TOP\n    getFgsAllowWiu_forCapabilities=PROC_STATE_TOP\n    allowUiJobScheduling=true\n    recentCallingPackage=dev.devicebridge.devicebridge\n    recentCallingUid=10408\n    mAllowStart_noBinding=PROC_STATE_TOP\n    mAllowStart_inBindService=DENIED\n    mAllowStart_byBindings=DENIED\n    getFgsAllowStart_legacy=PROC_STATE_TOP\n    getFgsAllowStart_new=PROC_STATE_TOP\n    getFgsAllowStart=PROC_STATE_TOP\n    startForegroundCount=1\n    infoAllowStartForeground=[callingPackage: dev.devicebridge.devicebridge; callingUid: 10408; uidState: TOP ; uidBFSL: [BFSL]; intent: Intent { cmp=dev.devicebridge.devicebridge/.TransferService }; code:PROC_STATE_TOP; tempAllowListReason:<null>; allowWiu:12; targetSdkVersion:36; callerTargetSdkVersion:36; startForegroundCount:0; bindFromPackage:null: isBindService:false]\n    isForeground=true foregroundId=1 types=0x00000001 foregroundNoti=Notification(channel=transfers shortcut=null contentView=null vibrate=null sound=null defaults=0 flags=ONGOING_EVENT|FOREGROUND_SERVICE color=0x00000000 actions=1 vis=PRIVATE focusType=null)\n    createTime=-441ms startingBgTimeout=--\n    lastActivity=-439ms restartTime=-439ms createdFromFg=true\n    startRequested=true delayedStop=false stopIfKilled=true callStart=true lastStartId=1\n startCommandResult=2\n",
+  "browser_labels": [
+    "Back",
+    "gui-fixture",
+    "Pull this folder",
+    "Verified download\n/data/user/0/dev.devicebridge.devicebridge/files/devicebridge/downloads/gui-fixture",
+    "Save a copy…",
+    "nested\ndirectory",
+    "Pull",
+    "gui-hello.txt\n44 bytes · 2026-11-18T06:36:51.265579219Z",
+    "Pull"
+  ],
+  "verified_sha256": "d4d1d5bf6adb89a47df31315ac09917922ec6b443c79292748661602ac74623c",
+  "app_uid": "uid=10408(u0_a408) gid=10408(u0_a408) groups=10408(u0_a408),50408(all_a408) context=u:r:runas_app:s0:c152,c257,c512,c768",
+  "cleanup": "owned laptop listener stopped; owned UI temp XML removed; app left open"
+}

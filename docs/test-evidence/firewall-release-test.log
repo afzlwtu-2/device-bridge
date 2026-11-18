@@ -1,0 +1,24 @@
+Rule added
+Rule deleted
+Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 8080/tcp                   ALLOW IN    Anywhere                  
+[ 2] Anywhere                   ALLOW FWD   Anywhere on waydroid0     
+[ 3] 53/udp                     ALLOW IN    Anywhere                  
+[ 4] 67/udp                     ALLOW IN    Anywhere                  
+[ 5] 19132/udp                  ALLOW IN    Anywhere                  
+[ 6] 8000                       ALLOW IN    Anywhere                  
+[ 7] 8022                       ALLOW IN    Anywhere                  
+[ 8] 7551/udp                   ALLOW IN    Anywhere                   # Minecraft Bedrock NetherNet LAN
+[ 9] Anywhere                   ALLOW IN    192.168.1.0/24/udp         # LAN UDP for Minecraft NetherNet
+[10] 8080/tcp (v6)              ALLOW IN    Anywhere (v6)             
+[11] Anywhere (v6)              ALLOW FWD   Anywhere (v6) on waydroid0
+[12] 53/udp (v6)                ALLOW IN    Anywhere (v6)             
+[13] 67/udp (v6)                ALLOW IN    Anywhere (v6)             
+[14] 19132/udp (v6)             ALLOW IN    Anywhere (v6)             
+[15] 8000 (v6)                  ALLOW IN    Anywhere (v6)             
+[16] 8022 (v6)                  ALLOW IN    Anywhere (v6)             
+[17] 7551/udp (v6)              ALLOW IN    Anywhere (v6)              # Minecraft Bedrock NetherNet LAN
+

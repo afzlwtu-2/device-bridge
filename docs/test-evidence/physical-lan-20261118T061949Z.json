@@ -1,0 +1,64 @@
+{
+  "run": "20261118T061949Z",
+  "phone_snapshot": "/data/data/com.termux/files/usr/tmp/devicebridge-build.B5UPNrrg",
+  "laptop_cidr": "10.100.102.69/24",
+  "phone_cidr": "10.100.102.33/24",
+  "checks": [
+    "phone discovered laptop by DNS-SD without peer IP entry",
+    "mutual pairing with explicit fixture root grant"
+  ],
+  "cleanup": "owned laptop agent stopped; no phone daemon started",
+  "acceptance": "physical Termux CLI, not Flutter GUI",
+  "agent": {
+    "approved_lan": "10.100.102.0/24",
+    "endpoint": "10.100.102.69:8731",
+    "id": "11c72412c5bcb21b2d25ca50ba550a554cde76490b110403316af654ec149e0e",
+    "interface": "wlan0",
+    "name": "DeviceBridge laptop fixture",
+    "transport": "direct-lan-v1"
+  },
+  "discovery": [
+    {
+      "device_id": "11c72412c5bcb21b2d25ca50ba550a554cde76490b110403316af654ec149e0e",
+      "endpoint": "10.100.102.69:8731",
+      "interface": "wlan0",
+      "transport": "direct-lan-v1",
+      "observed": "2026-11-18T06:19:51.6259587Z",
+      "cost": {
+        "Metered": false,
+        "Internet": false,
+        "Relayed": false,
+        "Known": true
+      },
+      "direct": true,
+      "rtt": 0,
+      "bytes_per_second": 0
+    }
+  ],
+  "route": {
+    "device_id": "11c72412c5bcb21b2d25ca50ba550a554cde76490b110403316af654ec149e0e",
+    "endpoint": "10.100.102.69:8731",
+    "interface": "wlan0",
+    "transport": "direct-lan-v1",
+    "observed": "2026-11-18T06:20:03.048427931Z",
+    "cost": {
+      "Metered": false,
+      "Internet": false,
+      "Relayed": false,
+      "Known": true
+    },
+    "direct": true,
+    "rtt": 54216923,
+    "bytes_per_second": 0
+  },
+  "roots": [
+    {
+      "id": "fixture",
+      "name": "fixture",
+      "writable": false
+    }
+  ],
+  "result": "FAIL",
+  "error": "{\"code\":\"command_failed\",\"message\":\"device not discovered on the approved LAN; no relay fallback\"}\n",
+  "agent_stderr": ""
+}

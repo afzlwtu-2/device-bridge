@@ -1,0 +1,8 @@
+{
+  "apk": "app/build/app/outputs/flutter-apk/app-debug.apk",
+  "apk_bytes": 66276523,
+  "apk_sha256": "7e6f65157fb618335f3064c692d280e18d16bfa640ccc398ced742e808cde39e",
+  "core_sha256_in_apk": "fddf337af6bae5d8e91d4442c445bfc36dd8a41097630f49d0c909abdc525390",
+  "core_sha256_built": "fddf337af6bae5d8e91d4442c445bfc36dd8a41097630f49d0c909abdc525390",
+  "core_matches": true
+}
