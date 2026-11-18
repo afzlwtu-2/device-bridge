@@ -1,0 +1,19 @@
+{
+  "run": "20261118T093612Z",
+  "device": "JBKJF6JFAAIZUGP7",
+  "agent_before_wifi_off": "u0_a408      19683 14203 0 14:32:49 ?     00:00:00 libbridge_agent.so --state /data/user/0/dev.devicebridge.devicebridge/files/devicebridge --interface wlan0 --lan-cidr 10.100.102.33/24 --port 0",
+  "offline_label": "Android phone\nChoose a local network to begin\nWi-Fi disconnected \u00b7 transfers paused",
+  "agent_while_wifi_off": "",
+  "recovered_label": "Android phone\nApproved LAN \u00b7 wlan0 \u00b7 10.100.102.33/24\nDiscoverable on this LAN while the app is open",
+  "agent_after_recovery": "u0_a408      21908 14203 3 14:36:36 ?     00:00:00 libbridge_agent.so --state /data/user/0/dev.devicebridge.devicebridge/files/devicebridge --interface wlan0 --lan-cidr 10.100.102.33/24 --port 0",
+  "tailnet_labels": [
+    "App-only Tailscale",
+    "Status: NeedsLogin",
+    "Log in to authorize this DeviceBridge node. No passwords or permanent auth keys are stored in the interface.",
+    "Log in to Tailscale"
+  ],
+  "tailnet_ps": "u0_a408      24764 14203 5 14:36:47 ?     00:00:00 libbridge_tailnet.so --state /data/user/0/dev.devicebridge.devicebridge/files/devicebridge/tailnet --name devicebridge-phone",
+  "vpn_service_check": "4: VpnNetworkProvider:0\n  NetworkAgentInfo{network{204}  handle{879579025421}  ni{MOBILE[LTE] CONNECTED extra: ims} created=2026-11-17T12:27:45.400Z Score(Policies : TRANSPORT_PRIMARY&EVER_EVALUATED&IS_UNMETERED&EVER_VALIDATED&IS_VALIDATED ; KeepConnected : 0)  created 495158401 firstValidated 495158465 lastValidated 495158465  lp{{InterfaceName: ccmni1 LinkAddresses: [ fd00:1:800d:e300:1:0:fffd:ba50/64 ] DnsAddresses: [ ] PcscfAddresses: [ /2404:3100:0:ff14::2002,/2404:3100:0:ff14::200a ] Domains: null MTU: 1500 TcpBufferSizes: 4096,6291456,12582912,4096,1048576,2097152 Routes: [ ::/0 -> :: ccmni1 mtu 1500,fd00:1:800d:e300::/64 -> :: ccmni1 mtu 0 ]}}  nc{[ Transports: CELLULAR Capabilities: IMS&NOT_METERED&TRUSTED&NOT_VPN&VALIDATED&NOT_ROAMING&FOREGROUND&NOT_CONGESTED&NOT_SUSPENDED&NOT_VCN_MANAGED&MMTEL&NOT_BANDWIDTH_CONSTRAINED LinkUpBandwidth>=14791Kbps LinkDnBandwidth>=36602Kbps Specifier: <TelephonyNetworkSpecifier [mSubId = 1]> SubscriptionIds: {1} UnderlyingNetworks: Null]}  factorySerialNumber=5}\n      NetworkRequest [ LISTEN id=98, [ Capabilities: IMS&TRUSTED&NOT_VPN&NOT_BANDWIDTH_CONSTRAINED Uid: 1001 RequestorUid: 1001 RequestorPkg: com.mediatek.ims UnderlyingNetworks: Null] ]\n      NetworkRequest [ LISTEN id=104, [ Transports: CELLULAR|WIFI Capabilities: NOT_VPN RequestorUid: 1000 RequestorPkg: com.android.systemui UnderlyingNetworks: Null] ]\n      NetworkRequest [ LISTEN id=18793, [ Transports: CELLULAR Capabilities: IMS&TRUSTED&NOT_VPN&NOT_BANDWIDTH_CONSTRAINED Specifier: <TelephonyNetworkSpecifier [mSubId = 1]> Uid: 1001 RequestorUid: 1001 RequestorPkg: com.mediatek.ims UnderlyingNetworks: Null] ]",
+  "tailnet_after_disconnect": "",
+  "result": "PASS"
+}

@@ -64,6 +64,7 @@ class _DeviceBridgeAppState extends State<DeviceBridgeApp> {
         : ThemeMode.dark,
     home: BridgeHome(
       core: widget.core,
+      appearance: appearance,
       onAppearance: (value) {
         if (mounted) {
           setState(() => appearance = value);
@@ -74,8 +75,14 @@ class _DeviceBridgeAppState extends State<DeviceBridgeApp> {
 }
 
 class BridgeHome extends StatefulWidget {
-  const BridgeHome({super.key, required this.core, required this.onAppearance});
+  const BridgeHome({
+    super.key,
+    required this.core,
+    required this.appearance,
+    required this.onAppearance,
+  });
   final CoreBridge core;
+  final String appearance;
   final ValueChanged<String> onAppearance;
   @override
   State<BridgeHome> createState() => _BridgeHomeState();
@@ -414,18 +421,31 @@ class _BridgeHomeState extends State<BridgeHome> {
     bottomNavigationBar: NavigationBar(
       selectedIndex: tab,
       onDestinationSelected: (v) => setState(() => tab = v),
-      destinations: const [
+      destinations: [
         NavigationDestination(
-          icon: Icon(Icons.home_outlined),
-          selectedIcon: Icon(Icons.home),
+          icon: const Icon(Icons.home_outlined),
+          selectedIcon: amoledNavIcon(context, Icons.home, widget.appearance),
           label: 'Home',
         ),
         NavigationDestination(
-          icon: Icon(Icons.devices_outlined),
+          icon: const Icon(Icons.devices_outlined),
+          selectedIcon: amoledNavIcon(
+            context,
+            Icons.devices,
+            widget.appearance,
+          ),
           label: 'Devices',
         ),
-        NavigationDestination(icon: Icon(Icons.send_outlined), label: 'Share'),
-        NavigationDestination(icon: Icon(Icons.sync_outlined), label: 'Sync'),
+        NavigationDestination(
+          icon: const Icon(Icons.send_outlined),
+          selectedIcon: amoledNavIcon(context, Icons.send, widget.appearance),
+          label: 'Share',
+        ),
+        NavigationDestination(
+          icon: const Icon(Icons.sync_outlined),
+          selectedIcon: amoledNavIcon(context, Icons.sync, widget.appearance),
+          label: 'Sync',
+        ),
       ],
     ),
   );
@@ -586,6 +606,32 @@ class _BridgeHomeState extends State<BridgeHome> {
                         await widget.core.run(['finish', p['id'] as String]);
                         await refreshPeers();
                       });
+                    } else if (p['status'] == 'revoked') {
+                      final remove = await showDialog<bool>(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: Text('Remove ${p['name']}?'),
+                          content: const Text(
+                            'This device is revoked. Remove it from your device list?',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text('Cancel'),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              child: const Text('Remove'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (remove == true) {
+                        await task(() async {
+                          await widget.core.run(['remove', p['id'] as String]);
+                          await refreshPeers();
+                        });
+                      }
                     } else if (p['status'] == 'paired') {
                       await Navigator.push(
                         context,

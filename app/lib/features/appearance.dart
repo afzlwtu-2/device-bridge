@@ -122,8 +122,42 @@ class _EdgeGlow extends CustomPainter {
       oldDelegate.isRed != isRed;
 }
 
+Widget amoledNavIcon(
+  BuildContext context,
+  IconData icon,
+  String appearance,
+) {
+  if (!isAmoledTheme(appearance)) {
+    return Icon(icon);
+  }
+  final isRed = appearance == 'amoled-red';
+  final edge = isRed ? const Color(0xffcc0022) : const Color(0xff00b848);
+  final peak = isRed ? const Color(0xffff1738) : const Color(0xff1cff68);
+  return Container(
+    width: 64,
+    height: 32,
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(16),
+      gradient: LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [edge, peak, edge],
+      ),
+      boxShadow: [
+        BoxShadow(
+          color: peak.withValues(alpha: 0.45),
+          blurRadius: 10,
+          spreadRadius: 0.5,
+        ),
+      ],
+    ),
+    child: Center(child: Icon(icon, color: Colors.black)),
+  );
+}
+
 ThemeData amoledTheme(String appearance) {
   final isRed = appearance == 'amoled-red';
+  final edge = isRed ? const Color(0xffcc0022) : const Color(0xff00b848);
   final neon = isRed ? const Color(0xffff1738) : const Color(0xff1cff68);
   final scheme = ColorScheme.fromSeed(
     seedColor: neon,
@@ -155,7 +189,7 @@ ThemeData amoledTheme(String appearance) {
     ),
     navigationBarTheme: NavigationBarThemeData(
       backgroundColor: Colors.black,
-      indicatorColor: neon,
+      indicatorColor: Colors.transparent,
       iconTheme: WidgetStateProperty.resolveWith(
         (states) => IconThemeData(
           color: states.contains(WidgetState.selected)
@@ -166,15 +200,66 @@ ThemeData amoledTheme(String appearance) {
       surfaceTintColor: Colors.transparent,
     ),
     filledButtonTheme: FilledButtonThemeData(
-      style: FilledButton.styleFrom(
-        backgroundColor: neon,
-        foregroundColor: Colors.black,
+      style: ButtonStyle(
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (s) => s.contains(WidgetState.disabled)
+              ? Colors.white38
+              : Colors.black,
+        ),
+        backgroundColor: WidgetStateProperty.all(Colors.transparent),
+        elevation: WidgetStateProperty.all(0),
+        shape: WidgetStateProperty.all(const StadiumBorder()),
+        backgroundBuilder: (context, states, child) {
+          if (states.contains(WidgetState.disabled)) {
+            return DecoratedBox(
+              decoration: BoxDecoration(
+                color: const Color(0xff181818),
+                borderRadius: BorderRadius.circular(24),
+              ),
+              child: child,
+            );
+          }
+          return DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(24),
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [edge, neon, edge],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: neon.withValues(alpha: 0.45),
+                  blurRadius: 10,
+                  spreadRadius: 0.5,
+                ),
+              ],
+            ),
+            child: child,
+          );
+        },
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
-      style: OutlinedButton.styleFrom(
-        foregroundColor: neon,
-        side: BorderSide(color: neon.withValues(alpha: 0.55)),
+      style: ButtonStyle(
+        foregroundColor: WidgetStateProperty.all(neon),
+        side: WidgetStateProperty.all(
+          BorderSide(color: neon.withValues(alpha: 0.72), width: 1.2),
+        ),
+        shape: WidgetStateProperty.all(const StadiumBorder()),
+        backgroundBuilder: (context, states, child) => DecoratedBox(
+          decoration: BoxDecoration(
+            color: Colors.black,
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: [
+              BoxShadow(
+                color: neon.withValues(alpha: 0.18),
+                blurRadius: 8,
+              ),
+            ],
+          ),
+          child: child,
+        ),
       ),
     ),
     textButtonTheme: TextButtonThemeData(

@@ -88,3 +88,31 @@ func TestExpiredInvitationAndGrant(t *testing.T) {
 		t.Fatal("future schema accepted")
 	}
 }
+
+func TestRemovePeerCleansGrantsEndpointsAndPreferences(t *testing.T) {
+	t.Parallel()
+	s, err := Open(t.TempDir() + "/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	id := strings.Repeat("e", 64)
+	if err = s.TrustOutbound(id, "temp-laptop", "paired"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.CacheEndpoint(id, "wlan0:10.0.0.2:10.0.0.0/24", "10.0.0.3:8731"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordRate(id, "direct-lan-v1", 12.5); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RemovePeer(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Peer(id); err == nil {
+		t.Fatal("removed peer still present")
+	}
+	if err = s.RemovePeer(id); err == nil {
+		t.Fatal("removing absent peer succeeded")
+	}
+}

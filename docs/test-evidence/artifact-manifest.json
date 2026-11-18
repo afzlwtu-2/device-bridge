@@ -1,24 +1,24 @@
 {
   "files": {
     "artifacts/android-arm64/devicebridge.apk": {
-      "bytes": 24066321,
-      "sha256": "c45a322ecb1213211ecab4d56b5d68808fbe58a59db6345ba9f4e003a2915e96"
+      "bytes": 24072573,
+      "sha256": "48bd056a206d1d8dcf70b2bcf98cb8da3af9d033a51010a58a51821d729f5b39"
     },
     "artifacts/linux/devicebridge-linux-x64.tar.gz": {
-      "bytes": 29315689,
-      "sha256": "2e1ae0abadba9bca4ee3c86dd4cac714dd5401b5b515bf7f0ed3c846aca48b83"
+      "bytes": 29326374,
+      "sha256": "7e3c96ca135bd5d73889f7a17d757b56453865f3d71da5715a0a202fa179ff82"
     },
     "artifacts/linux/bridge-agent": {
-      "bytes": 16713440,
-      "sha256": "5cdadb0829e9681e8686ce4030a6c6ebc001ff5d9a2195fe11549c3fb010040a"
+      "bytes": 16713408,
+      "sha256": "8d47951686182515322a11e2a4a9bb27e6e7e9b1dcc8bfe5f5751065ce0e8dea"
     },
     "artifacts/linux/bridge-cli": {
-      "bytes": 15896440,
-      "sha256": "ada6a30f9fa29aa09304e2daecd3e3b83a2efd5238fc0c22dec79ffe37a7f3da"
+      "bytes": 15901592,
+      "sha256": "432dafc4e02be295d395098064cfb90788910079fb2323787b38ce3eee91794d"
     },
     "artifacts/android-arm64/devicebridge-debug.apk": {
-      "bytes": 100451064,
-      "sha256": "94c93241e31ec8f7f8bdb6321a846e9edf1a6b8069e63b6d9d1059acf494d120"
+      "bytes": 86540243,
+      "sha256": "74c09bdf53be78930cf9a076adc087c9c58012181694869797982a932dac6b02"
     },
     "artifacts/termux-arm64/bridge-agent": {
       "bytes": 16375024,
@@ -30,7 +30,7 @@
     }
   },
   "android_signing": "development key; optimized build",
-  "core_sha256": "46f6197706860f03eb5f7fabc2e0bd97fb5dd7af3ab26d20d5a696dd89adb0e8",
-  "source_sha256_excluding_docs_artifacts": "702e720a2cde5e9dc45c5fe198824ecdf85cad90d9f96186e7e5ef52070b4efb",
+  "core_sha256": "fb1be545dc8ad5de7aa7ab585f25a6c2c70b635875809006c52bc641096a0f8a",
+  "source_sha256_excluding_docs_artifacts": "1ff8d84bda6e8d632f444b279663763fee5d093aaa8f3d322626d702b403b0fe",
   "termux_artifacts_not_built": []
 }

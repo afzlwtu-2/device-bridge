@@ -328,6 +328,14 @@ func run() error {
 			return err
 		}
 		return output(map[string]string{"status": "revoked"})
+	case "remove":
+		if len(a) != 2 {
+			return errors.New("remove FULL_DEVICE_ID")
+		}
+		if err = s.RemovePeer(a[1]); err != nil {
+			return err
+		}
+		return output(map[string]string{"status": "removed"})
 	}
 	var p *direct.Provider
 	if *transportID == "lan" {

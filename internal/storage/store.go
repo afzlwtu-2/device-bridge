@@ -318,6 +318,36 @@ func (s *Store) Revoke(id string) error {
 	}
 	return tx.Commit()
 }
+func (s *Store) RemovePeer(id string) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, stmt := range []string{
+		"DELETE FROM grants WHERE peer=?",
+		"DELETE FROM endpoints WHERE peer=?",
+	} {
+		if _, err = tx.Exec(stmt, id); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec("DELETE FROM preferences WHERE key IN (?,?)", "connection."+id, "rate."+id); err != nil {
+		return err
+	}
+	res, err := tx.Exec("DELETE FROM peers WHERE id=?", id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return ErrDenied
+	}
+	if _, err = tx.Exec("INSERT INTO audit(at,peer,action,scope) VALUES(?,?,?,?)", time.Now().Unix(), id, "removed", ""); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 func (s *Store) Authorized(id, root, op string, bytes int64) error {
 	if bytes < 0 {
 		return ErrDenied

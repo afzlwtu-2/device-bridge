@@ -125,13 +125,56 @@ class _DeviceDetailState extends State<DeviceDetail> {
         const SizedBox(height: 24),
         SelectableText('Device fingerprint\n${widget.peer['id']}'),
         const SizedBox(height: 24),
-        OutlinedButton(
-          onPressed: busy ? null : revoke,
-          child: const Text('Revoke device'),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            OutlinedButton(
+              onPressed: busy ? null : revoke,
+              child: const Text('Revoke device'),
+            ),
+            OutlinedButton(
+              onPressed: busy ? null : remove,
+              child: const Text('Remove device'),
+            ),
+          ],
         ),
       ],
     ),
   );
+  Future<void> remove() async {
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove this device?'),
+        content: const Text(
+          'Grants, cached addresses and saved connection settings for this device will be deleted.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (approved == true) {
+      try {
+        await widget.core.run(['remove', widget.peer['id'] as String]);
+        if (mounted) {
+          Navigator.pop(context);
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() => error = e.toString());
+        }
+      }
+    }
+  }
   Future<void> revoke() async {
     final approved = await showDialog<bool>(
       context: context,
