@@ -217,10 +217,8 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
 
   Future<String> _prepareBundledArtifacts() async {
     final baseDir = Directory('${File(widget.core.downloads).parent.path}/bundled-bin');
-    const targets = {
-      'linux-x86_64': ['bridge-agent', 'bridge-cli', 'bridge-sync'],
-      'android-aarch64': ['bridge-agent', 'bridge-cli', 'bridge-sync'],
-    };
+    const targets = ['linux-x86_64', 'linux-aarch64', 'android-aarch64'];
+    const binaries = ['bridge-agent', 'bridge-cli', 'bridge-sync'];
     final nativeArm64Paths = <String, String>{};
     if (Platform.isAndroid) {
       try {
@@ -243,10 +241,9 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
       } catch (_) {}
     }
     var anyReady = false;
-    for (final entry in targets.entries) {
-      final plat = entry.key;
+    for (final plat in targets) {
       if (widget.termuxCompanion && plat != 'android-aarch64') continue;
-      for (final bin in entry.value) {
+      for (final bin in binaries) {
         final outFile = File('${baseDir.path}/$plat/$bin');
         try {
           outFile.parent.createSync(recursive: true);
@@ -261,9 +258,12 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
             continue;
           }
           // Fall back to compressed assets if native libraries do not match target ABI.
-          final asset = plat == 'android-aarch64'
-              ? 'android-arm64-lib${bin.replaceAll('-', '_')}.gzbin'
-              : '$plat-$bin.gzbin';
+          final asset = switch (plat) {
+            'android-aarch64' =>
+              'android-arm64-lib${bin.replaceAll('-', '_')}.gzbin',
+            'linux-aarch64' => 'linux-arm64-$bin.gzbin',
+            _ => '$plat-$bin.gzbin',
+          };
           final data = await rootBundle.load('assets/bin/$asset');
           final gzBytes = data.buffer.asUint8List(
             data.offsetInBytes,

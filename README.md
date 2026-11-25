@@ -147,6 +147,10 @@ Standard and Shizuku use Android's package installer.
 For a release, set `version` in `app/pubspec.yaml` and use the matching
 `vMAJOR.MINOR.PATCH` tag. The Android build number is
 `MAJOR * 1000000 + MINOR * 1000 + PATCH` for every APK variant.
+Use the APK for your device's ABI to reduce the download. The universal APK
+includes all three ABIs. The release workflow verifies the expected files,
+APK version and signing certificate before uploading assets to a draft.
+It publishes the draft after GitHub reports the complete upload.
 
 ### Build from Source
 

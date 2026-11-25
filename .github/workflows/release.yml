@@ -7,12 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to publish (e.g. v1.0.0)'
+        description: 'Existing tag at this revision to publish (e.g. v1.0.1)'
         required: false
         default: ''
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   version:
@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      name: ${{ steps.version.outputs.name }}
+      code: ${{ steps.version.outputs.code }}
     steps:
       - uses: actions/checkout@v4
       - name: Check that the release tag matches the APK version
@@ -44,10 +46,25 @@ jobs:
               raise SystemExit(f"Expected release tag v{major}.{minor}.{patch}, got {tag!r}.")
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               print(f"tag={tag}", file=output)
+              print(f"name={major}.{minor}.{patch}", file=output)
+              print(f"code={code}", file=output)
           PY
+          if [[ -n "$RELEASE_TAG" ]]; then
+            refs=$(git ls-remote origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
+            commit=$(awk 'END { print $1 }' <<< "$refs")
+            test "$commit" = "$(git rev-parse HEAD)" || {
+              echo "Release tag must already point to the revision being built." >&2
+              exit 1
+            }
+          fi
+
+  checks:
+    uses: ./.github/workflows/ci.yml
+    with:
+      skip_android_native: true
 
   build-linux:
-    needs: version
+    needs: [version, build-android-native]
     name: Linux (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -113,7 +130,13 @@ jobs:
           bash scripts/build_wg.sh
           bash scripts/prepare_bundled_bins.sh
 
-      - name: Build Flutter Linux release bundle
+      - name: Download Termux SSH bootstrap assets for Linux
+        uses: actions/download-artifact@v4
+        with:
+          name: bootstrap-android-arm64
+          path: app/assets/bin
+
+      - name: Compile Flutter Linux release bundle
         working-directory: app
         run: |
           flutter pub get
@@ -160,6 +183,8 @@ jobs:
         with:
           name: dist-linux-${{ matrix.arch }}
           path: dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
 
       - name: Stage and upload Linux x86_64 SSH bootstrap assets
         if: matrix.arch == 'amd64'
@@ -173,6 +198,8 @@ jobs:
         with:
           name: overlay-linux-x86_64
           path: overlay-linux
+          if-no-files-found: error
+          compression-level: 0
 
   build-android-native:
     needs: version
@@ -221,35 +248,58 @@ jobs:
         run: |
           mkdir -p dist overlay/app/android/app/src/main/jniLibs
           cp -a app/android/app/src/main/jniLibs/* overlay/app/android/app/src/main/jniLibs/
-          # Release APKs already carry fresh jniLibs/<abi>/libbridge_*.so; omit duplicate android-*.gzbin assets to keep APKs compact.
 
           pkg_name="devicebridge-android-${{ matrix.arch }}-core"
           stage="$(mktemp -d)"
           mkdir -p "$stage/$pkg_name"
           cp "artifacts/android-${{ matrix.arch }}"/*.so "$stage/$pkg_name/"
-          cp "$stage/$pkg_name/libbridge_cli.so" "$stage/$pkg_name/bridge-cli"
-          cp "$stage/$pkg_name/libbridge_agent.so" "$stage/$pkg_name/bridge-agent"
-          cp "$stage/$pkg_name/libbridge_sync.so" "$stage/$pkg_name/bridge-sync"
-          cp "$stage/$pkg_name/libbridge_tailnet.so" "$stage/$pkg_name/bridge-tailnet"
-          cp "$stage/$pkg_name/libbridge_wg.so" "$stage/$pkg_name/bridge-wg"
+          for role in cli agent sync tailnet wg; do
+            ln "$stage/$pkg_name/libbridge_$role.so" "$stage/$pkg_name/bridge-$role"
+          done
           cp docs/THIRD_PARTY_NOTICES.md "$stage/$pkg_name/"
+          cp -a docs/licenses "$stage/$pkg_name/licenses"
+          python3 - "artifacts/android-${{ matrix.arch }}" <<'PY' > "$stage/$pkg_name/THIRD_PARTY_NOTICES-GO.txt"
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from go_notices import collect
+          print(collect(sorted(Path(sys.argv[1]).glob("libbridge_*.so"))), end="")
+          PY
+          notices=overlay/app/android/app/src/main/assets/devicebridge-notices
+          mkdir -p "$notices"
+          cp "$stage/$pkg_name/THIRD_PARTY_NOTICES-GO.txt" "$notices/GO-${{ matrix.arch }}.txt"
           tar -C "$stage" -czf "dist/${pkg_name}.tar.gz" "$pkg_name"
+
+      - name: Upload ARM64 Termux SSH bootstrap assets
+        if: matrix.arch == 'arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-android-arm64
+          path: |
+            app/assets/bin/android-arm64-libbridge_agent.gzbin
+            app/assets/bin/android-arm64-libbridge_cli.gzbin
+            app/assets/bin/android-arm64-libbridge_sync.gzbin
+          if-no-files-found: error
+          compression-level: 0
 
       - name: Upload APK native overlay
         uses: actions/upload-artifact@v4
         with:
           name: overlay-android-${{ matrix.arch }}
           path: overlay
+          if-no-files-found: error
 
       - name: Upload standalone Android/Termux core tarball
         uses: actions/upload-artifact@v4
         with:
           name: dist-android-core-${{ matrix.arch }}
           path: dist/devicebridge-android-${{ matrix.arch }}-core.tar.gz
+          if-no-files-found: error
+          compression-level: 0
 
   build-android-apk:
     name: Android APKs (all ABIs + universal)
-    needs: [build-android-native, build-linux]
+    needs: [version, build-android-native, build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -262,6 +312,7 @@ jobs:
       - name: Install Android SDK components
         run: |
           sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
           sdkm="$(find "$sdk_root/cmdline-tools" -name sdkmanager -type f | head -n 1)"
@@ -282,6 +333,10 @@ jobs:
           merge-multiple: true
           path: .
 
+      - name: Include native dependency notices
+        run: |
+          cp docs/licenses/{syncthing-v2.1.7,shizuku-api-v13.1.5}.txt app/android/app/src/main/assets/devicebridge-notices/
+
       - name: Configure persistent Android release signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -289,16 +344,18 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          if [[ -z "$ANDROID_KEYSTORE_BASE64" ]]; then
-            echo "Missing ANDROID_KEYSTORE_BASE64 secret; refusing to publish APK with an ephemeral key." >&2
-            exit 1
-          fi
+          for secret in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!secret}" ]]; then
+              echo "Missing $secret; release signing is required." >&2
+              exit 1
+            fi
+          done
           ks_path="${{ runner.temp }}/release-keystore.jks"
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$ks_path"
           chmod 600 "$ks_path"
           echo "ANDROID_KEYSTORE_PATH=$ks_path" >> "$GITHUB_ENV"
 
-      - name: Build split-per-ABI and universal release APKs
+      - name: Build ARM64 release APK
         working-directory: app
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -306,27 +363,53 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           flutter pub get
-          flutter build apk --release --split-per-abi
-          flutter build apk --release
+          flutter build apk --release --no-pub --split-per-abi --target-platform android-arm64
+          mkdir -p ../dist
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ../dist/devicebridge-android-arm64-v8a.apk
 
-      - name: Collect APKs
+      - name: Download ARM64 SSH assets for other Android devices
+        uses: actions/download-artifact@v4
+        with:
+          name: bootstrap-android-arm64
+          path: app/assets/bin
+
+      - name: Build the remaining split APKs and the universal APK
+        working-directory: app
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          mkdir -p dist
-          cp app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk dist/devicebridge-android-arm64-v8a.apk
-          cp app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk dist/devicebridge-android-armeabi-v7a.apk
-          cp app/build/app/outputs/flutter-apk/app-x86_64-release.apk dist/devicebridge-android-x86_64.apk
-          cp app/build/app/outputs/flutter-apk/app-release.apk dist/devicebridge-android-universal.apk
+          flutter build apk --release --no-pub --split-per-abi --target-platform android-arm,android-x64
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ../dist/devicebridge-android-armeabi-v7a.apk
+          cp build/app/outputs/flutter-apk/app-x86_64-release.apk ../dist/devicebridge-android-x86_64.apk
+          flutter build apk --release --no-pub
+          cp build/app/outputs/flutter-apk/app-release.apk ../dist/devicebridge-android-universal.apk
+
+      - name: Verify APK contents, version, and signer
+        env:
+          VERSION_NAME: ${{ needs.version.outputs.name }}
+          VERSION_CODE: ${{ needs.version.outputs.code }}
+        run: |
+          python3 scripts/verify_release_apks.py dist "$VERSION_NAME" "$VERSION_CODE" "$ANDROID_SDK_ROOT/build-tools/36.0.0"
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: dist-android-apks
           path: dist/*.apk
+          if-no-files-found: error
+          compression-level: 0
 
   release:
     name: Publish Release & Checksums
-    needs: [version, build-linux, build-android-native, build-android-apk]
+    needs: [version, checks, build-linux, build-android-native, build-android-apk]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-${{ needs.version.outputs.tag || github.run_id }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -343,15 +426,23 @@ jobs:
       - name: Generate XXH64 checksums and release notes
         run: |
           cd release-assets
-          xxhsum -H1 * | sort -k2 > CHECKSUMS.xxh64
           python3 - <<'PY' > ../RELEASE_NOTES.md
           from pathlib import Path
           import subprocess
 
-          files = sorted(
-              p for p in Path('.').iterdir()
-              if p.is_file() and p.name != 'CHECKSUMS.xxh64'
-          )
+          expected = {"devicebridge-linux-x86_64.tar.gz", "devicebridge-linux-arm64.tar.gz"}
+          expected.update(f"devicebridge-cli-linux-{arch}.tar.gz" for arch in ("amd64", "arm64"))
+          expected.update(f"devicebridge-android-{arch}-core.tar.gz" for arch in ("amd64", "arm64", "arm"))
+          expected.update(f"devicebridge-android-{abi}.apk" for abi in ("arm64-v8a", "armeabi-v7a", "x86_64", "universal"))
+          actual = {path.name for path in Path(".").iterdir() if path.is_file()}
+          if actual != expected:
+              raise SystemExit(f"Unexpected release inventory, missing {sorted(expected - actual)}, extra {sorted(actual - expected)}")
+          files = [Path(name) for name in sorted(expected)]
+          for artifact in files:
+              if not 0 < artifact.stat().st_size < 2**31:
+                  raise SystemExit(f"Missing data or GitHub size limit exceeded: {artifact}")
+          with open("CHECKSUMS.xxh64", "w") as checksums:
+              subprocess.run(["xxhsum", "-H1", *files], stdout=checksums, check=True)
           print("## DeviceBridge Release Artifacts\n")
           print("All binaries are built in parallel across Linux (`amd64`, `arm64`) and Android (`arm64-v8a`, `armeabi-v7a`, `x86_64`).")
           print("File integrity is verified with **XXH64** (`xxhsum -H1`).\n")
@@ -369,19 +460,40 @@ jobs:
           PY
 
       - name: Upload bundled release assets artifact
+        if: needs.version.outputs.tag == ''
         uses: actions/upload-artifact@v4
         with:
           name: release-bundle-all
           path: |
             release-assets/*
             RELEASE_NOTES.md
+          if-no-files-found: error
+          compression-level: 0
 
-      - name: Create GitHub Release
+      - name: Upload assets to a draft and publish the complete release
         if: needs.version.outputs.tag != ''
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.version.outputs.tag }}
-          name: DeviceBridge ${{ needs.version.outputs.tag }}
-          body_path: RELEASE_NOTES.md
-          files: release-assets/*
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json; then
+            if [[ "$(jq -r .isDraft release.json)" != "true" ]]; then
+              echo "$RELEASE_TAG is already published." >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "DeviceBridge $RELEASE_TAG" \
+              --notes-file RELEASE_NOTES.md --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          gh release view "$RELEASE_TAG" --json assets > release.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          assets = json.loads(Path("release.json").read_text())["assets"]
+          remote = {a["name"]: a["size"] for a in assets if a["state"] == "uploaded"}
+          local = {p.name: p.stat().st_size for p in Path("release-assets").iterdir()}
+          if local != remote or len(assets) != len(local):
+              raise SystemExit(f"Draft release assets did not match staged files: {remote}")
+          PY
+          gh release edit "$RELEASE_TAG" --draft=false --latest
