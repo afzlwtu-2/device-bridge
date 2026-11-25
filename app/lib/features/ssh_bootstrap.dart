@@ -221,6 +221,27 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
       'linux-x86_64': ['bridge-agent', 'bridge-cli', 'bridge-sync'],
       'android-aarch64': ['bridge-agent', 'bridge-cli', 'bridge-sync'],
     };
+    final nativeArm64Paths = <String, String>{};
+    if (Platform.isAndroid) {
+      try {
+        final status = await widget.core.goBinariesStatus();
+        final topArch = '${status['arch'] ?? ''}';
+        final libs = status['libraries'];
+        if (libs is List) {
+          for (final raw in libs) {
+            if (raw is! Map) continue;
+            final role = '${raw['role'] ?? ''}';
+            final path = '${raw['path'] ?? ''}';
+            final arch = '${raw['arch'] ?? topArch}';
+            if (raw['available'] == true &&
+                arch == 'android/arm64' &&
+                path.isNotEmpty) {
+              nativeArm64Paths['bridge-$role'] = path;
+            }
+          }
+        }
+      } catch (_) {}
+    }
     var anyReady = false;
     for (final entry in targets.entries) {
       final plat = entry.key;
@@ -229,7 +250,17 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
         final outFile = File('${baseDir.path}/$plat/$bin');
         try {
           outFile.parent.createSync(recursive: true);
-          // Both the APK and Termux use the same arm64 Android executables.
+          final nativePath = plat == 'android-aarch64'
+              ? nativeArm64Paths[bin]
+              : null;
+          if (nativePath != null && File(nativePath).existsSync()) {
+            final tmp = File('${outFile.path}.tmp');
+            await File(nativePath).copy(tmp.path);
+            await tmp.rename(outFile.path);
+            anyReady = true;
+            continue;
+          }
+          // Fall back to compressed assets if native libraries do not match target ABI.
           final asset = plat == 'android-aarch64'
               ? 'android-arm64-lib${bin.replaceAll('-', '_')}.gzbin'
               : '$plat-$bin.gzbin';

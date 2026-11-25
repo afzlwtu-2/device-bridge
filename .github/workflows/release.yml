@@ -186,9 +186,9 @@ jobs:
 
       - name: Package standalone Android/Termux core tarball and APK overlay
         run: |
-          mkdir -p dist overlay/app/android/app/src/main/jniLibs overlay/app/assets/bin
+          mkdir -p dist overlay/app/android/app/src/main/jniLibs
           cp -a app/android/app/src/main/jniLibs/* overlay/app/android/app/src/main/jniLibs/
-          cp -a app/assets/bin/android-${{ matrix.arch }}-*.gzbin overlay/app/assets/bin/
+          # Release APKs already carry fresh jniLibs/<abi>/libbridge_*.so; omit duplicate android-*.gzbin assets to keep APKs compact.
 
           pkg_name="devicebridge-android-${{ matrix.arch }}-core"
           stage="$(mktemp -d)"

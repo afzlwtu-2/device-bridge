@@ -18,11 +18,11 @@ rm -f app/assets/bin/*.gz "app/assets/bin/${linux_key}-"*.gzbin app/assets/bin/a
 gzip -9 -n -c artifacts/linux/bridge-agent > "app/assets/bin/${linux_key}-bridge-agent.gzbin"
 gzip -9 -n -c artifacts/linux/bridge-cli > "app/assets/bin/${linux_key}-bridge-cli.gzbin"
 if [[ -x artifacts/linux/bridge-sync ]]; then
-  gzip -1 -n -c artifacts/linux/bridge-sync > "app/assets/bin/${linux_key}-bridge-sync.gzbin"
+  gzip -9 -n -c artifacts/linux/bridge-sync > "app/assets/bin/${linux_key}-bridge-sync.gzbin"
 fi
 
-# The SSH installer reuses the Android arm64 executables from these same assets.
-if [[ -f artifacts/android-arm64/libbridge_cli.so && -f artifacts/android-arm64/libbridge_agent.so ]]; then
+# The SSH installer reuses the Android arm64 executables from these same assets during debug hot-swap.
+if [[ "${DEVICEBRIDGE_SKIP_ANDROID_ASSETS:-0}" != "1" && -f artifacts/android-arm64/libbridge_cli.so && -f artifacts/android-arm64/libbridge_agent.so ]]; then
   gzip -9 -n -c artifacts/android-arm64/libbridge_cli.so > app/assets/bin/android-arm64-libbridge_cli.gzbin
   gzip -9 -n -c artifacts/android-arm64/libbridge_agent.so > app/assets/bin/android-arm64-libbridge_agent.gzbin
 fi

@@ -33,6 +33,6 @@ if [[ "$target" == linux ]]; then exit 0; fi
 GOOS=android GOARCH="$android_arch" CGO_ENABLED=1 CC="$compiler" go build -trimpath -buildmode=pie -tags noupgrade -ldflags="$engine_flags -extldflags=-Wl,-z,max-page-size=16384" -o "$project_root/$android_output/libbridge_sync.so" ./cmd/syncthing
 cd "$project_root"
 cp "$android_output/libbridge_sync.so" "$android_jni/libbridge_sync.so"
-gzip -1 -n -c "$android_output/libbridge_sync.so" > "app/assets/bin/android-$android_arch-libbridge_sync.gzbin"
+gzip -9 -n -c "$android_output/libbridge_sync.so" > "app/assets/bin/android-$android_arch-libbridge_sync.gzbin"
 cp "$cache/syncthing-$version/LICENSE" docs/licenses/syncthing-v2.1.7.txt
 xxhsum -H1 "$android_output/libbridge_sync.so"

@@ -13,6 +13,8 @@ flutter test
 flutter build linux --release
 flutter build apk --debug --target-platform android-arm64
 if [[ "${DEVICEBRIDGE_BUILD_RELEASE:-0}" == "1" ]]; then
+  # Release APKs already bundle fresh jniLibs/*.so; skip duplicate android-*.gzbin assets.
+  rm -f assets/bin/android-*.gzbin
   flutter build apk --release --target-platform android-arm64
 fi
 cd ..
