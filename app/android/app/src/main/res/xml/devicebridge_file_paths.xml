@@ -1,1 +1,4 @@
-<paths xmlns:android="http://schemas.android.com/apk/res/android"><external-path name="phone" path="." /></paths>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-path name="phone" path="." />
+    <cache-path name="app_updates" path="updates/" />
+</paths>

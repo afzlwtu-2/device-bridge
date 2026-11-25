@@ -75,6 +75,9 @@ class MainActivity : FlutterActivity() {
     private val guestTerminal by lazy { GuestTerminal(this) { guestTerminalSink?.success(it) } }
     private var localTerminalSink: EventChannel.EventSink? = null
     private val termuxBackup by lazy { TermuxBackup(this, worker, ::bundledChecksum) }
+    private val appUpdates by lazy {
+        AppUpdates(this, worker, { deviceSettings.verifyRootEnabled(forceRefresh = true) }, ::bundledChecksum)
+    }
     private val localTerminal by lazy {
         LocalTerminal(this, { ::deviceSettings.isInitialized && deviceSettings.detachedTerminalEnabled() }) {
             localTerminalSink?.success(it)
@@ -880,6 +883,9 @@ class MainActivity : FlutterActivity() {
         })
         MethodChannel(engine.dartExecutor.binaryMessenger, "dev.devicebridge/core").setMethodCallHandler { call, result ->
             when (call.method) {
+                "appVersion" -> result.success(appUpdates.version())
+                "checkAppUpdate" -> appUpdates.check(call.argument<Boolean>("manual") == true, result)
+                "downloadAppUpdate" -> appUpdates.download(call.argument<String>("version"), result)
                 "createTermuxBackup" -> termuxBackup.pick(false, localTerminal, result)
                 "restoreTermuxBackup" -> termuxBackup.pick(true, localTerminal, result)
                 "savedTermuxPackages" -> result.success(termuxBackup.savedPackages())
@@ -1527,6 +1533,7 @@ class MainActivity : FlutterActivity() {
     @Deprecated("Activity result bridge for FlutterActivity")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (appUpdates.handle(requestCode, resultCode)) return
         if (requestCode == 409 && termuxBackup.handle(requestCode, resultCode, data)) return
         if (requestCode == 407 || requestCode == 408) {
             val reply = sharePickResult ?: return

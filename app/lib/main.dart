@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_driver/driver_extension.dart';
@@ -19,6 +20,7 @@ import 'features/appearance.dart';
 import 'features/amoled_editor.dart';
 import 'features/matte_editor.dart';
 import 'features/settings_screen.dart';
+import 'features/app_updates.dart';
 import 'features/acl_screen.dart';
 import 'features/phone_files.dart';
 import 'features/quick_share.dart';
@@ -265,6 +267,11 @@ class _BridgeHomeState extends State<BridgeHome> {
     }
     unawaited(initialize());
     if (widget.core case final LocalCore local) {
+      if (Platform.isAndroid) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(AppUpdates.check(context));
+        });
+      }
       _sharedDraftEvents = local.sharedDraftEvents.listen(
         (_) async {
           final draft = await local.takeSharedDraft();

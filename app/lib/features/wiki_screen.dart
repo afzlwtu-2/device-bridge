@@ -801,6 +801,41 @@ class _WikiScreenState extends State<WikiScreen> {
                 ],
 
                 if (_showSection(
+                  'app-updates',
+                  'app updates github releases version apk install unknown apps permissions root shizuku standard',
+                )) ...[
+                  _sectionHeader(
+                    context,
+                    Icons.system_update_outlined,
+                    'Android App Updates',
+                    'Check for updates in Settings or when the release app opens',
+                  ),
+                  _infoCard(
+                    context,
+                    title: 'Installing a GitHub release',
+                    badges: const [],
+                    summary:
+                        'DeviceBridge asks before downloading. It selects a compatible APK '
+                        'and verifies its XXH64, Android package, version and signing key.',
+                    rows: const [
+                      (
+                        'Standard and Shizuku',
+                        'Both use Android’s package installer. On first use, Android may ask '
+                            'you to allow DeviceBridge to install unknown apps. Shizuku requires '
+                            'the same steps and uses the same download and verification.',
+                      ),
+                      (
+                        'Root',
+                        'With Root mode enabled and UID 0 verified, DeviceBridge sends the APK '
+                            'directly to Android’s package manager after you approve the download. '
+                            'This saves installer taps. Download speed and battery use are the '
+                            'same in all three modes.',
+                      ),
+                    ],
+                  ),
+                ],
+
+                if (_showSection(
                   'files',
                   'file manager storage permissions internal termux home recycle bin delete drag drop manage_external_storage all files xxh64',
                 )) ...[

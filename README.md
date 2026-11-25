@@ -133,11 +133,20 @@ Download the latest multi-architecture release from the [**GitHub Releases**](ht
 - **Linux Desktop:** `devicebridge-linux-x86_64.tar.gz` or `devicebridge-linux-arm64.tar.gz`
 - **Standalone CLI / Agent / Termux Cores:** `devicebridge-cli-linux-{amd64,arm64}.tar.gz` & `devicebridge-android-{arm64,arm,amd64}-core.tar.gz`
 
-Verify downloads using the release's `CHECKSUMS.xxh64` or `CHECKSUMS.sha256`:
+Verify downloads using the release's `CHECKSUMS.xxh64`:
 ```bash
 xxhsum -H1 --check CHECKSUMS.xxh64
-sha256sum --check CHECKSUMS.sha256
 ```
+
+Starting with 1.0.1, the Android release build checks GitHub at launch. Settings
+shows the installed version and offers **Check for updates**. After you approve,
+DeviceBridge downloads the matching APK and verifies its XXH64 and signing key.
+With Root mode enabled and verified, DeviceBridge installs the update directly.
+Standard and Shizuku use Android's package installer.
+
+For a release, set `version` in `app/pubspec.yaml` and use the matching
+`vMAJOR.MINOR.PATCH` tag. The Android build number is
+`MAJOR * 1000000 + MINOR * 1000 + PATCH` for every APK variant.
 
 ### Build from Source
 

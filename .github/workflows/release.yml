@@ -15,7 +15,39 @@ permissions:
   contents: write
 
 jobs:
+  version:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that the release tag matches the APK version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+
+          version = re.search(r"^version:\s*(\d+)\.(\d+)\.(\d+)\+(\d+)\s*$",
+                              Path("app/pubspec.yaml").read_text(), re.MULTILINE)
+          if version is None:
+              raise SystemExit("Expected a stable app version (major.minor.patch+code) in app/pubspec.yaml.")
+          major, minor, patch, code = map(int, version.groups())
+          if not (1 <= major <= 2099 and minor <= 999 and patch <= 999 and
+                  code == major * 1_000_000 + minor * 1_000 + patch):
+              raise SystemExit("APK build number must be major*1000000 + minor*1000 + patch.")
+          tag = os.environ["RELEASE_TAG"]
+          if tag and tag != f"v{major}.{minor}.{patch}":
+              raise SystemExit(f"Expected release tag v{major}.{minor}.{patch}, got {tag!r}.")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"tag={tag}", file=output)
+          PY
+
   build-linux:
+    needs: version
     name: Linux (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -143,6 +175,7 @@ jobs:
           path: overlay-linux
 
   build-android-native:
+    needs: version
     name: Android Native (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -292,7 +325,7 @@ jobs:
 
   release:
     name: Publish Release & Checksums
-    needs: [build-linux, build-android-native, build-android-apk]
+    needs: [version, build-linux, build-android-native, build-android-apk]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -307,34 +340,31 @@ jobs:
           merge-multiple: true
           path: release-assets
 
-      - name: Generate XXH64 and SHA-256 checksums and release notes
+      - name: Generate XXH64 checksums and release notes
         run: |
           cd release-assets
           xxhsum -H1 * | sort -k2 > CHECKSUMS.xxh64
-          sha256sum * | grep -v 'CHECKSUMS.xxh64' | sort -k2 > CHECKSUMS.sha256
           python3 - <<'PY' > ../RELEASE_NOTES.md
           from pathlib import Path
-          import hashlib, subprocess
+          import subprocess
 
           files = sorted(
               p for p in Path('.').iterdir()
-              if p.is_file() and p.name not in ('CHECKSUMS.xxh64', 'CHECKSUMS.sha256')
+              if p.is_file() and p.name != 'CHECKSUMS.xxh64'
           )
           print("## DeviceBridge Release Artifacts\n")
           print("All binaries are built in parallel across Linux (`amd64`, `arm64`) and Android (`arm64-v8a`, `armeabi-v7a`, `x86_64`).")
-          print("File integrity is verified with **XXH64** (`xxhsum -H1`, DeviceBridge native verification) and **SHA-256** (`sha256sum`).\n")
+          print("File integrity is verified with **XXH64** (`xxhsum -H1`).\n")
           print("> **Signing:** Release APKs are signed with DeviceBridge's persistent release key for seamless in-place upgrades across releases.\n")
-          print("| Artifact | Size | XXH64 (`xxhsum -H1`) | SHA-256 |")
-          print("| --- | ---: | --- | --- |")
+          print("| Artifact | Size | XXH64 (`xxhsum -H1`) |")
+          print("| --- | ---: | --- |")
           for p in files:
               size_mib = p.stat().st_size / (1024 * 1024)
               xxh = subprocess.check_output(["xxhsum", "-H1", p.name], text=True).split()[0]
-              sha = hashlib.sha256(p.read_bytes()).hexdigest()
-              print(f"| `{p.name}` | {size_mib:.2f} MiB | `{xxh}` | `{sha}` |")
+              print(f"| `{p.name}` | {size_mib:.2f} MiB | `{xxh}` |")
           print("\n### Verify Checksums\n")
           print("```bash")
           print("xxhsum -H1 --check CHECKSUMS.xxh64")
-          print("sha256sum --check CHECKSUMS.sha256")
           print("```")
           PY
 
@@ -346,23 +376,12 @@ jobs:
             release-assets/*
             RELEASE_NOTES.md
 
-      - name: Determine release tag
-        id: tag
-        run: |
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          elif [[ -n "${{ inputs.tag }}" ]]; then
-            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Create GitHub Release
-        if: steps.tag.outputs.name != ''
+        if: needs.version.outputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          name: DeviceBridge ${{ steps.tag.outputs.name }}
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: DeviceBridge ${{ needs.version.outputs.tag }}
           body_path: RELEASE_NOTES.md
           files: release-assets/*
           generate_release_notes: true

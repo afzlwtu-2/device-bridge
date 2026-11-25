@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../core/bridge.dart';
 import '../core/debug_trace.dart';
 import 'acl_screen.dart';
+import 'app_updates.dart';
 import 'debug_log_screen.dart';
 import 'wiki_screen.dart';
 
@@ -22,6 +23,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool loading = true, saving = false;
   String? error;
   String? notice;
+  String? appVersion;
 
   @override
   void initState() {
@@ -46,6 +48,14 @@ class _SettingsScreenState extends State<SettingsScreen>
   Future<void> load() async {
     try {
       final result = await widget.core.appSettings();
+      String? version;
+      if (result['android'] == true && widget.core is LocalCore) {
+        try {
+          version = await AppUpdates.version();
+        } on PlatformException {
+          // Settings remains usable if the platform version is unavailable.
+        }
+      }
       Map<String, dynamic> rt = {};
       if (result['go_runtime'] is Map) {
         rt = Map<String, dynamic>.from(result['go_runtime'] as Map);
@@ -58,6 +68,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         setState(() {
           values = result;
           goRuntime = rt;
+          appVersion = version;
           loading = false;
         });
       }
@@ -376,6 +387,24 @@ class _SettingsScreenState extends State<SettingsScreen>
                     ),
                   ),
                 if (android) ...[
+                  ListTile(
+                    key: const ValueKey('check-app-update'),
+                    leading: const Icon(Icons.system_update_outlined),
+                    title: const Text('Check for updates'),
+                    subtitle: Text(
+                      appVersion == null
+                          ? 'GitHub Releases'
+                          : 'DeviceBridge $appVersion',
+                    ),
+                    enabled: !saving,
+                    onTap: () => action(() async {
+                      final message = await AppUpdates.check(
+                        context,
+                        manual: true,
+                      );
+                      if (mounted) setState(() => notice = message);
+                    }),
+                  ),
                   section(
                     'Root',
                     'Verified live on launch; disabled automatically if root is removed',
