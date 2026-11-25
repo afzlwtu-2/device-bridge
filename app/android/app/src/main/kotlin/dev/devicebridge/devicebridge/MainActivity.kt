@@ -881,6 +881,10 @@ class MainActivity : FlutterActivity() {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink) { localTerminalSink = events }
             override fun onCancel(arguments: Any?) { localTerminalSink = null }
         })
+        EventChannel(engine.dartExecutor.binaryMessenger, "dev.devicebridge/termux_backup").setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink) = termuxBackup.observeProgress(events)
+            override fun onCancel(arguments: Any?) = termuxBackup.observeProgress(null)
+        })
         MethodChannel(engine.dartExecutor.binaryMessenger, "dev.devicebridge/core").setMethodCallHandler { call, result ->
             when (call.method) {
                 "appVersion" -> result.success(appUpdates.version())

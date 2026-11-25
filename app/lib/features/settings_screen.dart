@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
@@ -18,12 +20,19 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen>
     with WidgetsBindingObserver {
+  static const _backupEvents = EventChannel('dev.devicebridge/termux_backup');
   Map<String, dynamic> values = {};
   Map<String, dynamic> goRuntime = {};
   bool loading = true, saving = false;
   String? error;
   String? notice;
   String? appVersion;
+  StreamSubscription<dynamic>? _backupSubscription;
+  Map<String, dynamic>? _backupProgress;
+  bool _backupRequest = false;
+  String? _backupNotice;
+  bool _backupFailed = false;
+  bool get _backupBusy => _backupRequest || _backupProgress != null;
 
   @override
   void initState() {
@@ -34,13 +43,14 @@ class _SettingsScreenState extends State<SettingsScreen>
 
   @override
   void dispose() {
+    unawaited(_backupSubscription?.cancel());
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && !saving) {
+    if (state == AppLifecycleState.resumed && !saving && !_backupBusy) {
       load();
     }
   }
@@ -50,6 +60,19 @@ class _SettingsScreenState extends State<SettingsScreen>
       final result = await widget.core.appSettings();
       String? version;
       if (result['android'] == true && widget.core is LocalCore) {
+        if (mounted) {
+          _backupSubscription ??= _backupEvents.receiveBroadcastStream().listen(
+            (event) {
+              if (mounted) {
+                setState(() {
+                  _backupProgress = event is Map
+                      ? Map<String, dynamic>.from(event)
+                      : null;
+                });
+              }
+            },
+          );
+        }
         try {
           version = await AppUpdates.version();
         } on PlatformException {
@@ -125,6 +148,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   });
 
   Future<void> termuxBackup({required bool restore}) async {
+    if (saving || _backupBusy) return;
     if (restore) {
       final confirmed = await showDialog<bool>(
         context: context,
@@ -149,7 +173,12 @@ class _SettingsScreenState extends State<SettingsScreen>
       );
       if (confirmed != true || !mounted) return;
     }
-    await action(() async {
+    setState(() {
+      _backupRequest = true;
+      _backupNotice = null;
+      _backupFailed = false;
+    });
+    try {
       final result = await LocalCore.channel.invokeMapMethod<String, dynamic>(
         restore ? 'restoreTermuxBackup' : 'createTermuxBackup',
       );
@@ -157,7 +186,7 @@ class _SettingsScreenState extends State<SettingsScreen>
       final previous = result['previous_home'] as String? ?? '';
       final skipped = result['skipped'] as int? ?? 0;
       setState(() {
-        notice = restore
+        _backupNotice = restore
             ? 'Termux Home restored. ${result['package_count']} package names '
                   'saved.${previous.isEmpty ? '' : ' Previous Home is at ../$previous.'}'
             : skipped == 0
@@ -165,24 +194,105 @@ class _SettingsScreenState extends State<SettingsScreen>
             : 'Termux backup saved and verified. Skipped $skipped '
                   'unreadable or disappearing entries.';
       });
-    });
+    } on PlatformException catch (error) {
+      if (mounted) {
+        setState(() {
+          _backupNotice = error.message ?? error.code;
+          _backupFailed = true;
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _backupRequest = false);
+    }
   }
 
-  Future<void> copyTermuxPackages() => action(() async {
-    final packages = await LocalCore.channel.invokeMethod<String>(
-      'savedTermuxPackages',
+  Future<void> copyTermuxPackages() async {
+    try {
+      final packages = await LocalCore.channel.invokeMethod<String>(
+        'savedTermuxPackages',
+      );
+      if (packages != null && packages.isNotEmpty) {
+        await Clipboard.setData(ClipboardData(text: 'pkg install $packages'));
+      }
+      if (mounted) {
+        setState(() {
+          _backupFailed = false;
+          _backupNotice = packages == null || packages.isEmpty
+              ? 'There are no saved package names. Restore a backup first.'
+              : 'Package install command copied. Paste it in Termux when ready.';
+        });
+      }
+    } on PlatformException catch (error) {
+      if (mounted) {
+        setState(() {
+          _backupFailed = true;
+          _backupNotice = error.message ?? error.code;
+        });
+      }
+    }
+  }
+
+  Widget _termuxBackupStatus() {
+    final phase = _backupProgress?['phase'];
+    final bytes = _backupProgress?['bytes'] as int? ?? 0;
+    final total = _backupProgress?['total'] as int?;
+    final fraction = total == null || total <= 0
+        ? null
+        : (bytes / total).clamp(0.0, 1.0);
+    final label = switch (phase) {
+      'choose_backup' => 'Choose a backup file',
+      'choose_destination' => 'Choose where to save the backup',
+      'write' => 'Writing archive',
+      'verify' => 'Verifying saved archive',
+      'restore' => 'Reading backup',
+      'finish_restore' => 'Applying restore',
+      _ => 'Waiting for Android',
+    };
+    final counts = switch (phase) {
+      'write' => '${_backupBytes(bytes)} written',
+      'verify' || 'restore' when fraction != null =>
+        '${_backupBytes(bytes)} of ${_backupBytes(total!)} · ${(fraction * 100).floor()}%',
+      'verify' || 'restore' => '${_backupBytes(bytes)} read',
+      _ => null,
+    };
+    return Padding(
+      key: const ValueKey('termux-backup-status'),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (_backupBusy) ...[
+            Text(label, style: Theme.of(context).textTheme.titleSmall),
+            if (counts != null) Text(counts),
+            if (fraction != null) ...[
+              const SizedBox(height: 8),
+              LinearProgressIndicator(value: fraction),
+            ],
+          ] else
+            Semantics(
+              liveRegion: true,
+              child: Text(
+                _backupNotice!,
+                style: _backupFailed
+                    ? TextStyle(color: Theme.of(context).colorScheme.error)
+                    : null,
+              ),
+            ),
+        ],
+      ),
     );
-    if (packages != null && packages.isNotEmpty) {
-      await Clipboard.setData(ClipboardData(text: 'pkg install $packages'));
+  }
+
+  String _backupBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KiB';
     }
-    if (mounted) {
-      setState(() {
-        notice = packages == null || packages.isEmpty
-            ? 'There are no saved package names. Restore a backup first.'
-            : 'Package install command copied. Paste it in Termux when ready.';
-      });
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MiB';
     }
-  });
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GiB';
+  }
 
   Future<void> _openSubmenu({
     required String title,
@@ -302,7 +412,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         actions: [
           IconButton(
             tooltip: 'Refresh settings',
-            onPressed: saving ? null : load,
+            onPressed: saving || _backupBusy ? null : load,
             icon: const Icon(Icons.refresh),
           ),
         ],
@@ -585,32 +695,6 @@ class _SettingsScreenState extends State<SettingsScreen>
                               _ResourceDiagnosticsDialog(core: widget.core),
                         ),
                       ),
-                      const Divider(height: 1),
-                      const ListTile(
-                        leading: Icon(Icons.inventory_2_outlined),
-                        title: Text('Termux backup'),
-                        subtitle: Text(
-                          'Includes projects, hidden files, configs and package names. '
-                          'The archive may contain private files. Choose where to save it.',
-                        ),
-                      ),
-                      ListTile(
-                        key: const ValueKey('termux-backup-create'),
-                        title: const Text('Back up Termux Home'),
-                        enabled: !saving,
-                        onTap: () => termuxBackup(restore: false),
-                      ),
-                      ListTile(
-                        key: const ValueKey('termux-backup-restore'),
-                        title: const Text('Restore Termux backup'),
-                        enabled: !saving,
-                        onTap: () => termuxBackup(restore: true),
-                      ),
-                      ListTile(
-                        title: const Text('Copy package install command'),
-                        enabled: !saving,
-                        onTap: copyTermuxPackages,
-                      ),
                     ],
                     const Divider(height: 1),
                     ListTile(
@@ -680,6 +764,34 @@ class _SettingsScreenState extends State<SettingsScreen>
                     ),
                   ],
                 ),
+                if (android)
+                  section(
+                    'Termux backup',
+                    'Includes projects, hidden files, configs and package names. '
+                        'The archive may contain private files.',
+                    Icons.inventory_2_outlined,
+                    [
+                      if (_backupBusy || _backupNotice != null)
+                        _termuxBackupStatus(),
+                      ListTile(
+                        key: const ValueKey('termux-backup-create'),
+                        title: const Text('Back up Termux Home'),
+                        enabled: !saving && !_backupBusy,
+                        onTap: () => termuxBackup(restore: false),
+                      ),
+                      ListTile(
+                        key: const ValueKey('termux-backup-restore'),
+                        title: const Text('Restore Termux backup'),
+                        enabled: !saving && !_backupBusy,
+                        onTap: () => termuxBackup(restore: true),
+                      ),
+                      ListTile(
+                        title: const Text('Copy package install command'),
+                        enabled: !saving && !_backupBusy,
+                        onTap: copyTermuxPackages,
+                      ),
+                    ],
+                  ),
                 section(
                   'Go core libraries',
                   'Loaded Go version & hot-swap control',

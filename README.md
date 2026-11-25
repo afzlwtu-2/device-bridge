@@ -138,7 +138,7 @@ Verify downloads using the release's `CHECKSUMS.xxh64`:
 xxhsum -H1 --check CHECKSUMS.xxh64
 ```
 
-Starting with 1.0.1, the Android release build checks GitHub at launch. Settings
+The Android release build checks GitHub at launch. Settings
 shows the installed version and offers **Check for updates**. After you approve,
 DeviceBridge downloads the matching APK and verifies its XXH64 and signing key.
 With Root mode enabled and verified, DeviceBridge installs the update directly.

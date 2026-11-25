@@ -4,11 +4,15 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import android.util.Log
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
 import java.io.File
+import java.io.FilterInputStream
 import java.io.InputStream
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
@@ -20,10 +24,17 @@ internal class TermuxBackup(
 ) {
     private val prefs = activity.getSharedPreferences("termux-backup", Activity.MODE_PRIVATE)
     private var pending: MethodChannel.Result? = null
+    private var progress: Map<String, Any?>? = null
+    private var progressSink: EventChannel.EventSink? = null
     var restoring = false
         private set
 
     fun savedPackages(): String = prefs.getString("packages", "").orEmpty()
+
+    fun observeProgress(sink: EventChannel.EventSink?) {
+        progressSink = sink
+        sink?.success(progress)
+    }
 
     fun pick(restore: Boolean, terminal: LocalTerminal, reply: MethodChannel.Result) {
         if (pending != null) {
@@ -32,6 +43,7 @@ internal class TermuxBackup(
         }
         pending = reply
         restoring = restore
+        reportProgress(if (restore) "choose_backup" else "choose_destination")
         if (restore) {
             terminal.hasSessions { active ->
                 if (active) finish { it.error("termux_busy", "Close all Termux tabs before restoring.", null) }
@@ -89,25 +101,30 @@ internal class TermuxBackup(
                 .redirectError(errors).start()
             process = child
             val resolver = context.contentResolver
-            val response = if (restore) {
-                child.outputStream.use { out ->
-                    readDocument(uri) { it.copyTo(out, 128 * 1024) }
-                }
-                child.inputStream.bufferedReader().use { it.readText() }
-            } else {
+            var written = 0L
+            val response = if (!restore) {
                 child.outputStream.close()
                 child.inputStream.use { input ->
-                    resolver.openOutputStream(uri, "w")?.use { input.copyTo(it, 128 * 1024) }
+                    written = resolver.openOutputStream(uri, "w")?.use { out ->
+                        track(input, "write") { it.copyTo(out, 128 * 1024) }
+                    }
                         ?: error("Cannot write the selected backup.")
                 }
                 ""
+            } else {
+                val total = documentSize(uri)
+                child.outputStream.use { out ->
+                    readDocument(uri) { input -> track(input, "restore", total) { it.copyTo(out, 128 * 1024) } }
+                }
+                reportProgress("finish_restore")
+                child.inputStream.bufferedReader().use { it.readText() }
             }
             val status = child.waitFor()
             val diagnostic = errors.readText().trim()
             if (status != 0) error(failureMessage(diagnostic))
             if (!restore) {
                 val report = JSONObject(diagnostic)
-                val actual = readDocument(uri, checksum)
+                val actual = readDocument(uri) { track(it, "verify", written, checksum) }
                 check(actual == report.getString("xxh64")) { "The saved backup failed XXH64 verification." }
                 return mapOf("skipped" to report.getInt("skipped"))
             }
@@ -126,6 +143,40 @@ internal class TermuxBackup(
         } finally {
             process?.destroy()
             errors.delete()
+        }
+    }
+
+    private fun documentSize(uri: Uri): Long? = runCatching {
+        activity.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use {
+            if (it.moveToFirst() && !it.isNull(0)) it.getLong(0).takeIf { size -> size > 0 } else null
+        }
+    }.getOrNull()
+
+    private fun <T> track(input: InputStream, phase: String, total: Long? = null, read: (InputStream) -> T): T {
+        var bytes = 0L
+        var lastUpdate = SystemClock.elapsedRealtime()
+        fun advance(count: Int) {
+            if (count <= 0) return
+            bytes += count
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastUpdate >= 250) {
+                reportProgress(phase, bytes, total)
+                lastUpdate = now
+            }
+        }
+        reportProgress(phase, total = total)
+        val monitored = object : FilterInputStream(input) {
+            override fun read(): Int = super.read().also { if (it >= 0) advance(1) }
+            override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+                super.read(buffer, offset, length).also(::advance)
+        }
+        return read(monitored).also { reportProgress(phase, bytes, total) }
+    }
+
+    private fun reportProgress(phase: String, bytes: Long = 0, total: Long? = null) {
+        activity.runOnUiThread {
+            progress = mapOf("phase" to phase, "bytes" to bytes, "total" to total)
+            progressSink?.success(progress)
         }
     }
 
@@ -152,6 +203,8 @@ internal class TermuxBackup(
         val result = pending
         pending = null
         restoring = false
+        progress = null
+        progressSink?.success(null)
         if (result != null) complete(result)
     }
 
