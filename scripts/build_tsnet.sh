@@ -11,7 +11,9 @@ if [[ "$target" == linux ]]; then exit 0; fi
 source ../../scripts/android_target.sh
 mkdir -p "../../$android_output" "../../$android_jni"
 
+go mod download tailscale.com
 ts_dir=$(go list -m -f '{{.Dir}}' tailscale.com)
+test -d "$ts_dir"
 tmp_mod=$(mktemp -d)
 trap 'chmod -R u+w "$tmp_mod" 2>/dev/null || true; rm -rf "$tmp_mod"' EXIT
 python3 - "$ts_dir" "$PWD" "$tmp_mod" <<'PY'
