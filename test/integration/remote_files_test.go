@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -290,7 +291,7 @@ type failingSource struct {
 func (f *failingSource) ReadRange(ctx context.Context, root, p string, o, n int64) ([]byte, error) {
 	f.calls++
 	if f.calls > f.failAfter {
-		return nil, os.ErrDeadlineExceeded
+		return nil, io.ErrUnexpectedEOF
 	}
 	return f.inner.ReadRange(ctx, root, p, o, n)
 }
@@ -342,16 +343,41 @@ func TestTransferDisruptionResumesOverAlternateRoute(t *testing.T) {
 	if initialErr == nil {
 		t.Fatal("expected mid-transfer disruption")
 	}
+	resumeOffset := make(chan string, 1)
+	resumeHandler := server.New(s, host, reg).Handler()
+	alternate := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/files/stream" {
+			select {
+			case resumeOffset <- r.URL.Query().Get("offset"):
+			default:
+			}
+		}
+		resumeHandler.ServeHTTP(w, r)
+	}))
+	alternate.TLS = host.ServerTLS()
+	alternate.StartTLS()
+	t.Cleanup(alternate.Close)
+	alternateAddr := strings.TrimPrefix(alternate.URL, "https://")
+
 	var switchedTo string
-	receipt, usedRoute, err := transfer.ResumePullOnAlternates(
+	var opens, waiting int
+	receipt, usedRoute, err := transfer.RecoverPull(
 		ctx,
-		"lan",
-		[]transfer.AlternateSource{
+		[]transfer.Route{
 			{
 				Name: "tailnet",
-				Open: func(context.Context) (transfer.Source, string, func(), error) {
-					c2 := client.New(phone, cs, &fakeTransport{address: addr}, transport.Candidate{DeviceID: host.ID, Endpoint: addr})
-					return c2, addr, c2.Close, nil
+				Open: func(ctx context.Context) (transfer.Source, string, func(), error) {
+					opens++
+					if opens == 1 {
+						return nil, "", nil, io.ErrUnexpectedEOF
+					}
+					c2 := client.New(phone, cs, &fakeTransport{address: alternateAddr}, transport.Candidate{DeviceID: host.ID, Endpoint: alternateAddr})
+					var device protocol.Device
+					if err := c2.JSON(ctx, "/v1/device", nil, &device); err != nil {
+						c2.Close()
+						return nil, "", nil, err
+					}
+					return c2, alternateAddr, c2.Close, nil
 				},
 			},
 		},
@@ -359,14 +385,30 @@ func TestTransferDisruptionResumesOverAlternateRoute(t *testing.T) {
 		manifest,
 		dest,
 		initialErr,
+		transfer.ChunkSize,
 		nil,
-		func(sw transfer.RouteSwitch) { switchedTo = sw.To },
+		func(event transfer.RecoveryEvent) {
+			if event.State == "waiting" {
+				waiting++
+			}
+			if event.State == "resuming" {
+				switchedTo = event.Transport
+			}
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if usedRoute != "tailnet" || switchedTo != "tailnet" || receipt.Bytes != int64(len(big)) {
+	if waiting != 1 || opens != 2 || usedRoute != "tailnet" || switchedTo != "tailnet" || receipt.Bytes != int64(len(big)) {
 		t.Fatalf("unexpected resume outcome: route=%s switched=%s receipt=%+v", usedRoute, switchedTo, receipt)
+	}
+	select {
+	case offset := <-resumeOffset:
+		if offset != strconv.Itoa(transfer.ChunkSize) {
+			t.Fatalf("alternate route requested offset %s instead of %d", offset, transfer.ChunkSize)
+		}
+	default:
+		t.Fatal("alternate endpoint received no resumed file stream")
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "hello.txt"))
 	if err != nil || !bytes.Equal(got, big) {

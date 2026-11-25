@@ -1,4 +1,4 @@
-// Package syncproviders reserves engine integration. No engine may bypass policy approval.
+// Package syncproviders defines the registered sync engines and approval contract.
 package syncproviders
 
 import (
@@ -13,27 +13,37 @@ type Plan struct {
 	ID, Group, Owner, ManifestHash string
 	Epoch                          uint64
 	Expires                        time.Time
+	Interface, CIDR                string
+	Listen, PeerEndpoint           string
+	Route                          string
+	RemoteApproved                 bool
+	// Host-constructed descriptor lease; never accepted from a peer request.
+	SourcePath string
+	// Host-owned endpoint adapters preserve Android's approved socket binding.
+	EngineListen, EnginePeerEndpoint string
 }
 
 // Approval must be issued by the central ownership/policy controller, not a provider.
 type Approval interface {
 	Validate(context.Context, Plan) error
 }
-type Status struct {
-	State    string
-	Complete bool
-	Error    string
+type Digest struct {
+	XXH64 string `json:"manifest_xxh64"`
+	Bytes int64  `json:"bytes"`
+	Items int    `json:"items"`
 }
+
+type Receipt struct {
+	Group    string `json:"group"`
+	Role     string `json:"role"`
+	Activity string `json:"activity"`
+	Digest
+}
+
 type Provider interface {
 	ID() string
 	Version() int
-	Detect(context.Context) error
-	Prepare(context.Context, string) error
-	Plan(context.Context, string) (Plan, error)
-	StartApprovedSession(context.Context, Plan, Approval) error
-	Status(context.Context, string) (Status, error)
-	Stop(context.Context, string) error
-	Recover(context.Context) error
+	Run(context.Context, Plan, Approval) (Receipt, error)
 }
 type Registry struct{ providers map[string]Provider }
 

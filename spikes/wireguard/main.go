@@ -75,17 +75,38 @@ func buildUAPI(cfg wireguard.Config) (string, error) {
 			continue
 		}
 		fmt.Fprintf(&sb, "public_key=%s\n", pubHex)
-		if p.TunnelIP != "" {
+		if p.PresharedKey != "" {
+			if pskHex, pe := b64ToHex(p.PresharedKey); pe == nil {
+				fmt.Fprintf(&sb, "preshared_key=%s\n", pskHex)
+			}
+		}
+		rawAllowed := p.AllowedIPs
+		if len(rawAllowed) == 0 && p.TunnelIP != "" {
 			allowed := p.TunnelIP
 			if !strings.Contains(allowed, "/") {
 				allowed += "/32"
 			}
+			rawAllowed = []string{allowed}
+		}
+		scoped, _ := wireguard.ScopeAllowedIPs(cfg.LocalTunnelIP, rawAllowed)
+		for _, allowed := range scoped {
 			fmt.Fprintf(&sb, "allowed_ip=%s\n", allowed)
 		}
 		if ep, _ := resolveEndpoint(p); ep != "" {
+			if host, port, se := net.SplitHostPort(ep); se == nil {
+				if _, ipErr := netip.ParseAddr(host); ipErr != nil {
+					if udpAddr, re := net.ResolveUDPAddr("udp", ep); re == nil && udpAddr != nil {
+						ep = net.JoinHostPort(udpAddr.IP.String(), port)
+					}
+				}
+			}
 			fmt.Fprintf(&sb, "endpoint=%s\n", ep)
 		}
-		sb.WriteString("persistent_keepalive_interval=25\n")
+		keepalive := p.PersistentKeepalive
+		if keepalive <= 0 {
+			keepalive = 25
+		}
+		fmt.Fprintf(&sb, "persistent_keepalive_interval=%d\n", keepalive)
 	}
 	return sb.String(), nil
 }
@@ -135,15 +156,27 @@ func (b *wgBroker) handle(ctx context.Context, c net.Conn) {
 			res.Error = "invalid target host:port"
 			break
 		}
+		targetIP, ipErr := netip.ParseAddr(host)
 		var matched *wireguard.PeerConfig
 		for i := range b.cfg.Peers {
 			if b.cfg.Peers[i].TunnelIP == host {
 				matched = &b.cfg.Peers[i]
 				break
 			}
+			if ipErr == nil {
+				for _, raw := range b.cfg.Peers[i].AllowedIPs {
+					if pre, pe := netip.ParsePrefix(raw); pe == nil && pre.Bits() >= 8 && pre.Contains(targetIP) {
+						matched = &b.cfg.Peers[i]
+						break
+					}
+				}
+				if matched != nil {
+					break
+				}
+			}
 		}
 		if matched == nil {
-			res.Error = "WireGuard peer not configured"
+			res.Error = "WireGuard peer or scoped route not configured"
 			break
 		}
 		ep, kind := resolveEndpoint(*matched)
@@ -151,6 +184,10 @@ func (b *wgBroker) handle(ctx context.Context, c net.Conn) {
 		if req.Operation == "stream" {
 			if !req.RemoteApproved {
 				res.Error = "explicit remote transfer approval required"
+				break
+			}
+			if port != "8731" {
+				res.Error = "only DeviceBridge app port 8731 may route over WireGuard"
 				break
 			}
 			callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -224,7 +261,7 @@ func run() error {
 	if err := platform.BindApprovedNetwork(); err != nil {
 		return err
 	}
-	cfg, err := wireguard.LoadOrInitConfig(*state, "", 0)
+	cfg, err := wireguard.LoadConfig(*state)
 	if err != nil {
 		return err
 	}

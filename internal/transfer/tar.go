@@ -194,6 +194,10 @@ func sanitizeArchiveName(name string) (string, error) {
 // PullTar safely extracts a streamed tar archive into private staging, verifies
 // every file against the pre-fetched manifest, and atomically publishes without overwrite.
 func PullTar(ctx context.Context, stream io.ReadCloser, codec, peer string, m protocol.Manifest, destination string, progress func(Progress)) (Receipt, error) {
+	return pullTar(ctx, stream, codec, peer, m, destination, progress, files.MaxManifestBytes+(64<<20))
+}
+
+func pullTar(ctx context.Context, stream io.ReadCloser, codec, peer string, m protocol.Manifest, destination string, progress func(Progress), maxStream int64) (Receipt, error) {
 	var receipt Receipt
 	defer stream.Close()
 	if codec != "" && codec != "none" && codec != "gzip" {
@@ -211,7 +215,6 @@ func PullTar(ctx context.Context, stream io.ReadCloser, codec, peer string, m pr
 	}
 	seen := make(map[string]bool, len(m.Entries))
 
-	maxStream := files.MaxManifestBytes + (64 << 20)
 	var r io.Reader = io.LimitReader(stream, maxStream)
 	if codec == "gzip" {
 		gz, err := gzip.NewReader(r)
@@ -330,7 +333,7 @@ func PullTar(ctx context.Context, stream io.ReadCloser, codec, peer string, m pr
 		}
 	}
 	if len(seen) != len(expected) {
-		return receipt, errors.New("archive stream incomplete; missing manifest entries")
+		return receipt, fmt.Errorf("archive stream incomplete; missing manifest entries: %w", io.ErrUnexpectedEOF)
 	}
 	if err := st.publish(); err != nil {
 		return receipt, err

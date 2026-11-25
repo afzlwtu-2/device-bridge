@@ -14,6 +14,7 @@ import (
 type Provider struct {
 	Control        tailnetipc.Client
 	RemoteApproved bool
+	PullNetwork    func() (string, error)
 }
 
 func (*Provider) ID() string { return "tsnet-v1" }
@@ -43,7 +44,18 @@ func (p *Provider) Dial(ctx context.Context, c transport.Candidate) (net.Conn, e
 	if !p.RemoteApproved {
 		return nil, errors.New("remote data requires explicit approval; relay paths can change")
 	}
-	_, conn, err := p.Control.Exchange(ctx, tailnetipc.Request{Operation: "stream", Target: c.Endpoint, RemoteApproved: true})
+	req := tailnetipc.Request{Operation: "stream", Target: c.Endpoint, RemoteApproved: true}
+	if p.PullNetwork != nil {
+		handle, err := p.PullNetwork()
+		if err != nil {
+			return nil, err
+		}
+		req.NetworkHandle = handle
+	}
+	_, conn, err := p.Control.Exchange(ctx, req)
+	if errors.Is(err, tailnetipc.ErrNetworkBinding) {
+		err = &net.OpError{Op: "dial", Net: "tailscale", Err: err}
+	}
 	return conn, err
 }
 func (*Provider) Listen(context.Context, string) (net.Listener, error) {

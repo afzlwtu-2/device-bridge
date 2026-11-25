@@ -1,0 +1,122 @@
+package dev.devicebridge.devicebridge
+
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.provider.DocumentsContract
+import io.flutter.plugin.common.MethodChannel
+import org.json.JSONObject
+import java.io.File
+import java.util.concurrent.Executor
+
+internal class TermuxBackup(private val activity: Activity, private val worker: Executor) {
+    private val prefs = activity.getSharedPreferences("termux-backup", Activity.MODE_PRIVATE)
+    private var pending: MethodChannel.Result? = null
+    var restoring = false
+        private set
+
+    fun savedPackages(): String = prefs.getString("packages", "").orEmpty()
+
+    fun pick(restore: Boolean, terminal: LocalTerminal, reply: MethodChannel.Result) {
+        if (pending != null) {
+            reply.error("backup_busy", "A Termux backup operation is in progress.", null)
+            return
+        }
+        pending = reply
+        restoring = restore
+        if (restore) {
+            terminal.hasSessions { active ->
+                if (active) finish { it.error("termux_busy", "Close all Termux tabs before restoring.", null) }
+                else openPicker(true)
+            }
+        } else openPicker(false)
+    }
+
+    private fun openPicker(restore: Boolean) {
+        try {
+            val intent = Intent(if (restore) Intent.ACTION_OPEN_DOCUMENT else Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(if (restore) "*/*" else "application/gzip")
+            if (!restore) {
+                val stamp = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
+                intent.putExtra(Intent.EXTRA_TITLE, "devicebridge-termux-$stamp.tar.gz")
+            }
+            activity.startActivityForResult(intent, REQUEST)
+        } catch (error: Exception) {
+            finish { it.error("backup_picker_failed", error.message, null) }
+        }
+    }
+
+    fun handle(request: Int, resultCode: Int, data: Intent?): Boolean {
+        if (request != REQUEST) return false
+        val uri = data?.data
+        if (resultCode != Activity.RESULT_OK || uri == null) {
+            finish { it.success(null) }
+            return true
+        }
+        val restore = restoring
+        worker.execute {
+            try {
+                val result = runArchive(uri, restore)
+                activity.runOnUiThread { finish { it.success(result) } }
+            } catch (error: Exception) {
+                if (!restore) runCatching { DocumentsContract.deleteDocument(activity.contentResolver, uri) }
+                activity.runOnUiThread { finish { it.error("termux_backup_failed", error.message, null) } }
+            }
+        }
+        return true
+    }
+
+    private fun runArchive(uri: Uri, restore: Boolean): Map<String, Any> {
+        val context = activity.applicationContext
+        val cli = File(context.applicationInfo.nativeLibraryDir, "libbridge_cli.so")
+        val state = File(context.filesDir, "devicebridge")
+        val errors = File.createTempFile("termux-backup-", ".log", context.cacheDir)
+        var process: Process? = null
+        try {
+            val child = ProcessBuilder(cli.path, "--state", state.path, "termux-backup", if (restore) "restore" else "create")
+                .redirectError(errors).start()
+            process = child
+            val resolver = context.contentResolver
+            val response = if (restore) {
+                child.outputStream.use { out ->
+                    resolver.openInputStream(uri)?.use { it.copyTo(out, 128 * 1024) }
+                        ?: error("Cannot read the selected backup.")
+                }
+                child.inputStream.bufferedReader().use { it.readText() }
+            } else {
+                child.outputStream.close()
+                child.inputStream.use { input ->
+                    resolver.openOutputStream(uri, "wt")?.use { input.copyTo(it, 128 * 1024) }
+                        ?: error("Cannot write the selected backup.")
+                }
+                ""
+            }
+            if (child.waitFor() != 0) error(errors.readText().trim().ifBlank { "Termux archive failed." })
+            if (!restore) return emptyMap()
+            val info = JSONObject(response)
+            val packages = info.getJSONArray("packages")
+            val names = (0 until packages.length()).map { packages.getString(it) }
+            prefs.edit().putString("packages", names.joinToString(" ")).apply()
+            return mapOf("previous_home" to info.optString("previous_home"), "package_count" to names.size)
+        } catch (error: Exception) {
+            val detail = errors.readText().trim()
+            if (detail.isNotEmpty()) throw IllegalStateException(detail, error)
+            throw error
+        } finally {
+            process?.destroy()
+            errors.delete()
+        }
+    }
+
+    private fun finish(complete: (MethodChannel.Result) -> Unit) {
+        val result = pending
+        pending = null
+        restoring = false
+        if (result != null) complete(result)
+    }
+
+    private companion object {
+        const val REQUEST = 409
+    }
+}

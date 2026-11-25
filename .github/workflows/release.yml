@@ -1,0 +1,338 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v1.0.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Linux (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: ubuntu-latest
+            bundle_name: devicebridge-linux-x86_64
+          - arch: arm64
+            os: ubuntu-24.04-arm
+            bundle_name: devicebridge-linux-arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      DEVICEBRIDGE_BUILD_TARGET: linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: spikes/tsnet/go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            spikes/tsnet/go.sum
+            spikes/wireguard/go.sum
+
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev xxhash
+
+      - name: Set up Flutter (x64)
+        if: matrix.arch == 'amd64'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.50.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Cache Flutter SDK (arm64)
+        if: matrix.arch == 'arm64'
+        uses: actions/cache@v4
+        with:
+          path: ~/flutter
+          key: flutter-3.50.0-linux-arm64
+
+      - name: Set up Flutter (arm64)
+        if: matrix.arch == 'arm64'
+        run: |
+          if [ ! -x "$HOME/flutter/bin/flutter" ]; then
+            git clone https://github.com/flutter/flutter.git --branch 3.50.0 --depth 1 "$HOME/flutter"
+          fi
+          echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
+          "$HOME/flutter/bin/flutter" precache --linux
+
+      - name: Build Go binaries and Syncthing engine
+        run: |
+          mkdir -p artifacts/linux
+          go build -trimpath -ldflags='-s -w' -o artifacts/linux/bridge-agent ./cmd/bridge-agent
+          go build -trimpath -ldflags='-s -w' -o artifacts/linux/bridge-cli ./cmd/bridge-cli
+          bash scripts/build_syncthing.sh
+          bash scripts/build_tsnet.sh
+          bash scripts/build_wg.sh
+          bash scripts/prepare_bundled_bins.sh
+
+      - name: Build Flutter Linux release bundle
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter build linux --release
+
+      - name: Package Linux release archives
+        run: |
+          mkdir -p dist
+          bundle_dir="$(find app/build/linux -maxdepth 3 -type d -name bundle | head -n 1)"
+          test -d "$bundle_dir"
+          stage_dir="$(mktemp -d)"
+          cp -a "$bundle_dir" "$stage_dir/devicebridge"
+          cp docs/THIRD_PARTY_NOTICES.md "$stage_dir/devicebridge/THIRD_PARTY_NOTICES.md"
+          cp -a docs/licenses "$stage_dir/devicebridge/licenses"
+          mkdir -p "$stage_dir/devicebridge/tools"
+          cp scripts/devicebridge_ssh.py "$stage_dir/devicebridge/tools/devicebridge_ssh.py"
+          python3 - <<'PY' > "$stage_dir/devicebridge/THIRD_PARTY_NOTICES-GO.txt"
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "scripts")
+          from go_notices import collect
+          bins = [
+              Path("artifacts/linux/bridge-agent"),
+              Path("artifacts/linux/bridge-cli"),
+              Path("artifacts/linux/bridge-sync"),
+              Path("artifacts/linux/bridge-tailnet"),
+              Path("artifacts/linux/bridge-wg"),
+          ]
+          print(collect(bins), end="")
+          PY
+          tar -C "$stage_dir" -czf "dist/${{ matrix.bundle_name }}.tar.gz" devicebridge
+
+          cli_stage="$(mktemp -d)"
+          cli_name="devicebridge-cli-linux-${{ matrix.arch }}"
+          mkdir -p "$cli_stage/$cli_name"
+          cp artifacts/linux/bridge-* "$cli_stage/$cli_name/"
+          cp "$stage_dir/devicebridge/THIRD_PARTY_NOTICES-GO.txt" "$cli_stage/$cli_name/"
+          cp docs/THIRD_PARTY_NOTICES.md "$cli_stage/$cli_name/"
+          cp -a docs/licenses "$cli_stage/$cli_name/licenses"
+          tar -C "$cli_stage" -czf "dist/${cli_name}.tar.gz" "$cli_name"
+
+      - name: Upload Linux release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+
+      - name: Stage and upload Linux x86_64 SSH bootstrap assets
+        if: matrix.arch == 'amd64'
+        run: |
+          mkdir -p overlay-linux/app/assets/bin
+          cp app/assets/bin/linux-x86_64-*.gzbin overlay-linux/app/assets/bin/
+
+      - name: Upload Linux x86_64 SSH bootstrap assets
+        if: matrix.arch == 'amd64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: overlay-linux-x86_64
+          path: overlay-linux
+
+  build-android-native:
+    name: Android Native (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, arm, amd64]
+    runs-on: ubuntu-latest
+    env:
+      DEVICEBRIDGE_BUILD_TARGET: android
+      DEVICEBRIDGE_ANDROID_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: spikes/tsnet/go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            spikes/tsnet/go.sum
+            spikes/wireguard/go.sum
+
+      - name: Install xxhash
+        run: sudo apt-get update && sudo apt-get install -y xxhash
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK 28.2.13676358
+        run: sdkmanager "ndk;28.2.13676358"
+
+      - name: Build Android core, Syncthing, Tailnet, and WireGuard
+        run: |
+          bash scripts/build_android_core.sh
+          bash scripts/build_syncthing.sh
+          bash scripts/build_tsnet.sh
+          bash scripts/build_wg.sh
+
+      - name: Package standalone Android/Termux core tarball and APK overlay
+        run: |
+          mkdir -p dist overlay/app/android/app/src/main/jniLibs overlay/app/assets/bin
+          cp -a app/android/app/src/main/jniLibs/* overlay/app/android/app/src/main/jniLibs/
+          cp -a app/assets/bin/android-${{ matrix.arch }}-*.gzbin overlay/app/assets/bin/
+
+          pkg_name="devicebridge-android-${{ matrix.arch }}-core"
+          stage="$(mktemp -d)"
+          mkdir -p "$stage/$pkg_name"
+          cp "artifacts/android-${{ matrix.arch }}"/*.so "$stage/$pkg_name/"
+          cp "$stage/$pkg_name/libbridge_cli.so" "$stage/$pkg_name/bridge-cli"
+          cp "$stage/$pkg_name/libbridge_agent.so" "$stage/$pkg_name/bridge-agent"
+          cp "$stage/$pkg_name/libbridge_sync.so" "$stage/$pkg_name/bridge-sync"
+          cp "$stage/$pkg_name/libbridge_tailnet.so" "$stage/$pkg_name/bridge-tailnet"
+          cp "$stage/$pkg_name/libbridge_wg.so" "$stage/$pkg_name/bridge-wg"
+          cp docs/THIRD_PARTY_NOTICES.md "$stage/$pkg_name/"
+          tar -C "$stage" -czf "dist/${pkg_name}.tar.gz" "$pkg_name"
+
+      - name: Upload APK native overlay
+        uses: actions/upload-artifact@v4
+        with:
+          name: overlay-android-${{ matrix.arch }}
+          path: overlay
+
+      - name: Upload standalone Android/Termux core tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-android-core-${{ matrix.arch }}
+          path: dist/devicebridge-android-${{ matrix.arch }}-core.tar.gz
+
+  build-android-apk:
+    name: Android APKs (all ABIs + universal)
+    needs: [build-android-native, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.50.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Download native JNI libraries and bundled assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: overlay-*
+          merge-multiple: true
+          path: .
+
+      - name: Build split-per-ABI and universal release APKs
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter build apk --release --split-per-abi
+          flutter build apk --release
+
+      - name: Collect APKs
+        run: |
+          mkdir -p dist
+          cp app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk dist/devicebridge-android-arm64-v8a.apk
+          cp app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk dist/devicebridge-android-armeabi-v7a.apk
+          cp app/build/app/outputs/flutter-apk/app-x86_64-release.apk dist/devicebridge-android-x86_64.apk
+          cp app/build/app/outputs/flutter-apk/app-release.apk dist/devicebridge-android-universal.apk
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-android-apks
+          path: dist/*.apk
+
+  release:
+    name: Publish Release & Checksums
+    needs: [build-linux, build-android-native, build-android-apk]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xxhash
+        run: sudo apt-get update && sudo apt-get install -y xxhash
+
+      - name: Download all release archives and APKs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Generate XXH64 and SHA-256 checksums and release notes
+        run: |
+          cd release-assets
+          xxhsum -H1 * | sort -k2 > CHECKSUMS.xxh64
+          sha256sum * | grep -v 'CHECKSUMS.xxh64' | sort -k2 > CHECKSUMS.sha256
+          python3 - <<'PY' > ../RELEASE_NOTES.md
+          from pathlib import Path
+          import hashlib, subprocess
+
+          files = sorted(
+              p for p in Path('.').iterdir()
+              if p.is_file() and p.name not in ('CHECKSUMS.xxh64', 'CHECKSUMS.sha256')
+          )
+          print("## DeviceBridge Release Artifacts\n")
+          print("All binaries are built in parallel across Linux (`amd64`, `arm64`) and Android (`arm64-v8a`, `armeabi-v7a`, `x86_64`).")
+          print("File integrity is verified with **XXH64** (`xxhsum -H1`, DeviceBridge native verification) and **SHA-256** (`sha256sum`).\n")
+          print("> **Note:** Release APKs are currently signed with the project's development key unless a release signing keystore is configured.\n")
+          print("| Artifact | Size | XXH64 (`xxhsum -H1`) | SHA-256 |")
+          print("| --- | ---: | --- | --- |")
+          for p in files:
+              size_mib = p.stat().st_size / (1024 * 1024)
+              xxh = subprocess.check_output(["xxhsum", "-H1", p.name], text=True).split()[0]
+              sha = hashlib.sha256(p.read_bytes()).hexdigest()
+              print(f"| `{p.name}` | {size_mib:.2f} MiB | `{xxh}` | `{sha}` |")
+          print("\n### Verify Checksums\n")
+          print("```bash")
+          print("xxhsum -H1 --check CHECKSUMS.xxh64")
+          print("sha256sum --check CHECKSUMS.sha256")
+          print("```")
+          PY
+
+      - name: Upload bundled release assets artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle-all
+          path: |
+            release-assets/*
+            RELEASE_NOTES.md
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          elif [[ -n "${{ inputs.tag }}" ]]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        if: steps.tag.outputs.name != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: DeviceBridge ${{ steps.tag.outputs.name }}
+          body_path: RELEASE_NOTES.md
+          files: release-assets/*
+          generate_release_notes: true

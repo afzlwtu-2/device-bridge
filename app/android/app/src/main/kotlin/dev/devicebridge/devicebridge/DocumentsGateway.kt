@@ -31,8 +31,8 @@ class DocumentsGateway(private val activity: Activity) {
         }, "DeviceBridge documents accept").apply { isDaemon = true }.start()
     }
     fun environment(): Map<String, String> {
-        val kinds = local.roots().filter { it["id"] != "internal" && it["available"] == true }.map { it["id"] as String }
-        return mapOf("DEVICEBRIDGE_DOCUMENTS_ENDPOINT" to "127.0.0.1:${server.localPort}", "DEVICEBRIDGE_DOCUMENTS_TOKEN" to token, "DEVICEBRIDGE_DOCUMENTS_KINDS" to kinds.joinToString(","))
+        if (local.roots().none { it["id"] == "saf" && it["available"] == true }) return emptyMap()
+        return mapOf("DEVICEBRIDGE_DOCUMENTS_ENDPOINT" to "127.0.0.1:${server.localPort}", "DEVICEBRIDGE_DOCUMENTS_TOKEN" to token, "DEVICEBRIDGE_DOCUMENTS_KINDS" to "saf")
     }
     private fun wireEntry(entry: Map<String, Any?>): Map<String, Any?> = entry + ("modified" to Instant.ofEpochMilli((entry["modified"] as? Number)?.toLong() ?: 0L).toString())
     private fun handle(socket: Socket) {
@@ -45,10 +45,10 @@ class DocumentsGateway(private val activity: Activity) {
                 check(line.size() < 8192) { "Request too long" }
                 val request = JSONObject(line.toString("UTF-8"))
                 check(request.optInt("version") == 1 && MessageDigest.isEqual(request.optString("token").toByteArray(), token.toByteArray())) { "Unauthorized adapter request" }
-                val kind = request.getString("kind"); check(kind == "saf" || kind == "termux") { "Provider not exposed" }
+                check(request.getString("kind") == "saf") { "Provider not exposed" }
                 val path = request.optString("path", "").let { value -> if (value == ".") "" else value }
                 check(!path.startsWith('/') && !path.contains('\\') && !path.contains('\u0000') && (path.isEmpty() || path.split('/').none { part -> part.isEmpty() || part == "." || part == ".." })) { "Unsafe adapter path" }
-                val ref = LocalFiles.Ref(kind, path)
+                val ref = LocalFiles.Ref("saf", path)
                 fun reply(value: JSONObject) { output.write((value.toString() + "\n").toByteArray(Charsets.UTF_8)); output.flush() }
                 when (request.getString("operation")) {
                     "list" -> {

@@ -1,4 +1,0 @@
-ok  	devicebridge/internal/storage	1.015s
-ok  	devicebridge/internal/filesproviders	(cached)
-ok  	devicebridge/internal/transport/direct	1.010s
-ok  	devicebridge/test/integration	1.040s

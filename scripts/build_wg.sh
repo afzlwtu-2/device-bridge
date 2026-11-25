@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/../spikes/wireguard"
-sdk_root=${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK path required}}
-ndk_path=${DEVICEBRIDGE_NDK:-$sdk_root/ndk/28.2.13676358}
-compiler="$ndk_path/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang"
-test -x "$compiler"
-mkdir -p ../../artifacts/linux ../../artifacts/android-arm64 ../../app/android/app/src/main/jniLibs/arm64-v8a
+target=${DEVICEBRIDGE_BUILD_TARGET:-both}
+if [[ "$target" != android ]]; then
+  mkdir -p ../../artifacts/linux
 go build -trimpath -ldflags='-s -w' -o ../../artifacts/linux/bridge-wg .
-GOOS=android GOARCH=arm64 CGO_ENABLED=1 CC="$compiler" go build -trimpath -buildmode=pie -ldflags='-s -w -extldflags=-Wl,-z,max-page-size=16384' -o ../../artifacts/android-arm64/libbridge_wg.so .
-cp ../../artifacts/android-arm64/libbridge_wg.so ../../app/android/app/src/main/jniLibs/arm64-v8a/libbridge_wg.so
-xxhsum -H1 ../../artifacts/android-arm64/libbridge_wg.so
+fi
+if [[ "$target" == linux ]]; then exit 0; fi
+source ../../scripts/android_target.sh
+mkdir -p "../../$android_output" "../../$android_jni"
+
+GOOS=android GOARCH="$android_arch" CGO_ENABLED=1 CC="$compiler" go build -trimpath -buildmode=pie -ldflags='-s -w -extldflags=-Wl,-z,max-page-size=16384' -o "../../$android_output/libbridge_wg.so" .
+cp "../../$android_output/libbridge_wg.so" "../../$android_jni/libbridge_wg.so"
+gzip -1 -n -c "../../$android_output/libbridge_wg.so" > "../../app/assets/bin/android-$android_arch-libbridge_wg.gzbin"
+xxhsum -H1 "../../$android_output/libbridge_wg.so"

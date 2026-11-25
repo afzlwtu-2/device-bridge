@@ -17,16 +17,26 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const service = protocol.Service + ".local."
 
 var multicast = &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
 
-func records(id string, port int, ip net.IP) []dns.RR {
+func records(id, name string, port int, ip net.IP) []dns.RR {
 	instance := "db-" + id[:16] + "." + service
 	host := "db-" + id[:16] + ".local."
-	return []dns.RR{&dns.PTR{Hdr: dns.RR_Header{Name: service, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: 30}, Ptr: instance}, &dns.SRV{Hdr: dns.RR_Header{Name: instance, Rrtype: dns.TypeSRV, Class: dns.ClassINET, Ttl: 30}, Port: uint16(port), Target: host}, &dns.TXT{Hdr: dns.RR_Header{Name: instance, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 30}, Txt: []string{"v=1", "id=" + id}}, &dns.A{Hdr: dns.RR_Header{Name: host, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30}, A: ip}}
+	txt := []string{"v=1", "id=" + id}
+	if name != "" && len(name) <= 128 && utf8.ValidString(name) {
+		txt = append(txt, "name="+name)
+	}
+	return []dns.RR{
+		&dns.PTR{Hdr: dns.RR_Header{Name: service, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: 30}, Ptr: instance},
+		&dns.SRV{Hdr: dns.RR_Header{Name: instance, Rrtype: dns.TypeSRV, Class: dns.ClassINET, Ttl: 30}, Port: uint16(port), Target: host},
+		&dns.TXT{Hdr: dns.RR_Header{Name: instance, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 30}, Txt: txt},
+		&dns.A{Hdr: dns.RR_Header{Name: host, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30}, A: ip},
+	}
 }
 func listenMulticast(ctx context.Context, iface *net.Interface) (*net.UDPConn, error) {
 	lc := net.ListenConfig{Control: func(network, address string, c syscall.RawConn) error {
@@ -60,7 +70,7 @@ func listenMulticast(ctx context.Context, iface *net.Interface) (*net.UDPConn, e
 	return conn, nil
 }
 
-func Advertise(ctx context.Context, p *direct.Provider, id string, port int) (func(), error) {
+func Advertise(ctx context.Context, p *direct.Provider, id, name string, port int) (func(), error) {
 	iface, err := networkInterface(p.Interface)
 	if err != nil {
 		return nil, err
@@ -89,7 +99,7 @@ func Advertise(ctx context.Context, p *direct.Provider, id string, port int) (fu
 				if !strings.EqualFold(q.Name, service) || q.Qtype != dns.TypePTR {
 					continue
 				}
-				msg := dns.Msg{MsgHdr: dns.MsgHdr{Id: query.Id, Response: true, Authoritative: true}, Answer: records(id, port, net.ParseIP(p.Address.String()))}
+				msg := dns.Msg{MsgHdr: dns.MsgHdr{Id: query.Id, Response: true, Authoritative: true}, Answer: records(id, name, port, net.ParseIP(p.Address.String()))}
 				data, e := msg.Pack()
 				if e != nil {
 					continue
@@ -115,6 +125,7 @@ func parseResponse(p *direct.Provider, src *net.UDPAddr, raw []byte, found map[s
 	}
 	srv := map[string]uint16{}
 	ids := map[string]string{}
+	names := map[string]string{}
 	ptrs := map[string]bool{}
 	for _, rr := range append(msg.Answer, msg.Extra...) {
 		switch r := rr.(type) {
@@ -126,8 +137,10 @@ func parseResponse(p *direct.Provider, src *net.UDPAddr, raw []byte, found map[s
 			srv[r.Hdr.Name] = r.Port
 		case *dns.TXT:
 			for _, v := range r.Txt {
-				if strings.HasPrefix(v, "id=") {
-					ids[r.Hdr.Name] = strings.TrimPrefix(v, "id=")
+				if id, ok := strings.CutPrefix(v, "id="); ok {
+					ids[r.Hdr.Name] = id
+				} else if name, ok := strings.CutPrefix(v, "name="); ok && len(name) <= 128 && utf8.ValidString(name) {
+					names[r.Hdr.Name] = protocol.DeviceDisplayName(name)
 				}
 			}
 		}
@@ -138,7 +151,7 @@ func parseResponse(p *direct.Provider, src *net.UDPAddr, raw []byte, found map[s
 			continue
 		}
 		endpoint := net.JoinHostPort(src.IP.String(), strconv.Itoa(int(srv[instance])))
-		found[id+endpoint] = transport.Candidate{DeviceID: id, Endpoint: endpoint, Interface: p.Interface, Transport: p.ID(), Observed: time.Now().UTC(), Cost: p.NetworkCost(transport.Candidate{}), Direct: true}
+		found[id+endpoint] = transport.Candidate{DeviceID: id, DeviceName: names[instance], Endpoint: endpoint, Interface: p.Interface, Transport: p.ID(), Observed: time.Now().UTC(), Cost: p.NetworkCost(transport.Candidate{}), Direct: true}
 	}
 }
 

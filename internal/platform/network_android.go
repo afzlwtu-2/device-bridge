@@ -21,6 +21,19 @@ func BindApprovedNetwork() error {
 	if value == "" {
 		return nil
 	}
+	return bindNetwork(value)
+}
+
+// RebindApprovedNetwork updates future sockets after the Android app selects
+// a replacement through its LAN approval policy.
+func RebindApprovedNetwork(handle string) error {
+	if err := bindNetwork(handle); err != nil {
+		return err
+	}
+	return os.Setenv("DEVICEBRIDGE_NETWORK_HANDLE", handle)
+}
+
+func bindNetwork(value string) error {
 	handle, err := strconv.ParseUint(value, 10, 64)
 	if err != nil || handle == 0 {
 		return errors.New("invalid approved Android network handle")

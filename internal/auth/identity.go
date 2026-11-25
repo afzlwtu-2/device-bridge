@@ -28,6 +28,7 @@ func Fingerprint(cert *x509.Certificate) string {
 	return hex.EncodeToString(h[:])
 }
 func Load(s *storage.Store, name string) (*Identity, error) {
+	name = protocol.DeviceDisplayName(name)
 	var certPEM, keyPEM []byte
 	var savedName string
 	err := s.DB.QueryRow("SELECT name,cert,private_key FROM identity WHERE singleton=1").Scan(&savedName, &certPEM, &keyPEM)
@@ -61,11 +62,17 @@ func Load(s *storage.Store, name string) (*Identity, error) {
 		savedName = name
 	} else if err != nil {
 		return nil, err
-	} else if savedName == "Android phone" && name != "" && name != "Android phone" && len(name) <= 128 {
-		if _, err = s.DB.Exec("UPDATE identity SET name=? WHERE singleton=1", name); err != nil {
-			return nil, err
+	} else {
+		displayName := protocol.DeviceDisplayName(savedName)
+		if savedName == "Android phone" && name != "" && len(name) <= 128 {
+			displayName = name
 		}
-		savedName = name
+		if displayName != savedName {
+			if _, err = s.DB.Exec("UPDATE identity SET name=? WHERE singleton=1 AND name=?", displayName, savedName); err != nil {
+				return nil, err
+			}
+			savedName = displayName
+		}
 	}
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {

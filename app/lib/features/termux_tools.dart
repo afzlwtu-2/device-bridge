@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../core/bridge.dart';
+import 'ssh_bootstrap.dart';
 
 class TermuxTools extends StatefulWidget {
   const TermuxTools({super.key, required this.core});
@@ -163,6 +164,29 @@ class _TermuxToolsState extends State<TermuxTools> {
                   ),
                 ),
               ),
+              const SizedBox(height: 16),
+              if (status['installed'] == true)
+                ListTile(
+                  leading: const Icon(Icons.sync),
+                  title: const Text('Set up Termux folder sync'),
+                  subtitle: const Text(
+                    'Connect to Termux SSH to install the companion and its Syncthing engine. Then choose the paired Termux device in Files.',
+                  ),
+                  onTap: busy
+                      ? null
+                      : () => showDialog<void>(
+                          context: context,
+                          builder: (_) => SshBootstrapDialog(
+                            core: widget.core,
+                            initialHost:
+                                (widget.core.network?['cidr'] as String?)
+                                    ?.split('/')
+                                    .first,
+                            initialPort: 8022,
+                            termuxCompanion: true,
+                          ),
+                        ),
+                ),
               const SizedBox(height: 20),
               TextField(
                 controller: program,

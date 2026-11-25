@@ -1,7 +1,0 @@
-{
-  "apk_sha256": "ccf1339c16c4f3121833004f30e53e89ee6c3806c28b6fc0ed93fae71e22d6db",
-  "apk_bytes": 90694523,
-  "bundled_core_sha256": "fddf337af6bae5d8e91d4442c445bfc36dd8a41097630f49d0c909abdc525390",
-  "core_matches": true,
-  "change": "pairing dialog controller lifecycle fix"
-}

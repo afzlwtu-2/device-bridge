@@ -6,8 +6,9 @@ plugins {
 
 android {
     namespace = "dev.devicebridge.devicebridge"
-    compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    compileSdk = 36
+    buildToolsVersion = "36.0.0"
+    ndkVersion = "28.2.13676358"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -20,7 +21,8 @@ android {
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 28
-        targetSdk = flutter.targetSdkVersion
+        // Pinned to 28 so SELinux untrusted_app_28 retains app_data_file exec for hot-swapping Go binaries (same mechanism as Termux).
+        targetSdk = 28
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
         // You can force using the value of versionCode by specifying the `-P force-version-code-ignoring-abi=true`
@@ -39,9 +41,9 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
-            keepDebugSymbols += "**/libbridge_cli.so"
-            keepDebugSymbols += "**/libbridge_agent.so"
-            keepDebugSymbols += "**/libbridge_tailnet.so"
+            // These executables are stripped by their Go/NDK build scripts.
+            keepDebugSymbols += "**/libbridge_*.so"
+            keepDebugSymbols += "**/libdb_termux_adapt.so"
         }
     }
 }

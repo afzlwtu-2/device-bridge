@@ -76,6 +76,9 @@ func TestStreamingTarRoundTripAndProgress(t *testing.T) {
 		if info, err := os.Stat(filepath.Join(dest, "nested", "empty")); err != nil || !info.IsDir() {
 			t.Fatalf("empty dir missing: %v", err)
 		}
+		if _, err := os.Stat(dest + ".devicebridge-part"); !os.IsNotExist(err) {
+			t.Fatalf("staging directory left behind after publish: %v", err)
+		}
 	}
 }
 
@@ -88,6 +91,45 @@ func TestShouldUseTarSingleLargeFileFalse(t *testing.T) {
 	}
 	if ShouldUseTar(m) {
 		t.Fatal("single file should use chunked range transfer, not tar")
+	}
+}
+
+func TestInterruptedTarContinuesFromStagedFileOffset(t *testing.T) {
+	data := []byte("file partly received through tar")
+	const checkpoint = 12
+	var archive bytes.Buffer
+	tw := tar.NewWriter(&archive)
+	if err := tw.WriteHeader(&tar.Header{Name: ".", Mode: 0600, Size: int64(len(data))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	m := manifest(data)
+	dest := filepath.Join(t.TempDir(), "download")
+	stream := io.NopCloser(bytes.NewReader(archive.Bytes()[:512+checkpoint]))
+	_, interrupted := PullTar(ctx, stream, "none", "peer", m, dest, nil)
+	if !Interrupted(interrupted) {
+		t.Fatalf("expected an interrupted archive, got %v", interrupted)
+	}
+	// The alternate source would return the wrong bytes if asked to resend
+	// the first part. Verification succeeds only when staging is retained.
+	remaining := append([]byte(nil), data...)
+	clear(remaining[:checkpoint])
+	src := &fakeStreamSource{fakeSource: fakeSource{data: remaining}}
+	routes := []Route{{Name: "lan", Open: func(context.Context) (Source, string, func(), error) {
+		return src, "alternate", nil, nil
+	}}}
+	if _, _, err := RecoverPull(ctx, routes, "peer", m, dest, interrupted, 0, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("resumed archive did not verify: %v", err)
 	}
 }
 

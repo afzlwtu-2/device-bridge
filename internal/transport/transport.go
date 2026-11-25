@@ -21,6 +21,7 @@ type NetworkCost struct {
 }
 type Candidate struct {
 	DeviceID        string        `json:"device_id"`
+	DeviceName      string        `json:"device_name,omitempty"`
 	Endpoint        string        `json:"endpoint"`
 	Interface       string        `json:"interface"`
 	Transport       string        `json:"transport"`

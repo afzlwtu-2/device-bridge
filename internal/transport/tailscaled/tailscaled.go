@@ -13,11 +13,13 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strings"
 	"time"
 )
 
 type peerStatus struct {
 	HostName         string
+	DNSName          string
 	TailscaleIPs     []string
 	Online           bool
 	TxBytes, RxBytes int64
@@ -26,6 +28,7 @@ type status struct {
 	BackendState string
 	TailscaleIPs []string
 	TUN          bool
+	Self         *peerStatus
 	Peer         map[string]peerStatus
 }
 type ping struct {
@@ -65,8 +68,11 @@ func (p *Provider) Status(ctx context.Context) (tailnetipc.Response, error) {
 	var s status
 	err := p.api(ctx, "GET", "/localapi/v0/status", &s)
 	out := tailnetipc.Response{Version: 1, State: s.BackendState, IPs: s.TailscaleIPs, Userspace: !s.TUN, Mode: "system", Peers: []tailnetipc.Peer{}}
+	if s.Self != nil {
+		out.Hostname = s.Self.HostName
+	}
 	for _, v := range s.Peer {
-		out.Peers = append(out.Peers, tailnetipc.Peer{Name: v.HostName, IPs: v.TailscaleIPs, Online: v.Online, Path: tailnetipc.Path{Kind: "unknown", TxBytes: v.TxBytes, RxBytes: v.RxBytes}})
+		out.Peers = append(out.Peers, tailnetipc.Peer{Name: v.HostName, DNSName: strings.TrimSuffix(v.DNSName, "."), IPs: v.TailscaleIPs, Online: v.Online, Path: tailnetipc.Path{Kind: "unknown", TxBytes: v.TxBytes, RxBytes: v.RxBytes}})
 	}
 	return out, err
 }

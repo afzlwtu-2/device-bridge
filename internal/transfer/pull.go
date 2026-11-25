@@ -44,6 +44,7 @@ type Receipt struct {
 	Files         int     `json:"files"`
 	Bytes         int64   `json:"bytes"`
 	XXH64         string  `json:"manifest_xxh64"`
+	SourceXXH64   string  `json:"source_xxh64,omitempty"`
 	Mode          string  `json:"mode,omitempty"`
 	Transport     string  `json:"transport,omitempty"`
 	MiBPerSecond  float64 `json:"mib_per_second"`
@@ -236,6 +237,11 @@ func (s *stagingHandle) publish() error {
 	if err = fd.Sync(); err != nil {
 		return fmt.Errorf("published but directory sync failed: %w", err)
 	}
+	// The verified payload now lives at the destination; the staging root
+	// (manifest and lock file) must not linger next to it.
+	if err = s.parent.RemoveAll(s.stage); err != nil {
+		return fmt.Errorf("published but staging cleanup failed: %w", err)
+	}
 	return nil
 }
 
@@ -351,7 +357,7 @@ func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, 
 						if re == io.EOF {
 							break
 						}
-						if re != nil {
+						if re != nil && offset < entry.Size {
 							rc.Close()
 							f.Close()
 							return receipt, re
@@ -360,7 +366,7 @@ func Pull(ctx context.Context, source Source, peer string, m protocol.Manifest, 
 					rc.Close()
 					if offset != entry.Size {
 						f.Close()
-						return receipt, errors.New("truncated file stream")
+						return receipt, fmt.Errorf("truncated file stream: %w", io.ErrUnexpectedEOF)
 					}
 				} else if !strings.Contains(se.Error(), "remote 404") {
 					f.Close()

@@ -2,12 +2,114 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 bool isAmoledTheme(String appearance) =>
     appearance == 'amoled' ||
     appearance == 'amoled-green' ||
     appearance == 'amoled-red';
+
+class AmoledStyleConfig {
+  const AmoledStyleConfig({
+    required this.edgeColor,
+    required this.peakColor,
+    required this.lineWidth,
+    required this.centerGlow,
+    required this.selectedTabColor,
+    required this.buttonColor,
+    required this.popupBorderColor,
+    this.selectedTextColor = 0xff000000,
+  });
+
+  final int edgeColor;
+  final int peakColor;
+  final double lineWidth;
+  final double centerGlow;
+  final int selectedTabColor;
+  final int buttonColor;
+  final int popupBorderColor;
+  final int selectedTextColor;
+
+  factory AmoledStyleConfig.defaults({bool red = false}) {
+    return const AmoledStyleConfig(
+      edgeColor: 0xffcc0022,
+      peakColor: 0xffff1738,
+      lineWidth: 3.0,
+      centerGlow: 0.7,
+      selectedTabColor: 0xffffffff,
+      buttonColor: 0xffffffff,
+      popupBorderColor: 0xffffffff,
+      selectedTextColor: 0xff000000,
+    );
+  }
+
+  AmoledStyleConfig copyWith({
+    int? edgeColor,
+    int? peakColor,
+    double? lineWidth,
+    double? centerGlow,
+    int? selectedTabColor,
+    int? buttonColor,
+    int? popupBorderColor,
+    int? selectedTextColor,
+  }) => AmoledStyleConfig(
+    edgeColor: edgeColor ?? this.edgeColor,
+    peakColor: peakColor ?? this.peakColor,
+    lineWidth: lineWidth ?? this.lineWidth,
+    centerGlow: centerGlow ?? this.centerGlow,
+    selectedTabColor: selectedTabColor ?? this.selectedTabColor,
+    buttonColor: buttonColor ?? this.buttonColor,
+    popupBorderColor: popupBorderColor ?? this.popupBorderColor,
+    selectedTextColor: selectedTextColor ?? this.selectedTextColor,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'edge_color': edgeColor,
+    'peak_color': peakColor,
+    'line_width': lineWidth,
+    'center_glow': centerGlow,
+    'selected_tab_color': selectedTabColor,
+    'button_color': buttonColor,
+    'popup_border_color': popupBorderColor,
+    'selected_text_color': selectedTextColor,
+  };
+
+  factory AmoledStyleConfig.fromJson(Map<String, dynamic> map) {
+    final base = AmoledStyleConfig.defaults();
+    return AmoledStyleConfig(
+      edgeColor: (map['edge_color'] as num?)?.toInt() ?? base.edgeColor,
+      peakColor: (map['peak_color'] as num?)?.toInt() ?? base.peakColor,
+      lineWidth: ((map['line_width'] as num?)?.toDouble() ?? base.lineWidth)
+          .clamp(1.0, 6.0),
+      centerGlow: ((map['center_glow'] as num?)?.toDouble() ?? base.centerGlow)
+          .clamp(0.0, 1.0),
+      selectedTabColor:
+          (map['selected_tab_color'] as num?)?.toInt() ?? base.selectedTabColor,
+      buttonColor: (map['button_color'] as num?)?.toInt() ?? base.buttonColor,
+      popupBorderColor:
+          (map['popup_border_color'] as num?)?.toInt() ?? base.popupBorderColor,
+      selectedTextColor:
+          (map['selected_text_color'] as num?)?.toInt() ?? base.selectedTextColor,
+    );
+  }
+}
+
+AmoledStyleConfig decodeAmoledConfig(
+  String? raw, {
+  String appearance = 'amoled',
+}) {
+  if (raw != null && raw.isNotEmpty) {
+    try {
+      final map = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      return AmoledStyleConfig.fromJson(map);
+    } catch (_) {}
+  }
+  return AmoledStyleConfig.defaults(red: appearance == 'amoled-red');
+}
+
+String encodeAmoledConfig(AmoledStyleConfig config) =>
+    jsonEncode(config.toJson());
 
 class MatteArtItem {
   const MatteArtItem({
@@ -104,60 +206,96 @@ class AppearanceSurface extends StatelessWidget {
     required this.appearance,
     required this.child,
     this.matteItems,
+    this.amoledConfig,
   });
   final String appearance;
   final Widget child;
   final List<MatteArtItem>? matteItems;
+  final AmoledStyleConfig? amoledConfig;
   @override
   Widget build(BuildContext context) {
     final items = matteItems ?? defaultMatteItems();
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        if (appearance == 'matte')
-          ColoredBox(
-            color: const Color(0xffa3ad4c),
-            child: CustomPaint(painter: _MattePaperArt(items: items)),
-          ),
-        child,
-        if (appearance == 'matte' && items.any((e) => e.foreground))
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(painter: _MatteForegroundArt(items: items)),
+    final effectiveAmoled =
+        amoledConfig ??
+        AmoledStyleConfig.defaults(red: appearance == 'amoled-red');
+    final isDarkUi =
+        isAmoledTheme(appearance) ||
+        appearance == 'dark' ||
+        Theme.of(context).brightness == Brightness.dark;
+    final overlayStyle = SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarDividerColor: Colors.transparent,
+      systemNavigationBarContrastEnforced: false,
+      systemStatusBarContrastEnforced: false,
+      statusBarIconBrightness: isDarkUi ? Brightness.light : Brightness.dark,
+      systemNavigationBarIconBrightness: isDarkUi
+          ? Brightness.light
+          : Brightness.dark,
+    );
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: overlayStyle,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (appearance == 'matte')
+            ColoredBox(
+              color: const Color(0xffa3ad4c),
+              child: CustomPaint(painter: _MattePaperArt(items: items)),
             ),
-          ),
-        if (isAmoledTheme(appearance))
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: _EdgeGlow(isRed: appearance == 'amoled-red'),
+          child,
+          if (appearance == 'matte' && items.any((e) => e.foreground))
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(painter: _MatteForegroundArt(items: items)),
               ),
             ),
-          ),
-      ],
+          if (isAmoledTheme(appearance))
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(painter: _EdgeGlow(config: effectiveAmoled)),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
 
 class _EdgeGlow extends CustomPainter {
-  const _EdgeGlow({required this.isRed});
-  final bool isRed;
+  const _EdgeGlow({required this.config});
+  final AmoledStyleConfig config;
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Cover ~80% of the screen height, centered vertically, fading out cleanly
-    // before reaching the corners. Straight stationary left & right edges only.
     final top = size.height * 0.10;
     final bottom = size.height * 0.90;
-    final left = Offset(1.0, top);
-    final leftEnd = Offset(1.0, bottom);
-    final right = Offset(size.width - 1.0, top);
-    final rightEnd = Offset(size.width - 1.0, bottom);
+    final inset = (config.lineWidth * 0.5).clamp(0.8, 3.5);
+    final left = Offset(inset, top);
+    final leftEnd = Offset(inset, bottom);
+    final right = Offset(size.width - inset, top);
+    final rightEnd = Offset(size.width - inset, bottom);
     final lineRect = Rect.fromLTRB(0, top, size.width, bottom);
 
-    final edgeColor = isRed ? const Color(0xffcc0022) : const Color(0xff00b848);
-    final peakColor = isRed ? const Color(0xffff1738) : const Color(0xff1cff68);
+    final edgeColor = Color(config.edgeColor);
+    final peakColor = Color(config.peakColor);
     const stops = [0.0, 0.20, 0.50, 0.80, 1.0];
+    final glowStrength = config.centerGlow;
+
+    if (glowStrength > 0.02) {
+      final centerRect = Offset.zero & size;
+      final radial = RadialGradient(
+        center: Alignment.center,
+        radius: 0.72,
+        colors: [
+          peakColor.withValues(alpha: 0.16 * glowStrength),
+          edgeColor.withValues(alpha: 0.07 * glowStrength),
+          Colors.transparent,
+        ],
+        stops: const [0.0, 0.45, 1.0],
+      ).createShader(centerRect);
+      canvas.drawRect(centerRect, Paint()..shader = radial);
+    }
 
     final haloShader = LinearGradient(
       begin: Alignment.topCenter,
@@ -165,9 +303,9 @@ class _EdgeGlow extends CustomPainter {
       stops: stops,
       colors: [
         Colors.transparent,
-        edgeColor.withValues(alpha: 0.36),
-        peakColor.withValues(alpha: 0.78),
-        edgeColor.withValues(alpha: 0.36),
+        edgeColor.withValues(alpha: 0.30 + 0.30 * glowStrength),
+        peakColor.withValues(alpha: 0.55 + 0.40 * glowStrength),
+        edgeColor.withValues(alpha: 0.30 + 0.30 * glowStrength),
         Colors.transparent,
       ],
     ).createShader(lineRect);
@@ -187,14 +325,17 @@ class _EdgeGlow extends CustomPainter {
 
     final haloPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 4.5
+      ..strokeWidth = config.lineWidth * (2.2 + 1.4 * glowStrength)
       ..strokeCap = StrokeCap.round
       ..shader = haloShader
-      ..maskFilter = const ui.MaskFilter.blur(ui.BlurStyle.normal, 3.5);
+      ..maskFilter = ui.MaskFilter.blur(
+        ui.BlurStyle.normal,
+        2.5 + 4.5 * glowStrength,
+      );
 
     final corePaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.6
+      ..strokeWidth = config.lineWidth
       ..strokeCap = StrokeCap.round
       ..shader = coreShader;
 
@@ -206,56 +347,92 @@ class _EdgeGlow extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _EdgeGlow oldDelegate) =>
-      oldDelegate.isRed != isRed;
+      oldDelegate.config.edgeColor != config.edgeColor ||
+      oldDelegate.config.peakColor != config.peakColor ||
+      oldDelegate.config.lineWidth != config.lineWidth ||
+      oldDelegate.config.centerGlow != config.centerGlow;
 }
 
-Widget amoledNavIcon(BuildContext context, IconData icon, String appearance) {
+Widget amoledNavIcon(
+  BuildContext context,
+  IconData icon,
+  String appearance, {
+  AmoledStyleConfig? config,
+}) {
   if (!isAmoledTheme(appearance)) {
     return Icon(icon);
   }
-  final isRed = appearance == 'amoled-red';
-  final edge = isRed ? const Color(0xffcc0022) : const Color(0xff00b848);
-  final peak = isRed ? const Color(0xffff1738) : const Color(0xff1cff68);
+  final cfg = config ?? AmoledStyleConfig.defaults(red: appearance == 'amoled-red');
+  final tabColor = Color(cfg.selectedTabColor);
+  final darkText =
+      ThemeData.estimateBrightnessForColor(tabColor) == Brightness.light;
+  final selCandidate = Color(cfg.selectedTextColor);
+  final darkIcon = ThemeData.estimateBrightnessForColor(selCandidate) == Brightness.dark
+      ? selCandidate
+      : Colors.black;
+  final isPureWhite = tabColor.toARGB32() == 0xffffffff;
+  final tabEdge = isPureWhite
+      ? Colors.white
+      : Color.lerp(tabColor, Colors.black, 0.22)!;
   return Container(
     width: 64,
     height: 32,
     decoration: BoxDecoration(
       borderRadius: BorderRadius.circular(16),
-      gradient: LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [edge, peak, edge],
-      ),
+      color: isPureWhite ? Colors.white : null,
+      gradient: isPureWhite
+          ? null
+          : LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [tabEdge, tabColor, tabEdge],
+            ),
       boxShadow: [
         BoxShadow(
-          color: peak.withValues(alpha: 0.45),
-          blurRadius: 10,
+          color: tabColor.withValues(alpha: 0.45 + 0.3 * cfg.centerGlow),
+          blurRadius: 8 + 6 * cfg.centerGlow,
           spreadRadius: 0.5,
         ),
       ],
     ),
-    child: Center(child: Icon(icon, color: Colors.black)),
+    child: Center(
+      child: Icon(
+        icon,
+        color: darkText ? darkIcon : Colors.white,
+      ),
+    ),
   );
 }
 
-ThemeData amoledTheme(String appearance) {
-  final isRed = appearance == 'amoled-red';
-  final edge = isRed ? const Color(0xffcc0022) : const Color(0xff00b848);
-  final neon = isRed ? const Color(0xffff1738) : const Color(0xff1cff68);
+ThemeData amoledTheme(String appearance, {AmoledStyleConfig? config}) {
+  final cfg = config ?? AmoledStyleConfig.defaults(red: appearance == 'amoled-red');
+  final btn = Color(cfg.buttonColor);
+  final tab = Color(cfg.selectedTabColor);
+  final popupBorder = Color(cfg.popupBorderColor);
+  final btnDarkFg =
+      ThemeData.estimateBrightnessForColor(btn) == Brightness.light;
+  final tabDarkFg =
+      ThemeData.estimateBrightnessForColor(tab) == Brightness.light;
+  final selCandidate = Color(cfg.selectedTextColor);
+  final selDark =
+      ThemeData.estimateBrightnessForColor(selCandidate) == Brightness.dark
+          ? selCandidate
+          : Colors.black;
+  final neon = btn;
   final scheme =
       ColorScheme.fromSeed(
         seedColor: neon,
         brightness: Brightness.dark,
       ).copyWith(
-        primary: neon,
-        onPrimary: Colors.black,
-        primaryContainer: neon.withValues(alpha: 0.22),
-        onPrimaryContainer: neon,
-        secondary: neon,
-        onSecondary: Colors.black,
-        secondaryContainer: neon,
-        onSecondaryContainer: Colors.black,
-        tertiary: neon,
+        primary: btn,
+        onPrimary: btnDarkFg ? selDark : Colors.white,
+        primaryContainer: btn.withValues(alpha: 0.22),
+        onPrimaryContainer: btn,
+        secondary: tab,
+        onSecondary: tabDarkFg ? selDark : Colors.white,
+        secondaryContainer: tab,
+        onSecondaryContainer: tabDarkFg ? selDark : Colors.white,
+        tertiary: Color(cfg.peakColor),
         onTertiary: Colors.black,
         surface: Colors.black,
         surfaceContainer: Colors.black,
@@ -263,21 +440,39 @@ ThemeData amoledTheme(String appearance) {
         surfaceContainerHigh: const Color(0xff080808),
         surfaceContainerHighest: const Color(0xff111111),
       );
+  final isPureWhiteBtn = btn.toARGB32() == 0xffffffff;
+  final btnEdge = isPureWhiteBtn
+      ? Colors.white
+      : Color.lerp(btn, Colors.black, 0.20)!;
   return ThemeData(
     colorScheme: scheme,
     scaffoldBackgroundColor: Colors.black,
     useMaterial3: true,
+    pageTransitionsTheme: PageTransitionsTheme(
+      builders: {
+        ...const PageTransitionsTheme().builders,
+        TargetPlatform.android: const FadeForwardsPageTransitionsBuilder(
+          backgroundColor: Colors.transparent,
+        ),
+        TargetPlatform.linux: const FadeForwardsPageTransitionsBuilder(
+          backgroundColor: Colors.transparent,
+        ),
+        TargetPlatform.windows: const FadeForwardsPageTransitionsBuilder(
+          backgroundColor: Colors.transparent,
+        ),
+      },
+    ),
     appBarTheme: const AppBarTheme(
       backgroundColor: Colors.black,
       surfaceTintColor: Colors.transparent,
     ),
     navigationBarTheme: NavigationBarThemeData(
       backgroundColor: Colors.black,
-      indicatorColor: Colors.transparent,
+      indicatorColor: tab,
       iconTheme: WidgetStateProperty.resolveWith(
         (states) => IconThemeData(
           color: states.contains(WidgetState.selected)
-              ? Colors.black
+              ? (tabDarkFg ? selDark : Colors.white)
               : Colors.white70,
         ),
       ),
@@ -286,8 +481,14 @@ ThemeData amoledTheme(String appearance) {
     filledButtonTheme: FilledButtonThemeData(
       style: ButtonStyle(
         foregroundColor: WidgetStateProperty.resolveWith(
-          (s) =>
-              s.contains(WidgetState.disabled) ? Colors.white38 : Colors.black,
+          (s) => s.contains(WidgetState.disabled)
+              ? Colors.white38
+              : (btnDarkFg ? selDark : Colors.white),
+        ),
+        iconColor: WidgetStateProperty.resolveWith(
+          (s) => s.contains(WidgetState.disabled)
+              ? Colors.white38
+              : (btnDarkFg ? selDark : Colors.white),
         ),
         backgroundColor: WidgetStateProperty.all(Colors.transparent),
         elevation: WidgetStateProperty.all(0),
@@ -305,11 +506,14 @@ ThemeData amoledTheme(String appearance) {
           return DecoratedBox(
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(24),
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [edge, neon, edge],
-              ),
+              color: isPureWhiteBtn ? Colors.white : null,
+              gradient: isPureWhiteBtn
+                  ? null
+                  : LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [btnEdge, neon, btnEdge],
+                    ),
               boxShadow: [
                 BoxShadow(
                   color: neon.withValues(alpha: 0.45),
@@ -367,8 +571,42 @@ ThemeData amoledTheme(String appearance) {
       ),
     ),
     listTileTheme: ListTileThemeData(
-      selectedColor: neon,
-      selectedTileColor: neon.withValues(alpha: 0.14),
+      selectedColor: selDark,
+      selectedTileColor: Colors.white,
+    ),
+    chipTheme: ChipThemeData(
+      backgroundColor: const Color(0xff101010),
+      selectedColor: Colors.white,
+      secondarySelectedColor: Colors.white,
+      checkmarkColor: selDark,
+      color: WidgetStateProperty.resolveWith(
+        (s) => s.contains(WidgetState.selected)
+            ? Colors.white
+            : const Color(0xff101010),
+      ),
+      labelStyle: TextStyle(
+        color: WidgetStateColor.resolveWith(
+          (s) => s.contains(WidgetState.selected) ? selDark : Colors.white,
+        ),
+        fontWeight: FontWeight.w600,
+      ),
+      secondaryLabelStyle: TextStyle(
+        color: selDark,
+        fontWeight: FontWeight.w700,
+      ),
+      side: WidgetStateBorderSide.resolveWith(
+        (s) => BorderSide(
+          color: s.contains(WidgetState.selected)
+              ? btn
+              : btn.withValues(alpha: 0.65),
+          width: 1.2,
+        ),
+      ),
+    ),
+    textSelectionTheme: TextSelectionThemeData(
+      selectionColor: Colors.white.withValues(alpha: 0.36),
+      cursorColor: Colors.white,
+      selectionHandleColor: btn,
     ),
     progressIndicatorTheme: ProgressIndicatorThemeData(
       color: neon,
@@ -396,7 +634,7 @@ ThemeData amoledTheme(String appearance) {
       surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: neon.withValues(alpha: 0.7), width: 1.2),
+        side: BorderSide(color: popupBorder.withValues(alpha: 0.8), width: 1.3),
       ),
     ),
     menuTheme: MenuThemeData(
@@ -406,7 +644,7 @@ ThemeData amoledTheme(String appearance) {
         shape: WidgetStatePropertyAll(
           RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
-            side: BorderSide(color: neon.withValues(alpha: 0.7), width: 1.2),
+            side: BorderSide(color: popupBorder.withValues(alpha: 0.8), width: 1.3),
           ),
         ),
       ),
@@ -418,7 +656,7 @@ ThemeData amoledTheme(String appearance) {
         shape: WidgetStatePropertyAll(
           RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
-            side: BorderSide(color: neon.withValues(alpha: 0.7), width: 1.2),
+            side: BorderSide(color: popupBorder.withValues(alpha: 0.8), width: 1.3),
           ),
         ),
       ),
@@ -431,9 +669,13 @@ ThemeData amoledTheme(String appearance) {
         side: BorderSide(color: Color(0xff1b1b1b), width: 0.8),
       ),
     ),
-    dialogTheme: const DialogThemeData(
-      backgroundColor: Color(0xff0a0a0a),
+    dialogTheme: DialogThemeData(
+      backgroundColor: const Color(0xff0a0a0a),
       surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(color: popupBorder.withValues(alpha: 0.8), width: 1.4),
+      ),
     ),
   );
 }

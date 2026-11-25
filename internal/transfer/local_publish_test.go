@@ -6,36 +6,30 @@ import (
 	"testing"
 )
 
-func TestLocalPublishNeverOverwrites(t *testing.T) {
+func TestMoveLocalNoReplacePreservesBothEntries(t *testing.T) {
 	parent := t.TempDir()
-	stage := filepath.Join(parent, ".devicebridge-local-0123456789abcdef")
-	if err := os.Mkdir(stage, 0700); err != nil {
+	source, destination := filepath.Join(parent, "trashed"), filepath.Join(parent, "restored")
+	if err := os.WriteFile(source, []byte("recover me"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	source := filepath.Join(stage, "data")
-	destination := filepath.Join(parent, "received")
-	if err := os.WriteFile(source, []byte("verified"), 0600); err != nil {
+	if err := os.WriteFile(destination, []byte("keep me"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(destination, []byte("original"), 0600); err != nil {
+	if err := MoveLocalNoReplace(source, destination); err == nil {
+		t.Fatal("the existing destination was accepted")
+	}
+	for path, want := range map[string]string{source: "recover me", destination: "keep me"} {
+		if got, err := os.ReadFile(path); err != nil || string(got) != want {
+			t.Fatalf("entry after rejected restore: %q, %v", got, err)
+		}
+	}
+	if err := os.Remove(destination); err != nil {
 		t.Fatal(err)
 	}
-	if err := PublishLocal(source, destination); err == nil {
-		t.Fatal("overwrote destination")
-	}
-	data, _ := os.ReadFile(destination)
-	if string(data) != "original" {
-		t.Fatal("destination changed")
-	}
-	other := filepath.Join(parent, "published")
-	if err := PublishLocal(source, other); err != nil {
+	if err := MoveLocalNoReplace(source, destination); err != nil {
 		t.Fatal(err)
 	}
-	data, _ = os.ReadFile(other)
-	if string(data) != "verified" {
-		t.Fatal("payload changed")
-	}
-	if err := PublishLocal(other, filepath.Join(parent, "unsafe")); err == nil {
-		t.Fatal("accepted non-staging source")
+	if got, err := os.ReadFile(destination); err != nil || string(got) != "recover me" {
+		t.Fatalf("restored entry: %q, %v", got, err)
 	}
 }

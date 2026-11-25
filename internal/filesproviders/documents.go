@@ -18,7 +18,7 @@ type Documents struct{ rootID, kind, endpoint, token string }
 
 func NewDocuments(id, kind, endpoint, token string) (*Documents, error) {
 	host, port, err := net.SplitHostPort(endpoint)
-	if err != nil || host != "127.0.0.1" || port == "" || len(token) != 64 || (kind != "saf" && kind != "termux") {
+	if err != nil || host != "127.0.0.1" || port == "" || len(token) != 64 || kind != "saf" {
 		return nil, errors.New("invalid app-private documents adapter")
 	}
 	return &Documents{id, kind, endpoint, token}, nil

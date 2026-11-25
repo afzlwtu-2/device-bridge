@@ -3,13 +3,15 @@
 # by the installed app. APK execution still requires separate device acceptance.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-sdk_root=${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK path required}}
-ndk_path=${DEVICEBRIDGE_NDK:-$sdk_root/ndk/28.2.13676358}
-compiler="$ndk_path/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang"
-test -x "$compiler"
-mkdir -p app/android/app/src/main/jniLibs/arm64-v8a artifacts/android-arm64
-GOOS=android GOARCH=arm64 CGO_ENABLED=1 CC="$compiler" go build -trimpath -buildmode=pie -ldflags='-s -w -extldflags=-Wl,-z,max-page-size=16384' -o artifacts/android-arm64/libbridge_cli.so ./cmd/bridge-cli
-GOOS=android GOARCH=arm64 CGO_ENABLED=1 CC="$compiler" go build -trimpath -buildmode=pie -ldflags='-s -w -extldflags=-Wl,-z,max-page-size=16384' -o artifacts/android-arm64/libbridge_agent.so ./cmd/bridge-agent
-cp artifacts/android-arm64/libbridge_cli.so app/android/app/src/main/jniLibs/arm64-v8a/libbridge_cli.so
-cp artifacts/android-arm64/libbridge_agent.so app/android/app/src/main/jniLibs/arm64-v8a/libbridge_agent.so
-xxhsum -H1 artifacts/android-arm64/libbridge_cli.so
+source scripts/android_target.sh
+mkdir -p "$android_jni" "$android_output"
+GOOS=android GOARCH="$android_arch" CGO_ENABLED=1 CC="$compiler" go build -trimpath -buildmode=pie -ldflags='-s -w -extldflags=-Wl,-z,max-page-size=16384' -o "$android_output/libbridge_cli.so" ./cmd/bridge-cli
+GOOS=android GOARCH="$android_arch" CGO_ENABLED=1 CC="$compiler" go build -trimpath -buildmode=pie -ldflags='-s -w -extldflags=-Wl,-z,max-page-size=16384' -o "$android_output/libbridge_agent.so" ./cmd/bridge-agent
+"$compiler" -shared -fPIC -O2 -Wl,-s -Wl,-z,max-page-size=16384 -ldl internal/bootstrap/termux_adapt/db_termux_adapt.c -o "$android_output/libdb_termux_adapt.so"
+cp "$android_output/libbridge_cli.so" "$android_jni/libbridge_cli.so"
+cp "$android_output/libbridge_agent.so" "$android_jni/libbridge_agent.so"
+cp "$android_output/libdb_termux_adapt.so" "$android_jni/libdb_termux_adapt.so"
+mkdir -p app/assets/bin
+gzip -9 -n -c "$android_output/libbridge_cli.so" > "app/assets/bin/android-$android_arch-libbridge_cli.gzbin"
+gzip -9 -n -c "$android_output/libbridge_agent.so" > "app/assets/bin/android-$android_arch-libbridge_agent.gzbin"
+xxhsum -H1 "$android_output/libbridge_cli.so"

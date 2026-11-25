@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeSource struct {
@@ -178,6 +179,37 @@ func TestStreamPullAndResume(t *testing.T) {
 	got, err := os.ReadFile(dest)
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatal("streamed payload mismatch", err)
+	}
+	if _, err := os.Stat(dest + ".devicebridge-part"); !os.IsNotExist(err) {
+		t.Fatalf("staging directory left behind after publish: %v", err)
+	}
+}
+
+func TestPullWaitsForMeteredApprovalBeforeReading(t *testing.T) {
+	data := []byte("resumed after explicit mobile data approval")
+	source := &fakeSource{data: data}
+	dest := filepath.Join(t.TempDir(), "resume")
+	approved, requested := false, false
+	routes := []Route{{Name: "tailnet", Open: func(context.Context) (Source, string, func(), error) {
+		if !approved {
+			return nil, "", nil, ErrMeteredPull
+		}
+		return source, "tailnet-endpoint", nil, nil
+	}}}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	receipt, route, err := recoverPull(ctx, routes, "peer", manifest(data), dest, io.ErrUnexpectedEOF, 0, nil,
+		func(event RecoveryEvent) {
+			if event.State == "metered" {
+				requested = true
+				if source.calls != 0 {
+					t.Fatalf("read file data before approval")
+				}
+				approved = true
+			}
+		}, time.Second, time.Millisecond)
+	if err != nil || !requested || route != "tailnet" || receipt.Bytes != int64(len(data)) {
+		t.Fatalf("expected approval and successful download, got %+v %q %v", receipt, route, err)
 	}
 }
 

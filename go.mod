@@ -10,4 +10,9 @@ require (
 	golang.org/x/sys v0.50.0
 )
 
-require github.com/cespare/xxhash/v2 v2.3.0
+require (
+	github.com/cespare/xxhash/v2 v2.3.0
+	github.com/pkg/sftp v1.13.12
+)
+
+require github.com/kr/fs v0.1.0 // indirect

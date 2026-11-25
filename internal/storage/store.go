@@ -2,22 +2,32 @@
 package storage
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"syscall"
 	"time"
 )
 
 type Store struct{ DB *sql.DB }
+
+const peerAliasPrefix = "peer-alias."
+
 type Peer struct {
 	ID        string                `json:"id"`
 	Name      string                `json:"name"`
+	Alias     string                `json:"-"`
 	Status    string                `json:"status"`
 	Expires   int64                 `json:"expires"`
 	Addresses []EndpointObservation `json:"addresses,omitempty"`
@@ -30,7 +40,7 @@ type EndpointObservation struct {
 }
 
 func (s *Store) EndpointRecords(peer string) ([]EndpointObservation, error) {
-	rows, err := s.DB.Query("SELECT endpoint,network,observed FROM endpoints WHERE peer=? ORDER BY observed DESC,endpoint LIMIT 8", peer)
+	rows, err := s.DB.Query("SELECT endpoint,network,observed FROM endpoints WHERE peer=? ORDER BY observed DESC,endpoint LIMIT 5", peer)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +104,47 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = s.PreserveOwner(dir); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return s, nil
+}
+
+// Privileged network services share this user-owned state with the GUI. Keep
+// only these flat SQLite files owned by that user, without following symlinks.
+func (s *Store) PreserveOwner(dir string) error {
+	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
+		return nil
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	owner, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || owner.Uid == 0 {
+		return nil
+	}
+	if _, err = s.DB.Exec("UPDATE preferences SET value=value WHERE 0"); err != nil {
+		return err
+	}
+	for _, name := range []string{"state.db", "state.db-wal", "state.db-shm"} {
+		path := filepath.Join(dir, name)
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("unsafe DeviceBridge SQLite metadata")
+		}
+		if err = os.Lchown(path, int(owner.Uid), int(owner.Gid)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 func (s *Store) Close() error { return s.DB.Close() }
 func (s *Store) migrate() error {
@@ -179,6 +229,16 @@ func (s *Store) Theme(value string) (string, error) {
 // short and scoped to the selected source IP/subnet/interface; cached IPs are not trust.
 func (s *Store) CacheEndpoint(peer, network, endpoint string) error {
 	_, err := s.DB.Exec("INSERT INTO endpoints(peer,network,endpoint,observed) VALUES(?,?,?,?) ON CONFLICT(peer,network,endpoint) DO UPDATE SET observed=excluded.observed", peer, network, endpoint, time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.Exec(
+		`DELETE FROM endpoints WHERE peer=? AND rowid NOT IN (
+			SELECT rowid FROM endpoints WHERE peer=? ORDER BY observed DESC, rowid DESC LIMIT 5
+		)`,
+		peer,
+		peer,
+	)
 	return err
 }
 func (s *Store) CachedEndpoints(peer, network string) ([]string, error) {
@@ -219,9 +279,19 @@ func (s *Store) RequestPair(token, id, name string) (err error) {
 	if n != 1 {
 		return ErrDenied
 	}
-	// A new invitation cannot reactivate a revoked peer or change a live pairing.
-	_, err = tx.Exec("INSERT INTO peers(id,name,status,expires) VALUES(?,?,'pending',?)", id, name, time.Now().Add(5*time.Minute).Unix())
+	// A fresh invitation can renew a pending request from the same key.
+	// Paired and revoked relationships retain their existing state.
+	res, err = tx.Exec(`INSERT INTO peers(id,name,status,expires) VALUES(?,?,'pending',?)
+		ON CONFLICT(id) DO UPDATE SET name=excluded.name, expires=excluded.expires
+		WHERE peers.status='pending'`, id, name, time.Now().Add(5*time.Minute).Unix())
 	if err != nil {
+		return err
+	}
+	n, err = res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
 		return errors.New("peer already exists; revoke/remove locally before pairing again")
 	}
 	_, err = tx.Exec("INSERT INTO audit(at,peer,action,scope) VALUES(?,?,?,?)", time.Now().Unix(), id, "pair_requested", "")
@@ -232,11 +302,38 @@ func (s *Store) RequestPair(token, id, name string) (err error) {
 }
 func (s *Store) Peer(id string) (Peer, error) {
 	var p Peer
-	err := s.DB.QueryRow("SELECT id,name,status,expires FROM peers WHERE id=?", id).Scan(&p.ID, &p.Name, &p.Status, &p.Expires)
+	err := s.DB.QueryRow(`
+		SELECT p.id,p.name,p.status,p.expires,COALESCE(a.value,'')
+		FROM peers p LEFT JOIN preferences a ON a.key=?||p.id WHERE p.id=?
+	`, peerAliasPrefix, id).Scan(&p.ID, &p.Name, &p.Status, &p.Expires, &p.Alias)
 	return p, err
 }
+func (s *Store) RenamePeer(id, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 256 || strings.ContainsAny(name, "\r\n\x00") {
+		return errors.New("device name must be 1–256 bytes without line breaks")
+	}
+	res, err := s.DB.Exec(`
+		INSERT INTO preferences(key,value)
+		SELECT ?,? WHERE EXISTS (SELECT 1 FROM peers WHERE id=? AND status='paired')
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value
+	`, peerAliasPrefix+id, name, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err == nil && n != 1 {
+		return ErrDenied
+	}
+	return err
+}
+
 func (s *Store) Peers() ([]Peer, error) {
-	rows, err := s.DB.Query("SELECT id,name,status,expires FROM peers ORDER BY name,id")
+	rows, err := s.DB.Query(`
+		SELECT p.id,p.name,p.status,p.expires,COALESCE(a.value,'')
+		FROM peers p LEFT JOIN preferences a ON a.key=?||p.id
+		ORDER BY COALESCE(a.value,p.name),p.id
+	`, peerAliasPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +341,7 @@ func (s *Store) Peers() ([]Peer, error) {
 	p := []Peer{}
 	for rows.Next() {
 		var v Peer
-		if err = rows.Scan(&v.ID, &v.Name, &v.Status, &v.Expires); err != nil {
+		if err = rows.Scan(&v.ID, &v.Name, &v.Status, &v.Expires, &v.Alias); err != nil {
 			return nil, err
 		}
 		p = append(p, v)
@@ -294,12 +391,52 @@ func (s *Store) Approve(id string, roots []string, ttl time.Duration, quota int6
 	}
 	return tx.Commit()
 }
+func removePeerACLMetadataTx(tx *sql.Tx, id string) error {
+	if _, err := tx.Exec("DELETE FROM preferences WHERE key=?", peerTagsPrefix+id); err != nil {
+		return err
+	}
+	var raw string
+	err := tx.QueryRow("SELECT value FROM preferences WHERE key=?", aclPolicyKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var p ACLPolicy
+	if err = json.Unmarshal([]byte(raw), &p); err != nil {
+		return err
+	}
+	changed := false
+	for g, members := range p.Groups {
+		if idx := slices.Index(members, id); idx >= 0 {
+			p.Groups[g] = slices.Delete(members, idx, idx+1)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec("INSERT INTO preferences(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", aclPolicyKey, string(b))
+	return err
+}
+
 func (s *Store) Revoke(id string) error {
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err = tx.Exec("DELETE FROM preferences WHERE key=?", "agent-ssh-access-v1:"+id); err != nil {
+		return err
+	}
+	if err = removePeerACLMetadataTx(tx, id); err != nil {
+		return err
+	}
 	res, err := tx.Exec("UPDATE peers SET status='revoked' WHERE id=?", id)
 	if err != nil {
 		return err
@@ -310,6 +447,12 @@ func (s *Store) Revoke(id string) error {
 	}
 	_, err = tx.Exec("DELETE FROM grants WHERE peer=?", id)
 	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec("DELETE FROM preferences WHERE key GLOB ?", actionRequestKey(id, "*")); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("DELETE FROM preferences WHERE key IN (?,?,?)", syncPermissionPrefix+id, syncRemotePermissionPrefix+id, termuxFilesPermissionPrefix+id); err != nil {
 		return err
 	}
 	_, err = tx.Exec("INSERT INTO audit(at,peer,action,scope) VALUES(?,?,?,?)", time.Now().Unix(), id, "revoked", "")
@@ -332,7 +475,20 @@ func (s *Store) RemovePeer(id string) error {
 			return err
 		}
 	}
-	if _, err = tx.Exec("DELETE FROM preferences WHERE key IN (?,?,?)", "connection."+id, "rate."+id, "actions."+id); err != nil {
+	if _, err = tx.Exec("DELETE FROM preferences WHERE key=?", "agent-ssh-access-v1:"+id); err != nil {
+		return err
+	}
+	if err = removePeerACLMetadataTx(tx, id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("DELETE FROM preferences WHERE key IN (?,?,?,?,?,?)", "connection."+id, "rate."+id, "actions."+id, "ssh."+id, "handshake."+id, peerAliasPrefix+id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("DELETE FROM preferences WHERE key IN (?,?,?)", syncPermissionPrefix+id, syncRemotePermissionPrefix+id, termuxFilesPermissionPrefix+id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("DELETE FROM preferences WHERE key IN (?,?) OR key GLOB ? OR key GLOB ?",
+		textPermissionPrefix+id, filePermissionPrefix+id, textMessagePrefix+id+".*", actionRequestKey(id, "*")); err != nil {
 		return err
 	}
 	res, err := tx.Exec("DELETE FROM peers WHERE id=?", id)
@@ -353,9 +509,18 @@ func (s *Store) Authorized(id, root, op string, bytes int64) error {
 		return ErrDenied
 	}
 	col := "browse"
+	aclRes := "files:browse"
 	if op == "read" {
 		col = "read"
+		aclRes = "files:read"
 	} else if op != "browse" {
+		return ErrDenied
+	}
+	aclEnabled, aclAllowed, err := s.CheckPeerACL(context.Background(), id, aclRes)
+	if err != nil {
+		return ErrDenied
+	}
+	if aclEnabled && !aclAllowed {
 		return ErrDenied
 	}
 	res, err := s.DB.Exec("UPDATE grants SET used=used+? WHERE peer=? AND root=? AND "+col+"=1 AND expires>? AND used<=quota-? AND EXISTS(SELECT 1 FROM peers WHERE id=? AND status='paired')", bytes, id, root, time.Now().Unix(), bytes, id)
@@ -363,10 +528,17 @@ func (s *Store) Authorized(id, root, op string, bytes int64) error {
 		return err
 	}
 	n, _ := res.RowsAffected()
-	if n != 1 {
-		return ErrDenied
+	if n == 1 {
+		return nil
 	}
-	return nil
+	if aclEnabled && aclAllowed {
+		var ok int
+		err = s.DB.QueryRow("SELECT 1 FROM peers, exports WHERE peers.id=? AND peers.status='paired' AND exports.id=?", id, root).Scan(&ok)
+		if err == nil && ok == 1 {
+			return nil
+		}
+	}
+	return ErrDenied
 }
 func (s *Store) Export(id, path string) error {
 	if id == "" || len(id) > 80 {
@@ -383,7 +555,7 @@ func (s *Store) Export(id, path string) error {
 // ExportDocuments records a versioned Android provider root without treating
 // its identifier as a native filesystem path.
 func (s *Store) ExportDocuments(id, kind string) error {
-	if id == "" || len(id) > 80 || (kind != "saf" && kind != "termux") {
+	if id == "" || len(id) > 80 || kind != "saf" {
 		return errors.New("invalid Android document export")
 	}
 	_, err := s.DB.Exec("INSERT INTO exports(id,path) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET path=excluded.path", id, "android-documents://"+kind)

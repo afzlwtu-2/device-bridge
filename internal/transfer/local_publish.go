@@ -9,6 +9,48 @@ import (
 	"strings"
 )
 
+// MoveLocalNoReplace renames an app-selected local item without overwriting
+// an entry that appears at the destination. Callers check their storage scope.
+func MoveLocalNoReplace(source, destination string) error {
+	if !filepath.IsAbs(source) || !filepath.IsAbs(destination) {
+		return errors.New("absolute local paths required")
+	}
+	src, dst := filepath.Clean(source), filepath.Clean(destination)
+	if src == "/" || dst == "/" {
+		return errors.New("cannot move a storage root")
+	}
+	open := func(path string) (*os.File, error) {
+		parent := filepath.Dir(path)
+		resolved, err := filepath.EvalSymlinks(parent)
+		if err != nil {
+			return nil, err
+		}
+		if resolved != parent {
+			return nil, errors.New("symbolic link access disabled")
+		}
+		dir, err := os.OpenRoot(parent)
+		if err != nil {
+			return nil, err
+		}
+		defer dir.Close()
+		return dir.Open(".")
+	}
+	from, err := open(src)
+	if err != nil {
+		return err
+	}
+	defer from.Close()
+	to, err := open(dst)
+	if err != nil {
+		return err
+	}
+	defer to.Close()
+	if err := unix.Renameat2(int(from.Fd()), filepath.Base(src), int(to.Fd()), filepath.Base(dst), unix.RENAME_NOREPLACE); err != nil {
+		return fmt.Errorf("local move without overwrite: %w", err)
+	}
+	return nil
+}
+
 // PublishLocal commits only an operation-owned, already verified sibling stage.
 // Kotlin validates its storage grant and rechecks every completed file first.
 func PublishLocal(source, destination string) error {

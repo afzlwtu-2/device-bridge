@@ -1,3 +1,4 @@
+.agent-session-lock
 .devicebridge-agent-session.lock
 .work/
 artifacts/
@@ -14,5 +15,20 @@ app/linux/flutter/ephemeral/
 app/android/key.properties
 app/android/app/*.jks
 app/android/app/src/main/jniLibs/
+app/assets/bin/*.gz
+app/assets/bin/*.gzbin
 __pycache__/
 *.py[cod]
+
+# Local agent coordination and private development notes
+**/.agent-session-lock*
+**/.devicebridge-agent-session.lock
+**/PROGRESS.md
+**/prgress.md
+**/HANDOFF.md
+**/WORKLOG.md
+**/DECISSIONS.md
+**/DECISIONS.md
+**/.agent-mode
+/docs/test-evidence/
+/dist/

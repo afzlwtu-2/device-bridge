@@ -5,16 +5,33 @@ import (
 	"devicebridge/internal/filesproviders"
 	"devicebridge/protocol"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/cespare/xxhash/v2"
 	"io"
 	"path"
+	"slices"
+	"strings"
 )
 
 const MaxManifestEntries = 20000
 const MaxManifestBytes = int64(100 << 30)
 
+// ContentXXH64 identifies the ordered, verified entries independently of
+// the selected provider and path on either device.
+func ContentXXH64(m protocol.Manifest) string {
+	entries := slices.Clone(m.Entries)
+	slices.SortFunc(entries, func(a, b protocol.ManifestEntry) int { return strings.Compare(a.Path, b.Path) })
+	raw, _ := json.Marshal(entries)
+	return fmt.Sprintf("%016x", xxhash.Sum64(raw))
+}
+
 func Manifest(ctx context.Context, p filesproviders.Provider, rel string, authorize func(int64) error, excludes ...string) (protocol.Manifest, error) {
+	return ManifestWithin(ctx, p, rel, MaxManifestEntries, MaxManifestBytes, authorize, excludes...)
+}
+
+func ManifestWithin(ctx context.Context, p filesproviders.Provider, rel string, maxEntries int, maxBytes int64, authorize func(int64) error, excludes ...string) (protocol.Manifest, error) {
 	normalized, err := ValidateExclusions(excludes)
 	if err != nil {
 		return protocol.Manifest{}, err
@@ -25,7 +42,7 @@ func Manifest(ctx context.Context, p filesproviders.Provider, rel string, author
 		if Excluded(dst, normalized) {
 			return nil
 		}
-		if depth > 128 || len(m.Entries) >= MaxManifestEntries {
+		if depth > 128 || len(m.Entries) >= maxEntries {
 			return errors.New("folder manifest limit exceeded")
 		}
 		if err := ctx.Err(); err != nil {
@@ -50,7 +67,7 @@ func Manifest(ctx context.Context, p filesproviders.Provider, rel string, author
 				}
 				for _, child := range page.Entries {
 					if child.Kind != "directory" && child.Kind != "file" {
-						return errors.New("folder contains symlink or special file; transfer blocked")
+						return fmt.Errorf("folder contains symlink or special file %q (%s); transfer blocked", child.Path, child.Kind)
 					}
 					if err = walk(child.Path, path.Join(dst, child.Name), depth+1); err != nil {
 						return err
@@ -63,7 +80,7 @@ func Manifest(ctx context.Context, p filesproviders.Provider, rel string, author
 			}
 			return nil
 		}
-		if info.Kind != "file" || e.Size < 0 || m.Bytes > MaxManifestBytes-e.Size {
+		if info.Kind != "file" || e.Size < 0 || m.Bytes > maxBytes-e.Size {
 			return errors.New("unsupported file or manifest byte limit exceeded")
 		}
 		f, err := p.OpenRead(ctx, src)

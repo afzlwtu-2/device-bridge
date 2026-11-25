@@ -31,6 +31,19 @@ func (n *Native) Scope() Scope {
 	return Scope{Version: ContractVersion, RootID: n.id, Kind: "native-scoped", Read: true}
 }
 func (n *Native) Close() error { return n.root.Close() }
+
+// OpenSyncDirectory leases a checked directory inode. Callers pass its
+// /proc/PID/fd/FD path to the child engine, retaining confinement across rename.
+func (n *Native) OpenSyncDirectory(ctx context.Context, relative string) (*os.File, error) {
+	entry, err := n.Stat(ctx, relative)
+	if err != nil {
+		return nil, err
+	}
+	if entry.Kind != "directory" {
+		return nil, errors.New("sync needs a directory")
+	}
+	return n.root.Open(normalize(relative))
+}
 func ValidPath(p string) error {
 	if p == "" || p == "." {
 		return nil

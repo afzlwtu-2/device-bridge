@@ -97,7 +97,14 @@ install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
 # The presentation process invokes the same versioned Go core used by the CLI.
 install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../../artifacts/linux/bridge-cli"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../artifacts/linux/bridge-agent"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../artifacts/linux/bridge-sync"
   DESTINATION "${CMAKE_INSTALL_PREFIX}" COMPONENT Runtime)
+foreach(optional_bin bridge-tailnet bridge-wg)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../artifacts/linux/${optional_bin}")
+    install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../../artifacts/linux/${optional_bin}"
+      DESTINATION "${CMAKE_INSTALL_PREFIX}" COMPONENT Runtime)
+  endif()
+endforeach()
 
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   COMPONENT Runtime)

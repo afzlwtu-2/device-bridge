@@ -20,7 +20,7 @@ if [[ ${DEVICEBRIDGE_PHONE_OFFLINE_DEPS:-0} == 1 ]]; then
   go mod vendor -o "$local_run/vendor"
   vendor_archive=(-C "$PWD/$local_run" vendor)
 fi
-tar --exclude=.git --exclude=.work --exclude=artifacts --exclude=app --exclude=.devicebridge-agent-session.lock -czf "$local_run/source.tar.gz" . "${vendor_archive[@]}"
+tar --exclude=.git --exclude=.work --exclude=artifacts --exclude=app --exclude=.agent-session-lock --exclude=.devicebridge-agent-session.lock -czf "$local_run/source.tar.gz" . "${vendor_archive[@]}"
 source_xxh64=$(xxhsum -H1 -q < "$local_run/source.tar.gz" | cut -d ' ' -f 1)
 printf '%s  source.tar.gz\n' "$source_xxh64" > "$local_run/source.xxh64"
 remote_run=$(ssh -p "$phone_port" "${ssh_options[@]}" "$phone_host" 'mktemp -d /data/data/com.termux/files/usr/tmp/devicebridge-build.XXXXXXXX')

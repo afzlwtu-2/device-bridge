@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-tests:
+    name: Go (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: spikes/tsnet/go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            spikes/tsnet/go.sum
+            spikes/wireguard/go.sum
+
+      - name: Run core Go checks and race tests
+        run: bash scripts/check.sh
+
+      - name: Run sidecar Go vet and race tests
+        run: |
+          (cd spikes/tsnet && go vet ./... && go test -race ./...)
+          (cd spikes/wireguard && go vet ./... && go test -race ./...)
+
+  flutter-tests:
+    name: Flutter Analyze & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.50.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Analyze and test Flutter app
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+  android-native:
+    name: Android Native (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, arm, amd64]
+    runs-on: ubuntu-latest
+    env:
+      DEVICEBRIDGE_BUILD_TARGET: android
+      DEVICEBRIDGE_ANDROID_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: spikes/tsnet/go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            spikes/tsnet/go.sum
+            spikes/wireguard/go.sum
+
+      - name: Install xxhash
+        run: sudo apt-get update && sudo apt-get install -y xxhash
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK 28.2.13676358
+        run: sdkmanager "ndk;28.2.13676358"
+
+      - name: Build Android core and sidecar binaries
+        run: |
+          bash scripts/build_android_core.sh
+          bash scripts/build_tsnet.sh
+          bash scripts/build_wg.sh

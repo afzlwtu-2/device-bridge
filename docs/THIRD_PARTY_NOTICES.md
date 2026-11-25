@@ -6,6 +6,7 @@ Resolved Go modules and Dart packages used by this development build. SQLite eng
 
 | Component | Version | License file |
 | --- | --- | --- |
+| Syncthing external sync engine | v2.1.7 | [MPL-2.0 license](licenses/syncthing-v2.1.7.txt); unmodified upstream [source](https://github.com/syncthing/syncthing/tree/v2.1.7), reproducible wrapper `scripts/build_syncthing.sh` |
 | Shizuku API/provider/aidl/shared | 13.1.5 | [MIT license](licenses/shizuku-api-v13.1.5.txt) (license URL from the published Maven POM) |
 | github.com/cespare/xxhash/v2 | v2.3.0 | [license](licenses/github.com_cespare_xxhash-v2.3.0.txt) |
 | github.com/mattn/go-sqlite3 | v1.14.32 | [license](licenses/github.com_mattn_go-sqlite3-v1.14.32.txt) |
@@ -33,7 +34,12 @@ Resolved Go modules and Dart packages used by this development build. SQLite eng
 | Dart material_color_utilities | see app/pubspec.lock / Flutter SDK | [license](licenses/dart-material_color_utilities.txt) |
 | Dart material_ui | see app/pubspec.lock / Flutter SDK | [license](licenses/dart-material_ui.txt) |
 | Dart meta | see app/pubspec.lock / Flutter SDK | [license](licenses/dart-meta.txt) |
+| Dart mobile_scanner | 7.5.0 | [license](licenses/dart-mobile_scanner.txt) |
 | Dart path | see app/pubspec.lock / Flutter SDK | [license](licenses/dart-path.txt) |
+| Dart plugin_platform_interface | 2.1.8 | [license](licenses/dart-plugin_platform_interface.txt) |
+| Dart qr | 3.0.3 | [license](licenses/dart-qr.txt) |
+| Dart qr_flutter | 4.1.0 | [license](licenses/dart-qr_flutter.txt) |
+| Google ML Kit Barcode Scanning (Android) | 17.3.0 | [ML Kit Terms of Service](https://developers.google.com/ml-kit/terms) |
 | Dart sky_engine | see app/pubspec.lock / Flutter SDK | [license](licenses/dart-sky_engine.txt) |
 | Dart source_span | see app/pubspec.lock / Flutter SDK | [license](licenses/dart-source_span.txt) |
 | Dart stack_trace | see app/pubspec.lock / Flutter SDK | [license](licenses/dart-stack_trace.txt) |
@@ -43,5 +49,9 @@ Resolved Go modules and Dart packages used by this development build. SQLite eng
 | Dart test_api | see app/pubspec.lock / Flutter SDK | [license](licenses/dart-test_api.txt) |
 | Dart vector_math | see app/pubspec.lock / Flutter SDK | [license](licenses/dart-vector_math.txt) |
 | Dart vm_service | see app/pubspec.lock / Flutter SDK | [license](licenses/dart-vm_service.txt) |
+| Dart xterm3 | 6.4.0 | [license](licenses/dart-xterm3.txt) |
+| Dart convert | 3.1.2 | [license](licenses/dart-convert.txt) |
+| Dart typed_data | 1.4.0 | [license](licenses/dart-typed_data.txt) |
+| Dart zmodem | 0.0.6 | [license](licenses/dart-zmodem.txt) |
 
-Android SDK/NDK tooling is externally installed, not redistributed. Flutter engine notices are included in its app license registry. Optional Syncthing, tsnet and WireGuard are not linked or bundled.
+Android SDK/NDK tooling and Syncthing are separately installed. Flutter engine notices are included in its app license registry. Android packages include app-private Tailscale and userspace WireGuard sidecars. Packaging reads the exact linked Go dependency versions from each binary and includes their licenses, notices and patent files in `artifacts/THIRD_PARTY_NOTICES-GO.txt` and the Linux bundle.

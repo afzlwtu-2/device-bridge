@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"devicebridge/internal/actions"
 	"devicebridge/internal/auth"
 	"devicebridge/internal/features"
 	"devicebridge/internal/files"
 	"devicebridge/internal/filesproviders"
 	"devicebridge/internal/storage"
+	"devicebridge/internal/synccontrol"
 	"devicebridge/internal/transfer"
 	"devicebridge/protocol"
 	"encoding/hex"
@@ -17,22 +19,104 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 const ChunkSize = 4 << 20
 
+// AgentStats tracks live connection and byte counters across listeners.
+type AgentStats struct {
+	ActiveConns    atomic.Int64
+	ActiveRequests atomic.Int64
+	ActiveSSH      atomic.Int64
+	TotalRequests  atomic.Int64
+	BytesSent      atomic.Int64
+	BytesReceived  atomic.Int64
+}
+
+type AgentStatsSnapshot struct {
+	ActiveConns    int64 `json:"active_conns"`
+	ActiveRequests int64 `json:"active_requests"`
+	ActiveSSH      int64 `json:"active_ssh"`
+	TotalRequests  int64 `json:"total_requests"`
+	BytesSent      int64 `json:"bytes_sent"`
+	BytesReceived  int64 `json:"bytes_received"`
+}
+
+func (a *AgentStats) Snapshot() AgentStatsSnapshot {
+	if a == nil {
+		return AgentStatsSnapshot{}
+	}
+	return AgentStatsSnapshot{
+		ActiveConns:    max(0, a.ActiveConns.Load()),
+		ActiveRequests: max(0, a.ActiveRequests.Load()),
+		ActiveSSH:      max(0, a.ActiveSSH.Load()),
+		TotalRequests:  a.TotalRequests.Load(),
+		BytesSent:      a.BytesSent.Load(),
+		BytesReceived:  a.BytesReceived.Load(),
+	}
+}
+
+type countingResponseWriter struct {
+	http.ResponseWriter
+	bytes *atomic.Int64
+}
+
+func (w *countingResponseWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if n > 0 && w.bytes != nil {
+		w.bytes.Add(int64(n))
+	}
+	return n, err
+}
+
+func (w *countingResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *countingResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+type countingReadCloser struct {
+	io.ReadCloser
+	bytes *atomic.Int64
+}
+
+func (r *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	if n > 0 && r.bytes != nil {
+		r.bytes.Add(int64(n))
+	}
+	return n, err
+}
+
 type Server struct {
-	Store    *storage.Store
-	Identity *auth.Identity
-	Files    *filesproviders.Registry
-	slots    chan struct{}
+	Store           *storage.Store
+	Identity        *auth.Identity
+	Files           *filesproviders.Registry
+	SharedFiles     *os.Root
+	TermuxFiles     bool
+	StateDir        string
+	ActionState     string
+	DisableAgentSSH bool
+	Capabilities    func(context.Context) *protocol.DeviceCapabilities
+	LinkActive      func(context.Context) bool
+	PrepareLink     func(context.Context, protocol.ConnectionPrepareRequest) (protocol.ConnectionPrepareResult, error)
+	RestoreLink     func(context.Context) (protocol.ConnectionPrepareResult, error)
+	Sync            *synccontrol.Manager
+	Stats           *AgentStats
+	slots           chan struct{}
 }
 
 func New(s *storage.Store, id *auth.Identity, providers *filesproviders.Registry) *Server {
-	return &Server{Store: s, Identity: id, Files: providers, slots: make(chan struct{}, 8)}
+	return &Server{Store: s, Identity: id, Files: providers, Stats: &AgentStats{}, slots: make(chan struct{}, 8)}
 }
 func send(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -49,8 +133,26 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/pair", s.pair)
 	mux.HandleFunc("GET /v1/pair", s.pairStatus)
 	mux.HandleFunc("GET /v1/device", s.device)
+	mux.HandleFunc("GET /v1/speedtest", s.speedtest)
+	mux.HandleFunc("POST /v1/connections/prepare", s.prepareConnection)
+	mux.HandleFunc("POST /v1/connections/restore", s.restoreConnection)
+	mux.HandleFunc("POST /v1/connections/commit", s.commitConnection)
+	mux.HandleFunc("POST /v1/ssh", s.agentSSH)
 	registry := &features.Registry{}
 	_ = registry.Register(&remoteFiles{s: s})
+	_ = registry.Register(&shareText{s: s})
+	if s.Sync != nil {
+		_ = registry.Register(&folderSync{s: s})
+	}
+	if s.TermuxFiles {
+		_ = registry.Register(&termuxFiles{s: s})
+	}
+	if s.ActionState != "" {
+		_ = registry.Register(&agentActions{s: s})
+	}
+	if s.SharedFiles != nil {
+		_ = registry.Register(&shareFile{s: s})
+	}
 	registry.RegisterBackend(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil || len(r.TLS.PeerCertificates) != 1 {
@@ -61,6 +163,11 @@ func (s *Server) Handler() http.Handler {
 			fail(w, 426, "unsupported_protocol_version")
 			return
 		}
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/ssh" {
+			w.Header().Set("Cache-Control", "no-store")
+			mux.ServeHTTP(w, r)
+			return
+		}
 		select {
 		case s.slots <- struct{}{}:
 			defer func() { <-s.slots }()
@@ -68,20 +175,75 @@ func (s *Server) Handler() http.Handler {
 			fail(w, 429, "server_busy")
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		limit := int64(4096)
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/share/text" {
+			limit = 6*protocol.MaxSharedTextBytes + 256
+		} else if r.Method == http.MethodPost && r.URL.Path == fileShareEndpoint && s.SharedFiles != nil {
+			limit = transfer.MaxSharedFileBytes
+		} else if r.Method == http.MethodPost && r.URL.Path == folderShareEndpoint && s.SharedFiles != nil {
+			limit = transfer.MaxSharedFolderBytes + (32 << 20)
+		} else if r.Method == http.MethodPost && s.TermuxFiles {
+			switch r.URL.Path {
+			case managedUploadEndpoint:
+				limit = files.MaxManifestBytes + (64 << 20)
+			case managedRemoveEndpoint:
+				limit = 128 << 10
+			}
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		if s.Stats != nil {
+			s.Stats.ActiveRequests.Add(1)
+			s.Stats.TotalRequests.Add(1)
+			defer s.Stats.ActiveRequests.Add(-1)
+			if r.Body != nil {
+				r.Body = &countingReadCloser{ReadCloser: r.Body, bytes: &s.Stats.BytesReceived}
+			}
+			w = &countingResponseWriter{ResponseWriter: w, bytes: &s.Stats.BytesSent}
+		}
 		w.Header().Set("Cache-Control", "no-store")
 		mux.ServeHTTP(w, r)
 	})
 }
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
-	h := &http.Server{Handler: s.Handler(), TLSConfig: s.Identity.ServerTLS(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 3 * time.Minute, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: log.New(io.Discard, "", 0)}
+	serveCtx, stop := context.WithCancel(ctx)
+	go s.watchLinkLease(serveCtx)
+	h := &http.Server{
+		Handler:           s.Handler(),
+		BaseContext:       func(net.Listener) context.Context { return serveCtx },
+		TLSConfig:         s.Identity.ServerTLS(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      3 * time.Minute,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+		ErrorLog:          log.New(io.Discard, "", 0),
+		ConnState: func(c net.Conn, state http.ConnState) {
+			if s.Stats == nil {
+				return
+			}
+			switch state {
+			case http.StateNew:
+				s.Stats.ActiveConns.Add(1)
+			case http.StateClosed, http.StateHijacked:
+				s.Stats.ActiveConns.Add(-1)
+			}
+		},
+	}
+	stopped := make(chan struct{})
 	go func() {
-		<-ctx.Done()
+		defer close(stopped)
+		<-serveCtx.Done()
 		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = h.Shutdown(c)
+		if err := h.Shutdown(c); err != nil {
+			_ = h.Close()
+		}
 	}()
 	err := h.ServeTLS(ln, "", "")
+	// Replaced listeners exit before the agent shuts down. Cancel their
+	// requests and retire any keep-alive sockets before returning.
+	stop()
+	<-stopped
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -120,7 +282,153 @@ func (s *Server) device(w http.ResponseWriter, r *http.Request) {
 		fail(w, 403, "unpaired_device")
 		return
 	}
-	send(w, 200, protocol.Device{Version: 1, ID: s.Identity.ID, Name: s.Identity.Name, Features: []string{"remote-files-v1"}})
+	var caps *protocol.DeviceCapabilities
+	if s.Capabilities != nil {
+		caps = s.Capabilities(r.Context())
+	}
+	available := []string{"remote-files-v1", protocol.TextShareFeature}
+	if s.PrepareLink != nil && s.RestoreLink != nil {
+		available = append(available, "network-link-lease-v1")
+	}
+	if s.TermuxFiles {
+		available = append(available, protocol.TermuxFilesFeature)
+	}
+	if s.Sync != nil {
+		available = append(available, protocol.SyncControlFeature)
+	}
+	if s.ActionState != "" {
+		available = append(available, actions.Feature)
+	}
+	if s.SharedFiles != nil {
+		available = append(available, "quick-share-file-v1", transfer.SharedFolderFeature)
+	}
+	if s.agentSSHEnabled(r.Context()) {
+		available = append(available, AgentSSHFeature)
+	}
+	send(w, 200, protocol.Device{Version: 1, ID: s.Identity.ID, Name: s.Identity.Name,
+		Features: available, Capabilities: caps})
+}
+
+func (s *Server) speedtest(w http.ResponseWriter, r *http.Request) {
+	if !s.paired(r) {
+		fail(w, 403, "unpaired_device")
+		return
+	}
+	seconds := 5
+	if raw := r.URL.Query().Get("seconds"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 1 && v <= 15 {
+			seconds = v
+		}
+	}
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-DeviceBridge-Version", "1")
+	w.Header().Set("X-Speedtest-Seconds", strconv.Itoa(seconds))
+	w.WriteHeader(200)
+	buf := make([]byte, 128<<10)
+	for i := range buf {
+		buf[i] = byte(i*31 + 7)
+	}
+	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
+	for time.Now().Before(deadline) {
+		if r.Context().Err() != nil {
+			return
+		}
+		if _, err := w.Write(buf); err != nil {
+			return
+		}
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (s *Server) prepareConnection(w http.ResponseWriter, r *http.Request) {
+	if !s.paired(r) {
+		fail(w, 403, "unpaired_device")
+		return
+	}
+	if aclEnabled, aclAllowed, err := s.Store.CheckPeerACL(r.Context(), peerID(r), "link"); err != nil || (aclEnabled && !aclAllowed) {
+		fail(w, 403, "acl_denied")
+		return
+	}
+	if s.PrepareLink == nil {
+		send(w, 501, protocol.Error{Code: "prepare_unsupported", Message: "Connection preparation is unsupported on this host"})
+		return
+	}
+	var req protocol.ConnectionPrepareRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		send(w, 400, protocol.Error{Code: "invalid_request", Message: err.Error()})
+		return
+	}
+	if req.OperationID != "" {
+		if s.LinkActive != nil && s.LinkActive(r.Context()) {
+			fail(w, 409, "stop_existing_link_first")
+			return
+		}
+		if req.Kind != "wifi_join" && req.Kind != "hotspot" && req.Kind != "wifi_direct" {
+			fail(w, 400, "leased_link_kind_unsupported")
+			return
+		}
+		if _, err := s.Store.ChangeLinkLease(r.Context(), peerID(r), req.OperationID, "begin", req.LeaseSeconds); err != nil {
+			fail(w, 409, "link_operation_busy")
+			return
+		}
+	}
+	pctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	res, err := s.PrepareLink(pctx, req)
+	if err != nil {
+		if req.OperationID != "" {
+			stage := "needs_recovery"
+			if s.RestoreLink != nil {
+				rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
+				if rres, rerr := s.RestoreLink(rctx); rerr == nil && rres.OK {
+					stage = "restored"
+				}
+				rcancel()
+			}
+			_, _ = s.Store.ChangeLinkLease(context.Background(), peerID(r), req.OperationID, stage, 0)
+		}
+		send(w, 400, protocol.Error{Code: "prepare_failed", Message: err.Error()})
+		return
+	}
+	send(w, 200, res)
+}
+
+func (s *Server) restoreConnection(w http.ResponseWriter, r *http.Request) {
+	if !s.paired(r) {
+		fail(w, 403, "unpaired_device")
+		return
+	}
+	if aclEnabled, aclAllowed, err := s.Store.CheckPeerACL(r.Context(), peerID(r), "link"); err != nil || (aclEnabled && !aclAllowed) {
+		fail(w, 403, "acl_denied")
+		return
+	}
+	if s.RestoreLink == nil {
+		send(w, 200, protocol.ConnectionPrepareResult{OK: true, Kind: "restore", Status: "noop"})
+		return
+	}
+	lease, leaseErr := s.Store.LinkLease(r.Context())
+	if leaseErr != nil {
+		fail(w, 500, "link_state_unavailable")
+		return
+	}
+	if lease.ID != "" && lease.Peer != peerID(r) && (lease.Stage == "preparing" || lease.Stage == "restoring") {
+		fail(w, 403, "link_owned_by_another_peer")
+		return
+	}
+	pctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	res, err := s.RestoreLink(pctx)
+	if err != nil {
+		send(w, 400, protocol.Error{Code: "restore_failed", Message: err.Error()})
+		return
+	}
+	if lease.ID != "" && lease.Peer == peerID(r) && res.OK {
+		_, _ = s.Store.ChangeLinkLease(r.Context(), lease.Peer, lease.ID, "restored", 0)
+	}
+	send(w, 200, res)
 }
 
 type remoteFiles struct{ s *Server }
@@ -162,7 +470,9 @@ func (s *Server) roots(w http.ResponseWriter, r *http.Request) {
 			case "termux_home":
 				name = "Termux Home"
 			}
-			roots = append(roots, protocol.Root{ID: p.ID(), Name: name})
+			_, native := p.(*filesproviders.Native)
+			writable := native && s.termuxFilesAllowed(peerID(r), p.ID(), 0) == nil
+			roots = append(roots, protocol.Root{ID: p.ID(), Name: name, Writable: writable})
 		}
 	}
 	send(w, 200, roots)
@@ -308,12 +618,12 @@ func (s *Server) tar(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "audit_unavailable")
 		return
 	}
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+	output := beginStreamDownload(w)
 	w.Header().Set("Content-Type", "application/x-tar")
 	w.Header().Set("X-Archive-Codec", codec)
 	w.Header().Set("X-DeviceBridge-Version", "1")
 	w.WriteHeader(200)
-	_ = transfer.WriteTar(r.Context(), p, rel, codec, w, func(n int64) error {
+	_ = transfer.WriteTar(r.Context(), p, rel, codec, output, func(n int64) error {
 		return s.Store.Authorized(peerID(r), p.ID(), "read", n)
 	}, excludes...)
 }
@@ -351,7 +661,10 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "seek_failed")
 		return
 	}
-	if s.Store.Authorized(peerID(r), p.ID(), "read", remain) != nil {
+	// Reserve the first window before sending headers so a denied request can
+	// still return 403. Charge later windows as the stream advances.
+	window := min(remain, int64(transfer.ChunkSize))
+	if s.Store.Authorized(peerID(r), p.ID(), "read", window) != nil {
 		fail(w, 403, "read_quota_or_grant_denied")
 		return
 	}
@@ -359,10 +672,24 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "audit_unavailable")
 		return
 	}
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+	output := beginStreamDownload(w)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(remain, 10))
 	w.Header().Set("X-DeviceBridge-Version", "1")
 	w.WriteHeader(200)
-	_, _ = io.CopyBuffer(w, io.LimitReader(f, remain), make([]byte, transfer.ChunkSize))
+	buf := make([]byte, window)
+	for remain > 0 {
+		if r.Context().Err() != nil {
+			return
+		}
+		n, readErr := io.ReadFull(f, buf[:window])
+		if _, err := output.Write(buf[:n]); err != nil || readErr != nil {
+			return
+		}
+		remain -= int64(n)
+		window = min(remain, int64(len(buf)))
+		if window > 0 && s.Store.Authorized(peerID(r), p.ID(), "read", window) != nil {
+			return
+		}
+	}
 }

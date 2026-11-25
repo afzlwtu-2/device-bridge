@@ -10,7 +10,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 
-/** User-started pulls only. No boot receiver, persistent service, or wake lock. */
+/** Foreground lifetime for user-started file transfers. */
 class TransferService : Service() {
     override fun onCreate() {
         super.onCreate()
@@ -19,14 +19,14 @@ class TransferService : Service() {
         val cancel = PendingIntent.getService(this, 2, Intent(this, TransferService::class.java).setAction("cancel"), PendingIntent.FLAG_IMMUTABLE)
         val open = PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val notification = Notification.Builder(this, "transfers").setContentTitle("DeviceBridge transfer")
-            .setContentText("Downloading and verifying over your approved LAN")
+            .setContentText("Transferring and verifying files")
             .setSmallIcon(android.R.drawable.stat_sys_download).setContentIntent(open).setOngoing(true)
             .addAction(Notification.Action.Builder(null, "Cancel", cancel).build()).build()
         if (Build.VERSION.SDK_INT >= 29) startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         else startForeground(1, notification)
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == "cancel") { CoreRuntime.cancel(); stopSelf() }
+        if (intent?.action == "cancel") CoreRuntime.cancel()
         return START_NOT_STICKY
     }
     override fun onTimeout(startId: Int, fgsType: Int) { CoreRuntime.cancel(); stopSelf() }

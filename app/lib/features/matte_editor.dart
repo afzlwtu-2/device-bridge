@@ -87,11 +87,48 @@ class _MatteThemeEditorState extends State<MatteThemeEditor> {
   }
 
   Future<void> _saveAndClose() async {
+    if (saving) return;
     setState(() => saving = true);
     await widget.onSave(List<MatteArtItem>.from(items));
     if (mounted) {
       Navigator.pop(context);
     }
+  }
+
+  void _useDefaults() {
+    setState(() {
+      items = List<MatteArtItem>.from(defaultMatteItems());
+      selected = items.isEmpty ? null : 0;
+    });
+  }
+
+  void _showExportDialog() {
+    final encoded = encodeMatteItems(items);
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Matte preset'),
+        content: SizedBox(
+          width: 420,
+          child: SingleChildScrollView(
+            child: SelectableText(encoded),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: encoded));
+              Navigator.pop(ctx);
+            },
+            child: const Text('Copy'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -103,62 +140,13 @@ class _MatteThemeEditorState extends State<MatteThemeEditor> {
       backgroundColor: const Color(0xffa3ad4c),
       appBar: AppBar(
         backgroundColor: const Color(0xffa3ad4c),
-        title: const Text('Matte editor'),
+        title: const Text('Matte editor', overflow: TextOverflow.ellipsis),
         actions: [
-          IconButton(
-            tooltip: 'Add flower',
-            onPressed: saving ? null : () => _addItem('flower'),
-            icon: const Icon(Icons.local_florist_outlined),
+          TextButton(
+            onPressed: saving ? null : _useDefaults,
+            child: const Text('Use defaults'),
           ),
-          IconButton(
-            tooltip: 'Add bird',
-            onPressed: saving ? null : () => _addItem('bird'),
-            icon: const Icon(Icons.flutter_dash_outlined),
-          ),
-          IconButton(
-            tooltip: 'Export preset',
-            onPressed: saving
-                ? null
-                : () {
-                    final encoded = encodeMatteItems(items);
-                    showDialog<void>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('Matte preset'),
-                        content: SizedBox(
-                          width: 420,
-                          child: SingleChildScrollView(
-                            child: SelectableText(encoded),
-                          ),
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () {
-                              Clipboard.setData(ClipboardData(text: encoded));
-                              Navigator.pop(ctx);
-                            },
-                            child: const Text('Copy'),
-                          ),
-                          FilledButton(
-                            onPressed: () => Navigator.pop(ctx),
-                            child: const Text('Close'),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-            icon: const Icon(Icons.code),
-          ),
-          IconButton(
-            tooltip: 'Reset default art',
-            onPressed: saving
-                ? null
-                : () => setState(() {
-                    items = defaultMatteItems();
-                    selected = items.isEmpty ? null : 0;
-                  }),
-            icon: const Icon(Icons.restart_alt),
-          ),
+          const SizedBox(width: 4),
           FilledButton(
             onPressed: saving ? null : _saveAndClose,
             child: const Text('Done'),
@@ -168,6 +156,31 @@ class _MatteThemeEditorState extends State<MatteThemeEditor> {
       ),
       body: Column(
         children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                IconButton.outlined(
+                  tooltip: 'Add flower',
+                  onPressed: saving ? null : () => _addItem('flower'),
+                  icon: const Icon(Icons.local_florist_outlined),
+                ),
+                IconButton.outlined(
+                  tooltip: 'Add bird',
+                  onPressed: saving ? null : () => _addItem('bird'),
+                  icon: const Icon(Icons.flutter_dash_outlined),
+                ),
+                OutlinedButton.icon(
+                  onPressed: saving ? null : _showExportDialog,
+                  icon: const Icon(Icons.code, size: 18),
+                  label: const Text('Export preset'),
+                ),
+              ],
+            ),
+          ),
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
@@ -253,13 +266,15 @@ class _MatteThemeEditorState extends State<MatteThemeEditor> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Row(
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         Text(
                           current.kind == 'bird' ? 'Bird' : 'Flower',
                           style: Theme.of(context).textTheme.titleMedium,
                         ),
-                        const SizedBox(width: 12),
                         ChoiceChip(
                           label: const Text('Behind text'),
                           selected: !current.foreground,
@@ -267,7 +282,6 @@ class _MatteThemeEditorState extends State<MatteThemeEditor> {
                             (it) => it.copyWith(foreground: false),
                           ),
                         ),
-                        const SizedBox(width: 8),
                         ChoiceChip(
                           label: const Text('Foreground'),
                           selected: current.foreground,
@@ -275,7 +289,6 @@ class _MatteThemeEditorState extends State<MatteThemeEditor> {
                             (it) => it.copyWith(foreground: true),
                           ),
                         ),
-                        const Spacer(),
                         IconButton(
                           tooltip: 'Remove selected',
                           onPressed: () {

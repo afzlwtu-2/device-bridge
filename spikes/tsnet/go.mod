@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	devicebridge v0.0.0
+	golang.org/x/crypto v0.59.0
 	tailscale.com v1.104.7
 )
 

@@ -1,5 +1,0 @@
-Analyzing app...                                                
-
-   info • Unnecessary empty statement. Try removing the empty statement or restructuring the code • lib/features/connection_picker.dart:189:21 • empty_statements
-
-1 issue found. (ran in 0.9s)

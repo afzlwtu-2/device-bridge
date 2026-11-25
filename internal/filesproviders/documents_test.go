@@ -51,7 +51,7 @@ func TestDocumentsAdapterScopeUnicodeAndSeek(t *testing.T) {
 			}()
 		}
 	}()
-	provider, err := NewDocuments("termux_home", "termux", listener.Addr().String(), token)
+	provider, err := NewDocuments("saf", "saf", listener.Addr().String(), token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +70,11 @@ func TestDocumentsAdapterScopeUnicodeAndSeek(t *testing.T) {
 	if _, err = provider.OpenRead(context.Background(), "../outside"); err == nil {
 		t.Fatal("accepted traversal")
 	}
-	denied, _ := NewDocuments("termux_home", "termux", listener.Addr().String(), strings.Repeat("b", 64))
+	denied, _ := NewDocuments("saf", "saf", listener.Addr().String(), strings.Repeat("b", 64))
 	if _, err = denied.Stat(context.Background(), "space λ.txt"); err == nil {
 		t.Fatal("accepted invalid adapter token")
 	}
-	if _, err = NewDocuments("termux_home", "termux", "10.0.0.1:1234", token); err == nil {
+	if _, err = NewDocuments("saf", "saf", "10.0.0.1:1234", token); err == nil {
 		t.Fatal("accepted non-loopback adapter")
 	}
 }
