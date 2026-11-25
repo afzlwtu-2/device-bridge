@@ -46,6 +46,10 @@ android {
             keepDebugSymbols += "**/libdb_termux_adapt.so"
         }
     }
+    lint {
+        // Intentional API 28 target for Termux/app_data_file exec compatibility; distributed via GitHub Releases rather than Google Play.
+        disable += "ExpiredTargetSdkVersion"
+    }
 }
 
 kotlin {
