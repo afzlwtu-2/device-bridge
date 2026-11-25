@@ -87,10 +87,15 @@ jobs:
       - name: Install xxhash
         run: sudo apt-get update && sudo apt-get install -y xxhash
 
-      - uses: android-actions/setup-android@v3
-
       - name: Install Android NDK 28.2.13676358
-        run: sdkmanager "ndk;28.2.13676358"
+        run: |
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          sdkm="$(find "$sdk_root/cmdline-tools" -name sdkmanager -type f | head -n 1)"
+          test -x "$sdkm"
+          yes | "$sdkm" --licenses >/dev/null || true
+          "$sdkm" "ndk;28.2.13676358"
 
       - name: Build Android core and sidecar binaries
         run: |

@@ -56,16 +56,23 @@ static int (*real_openat)(int, const char *, int, ...) = NULL;
 static int (*real_openat64)(int, const char *, int, ...) = NULL;
 static int (*real___open_2)(const char *, int) = NULL;
 static int (*real___openat_2)(int, const char *, int) = NULL;
+static int (*real___open64_2)(const char *, int) = NULL;
+static int (*real___openat64_2)(int, const char *, int) = NULL;
 static int (*real_creat)(const char *, mode_t) = NULL;
 static FILE *(*real_fopen)(const char *, const char *) = NULL;
+static FILE *(*real_fopen64)(const char *, const char *) = NULL;
 static FILE *(*real_freopen)(const char *, const char *, FILE *) = NULL;
+static FILE *(*real_freopen64)(const char *, const char *, FILE *) = NULL;
 static int (*real_stat)(const char *, struct stat *) = NULL;
 static int (*real_lstat)(const char *, struct stat *) = NULL;
 static int (*real_fstatat)(int, const char *, struct stat *, int) = NULL;
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(__GLIBC__)
 static int (*real_stat64)(const char *, struct stat64 *) = NULL;
 static int (*real_lstat64)(const char *, struct stat64 *) = NULL;
 static int (*real_fstatat64)(int, const char *, struct stat64 *, int) = NULL;
+#endif
+#if !defined(__ANDROID__) && defined(STATX_TYPE)
+static int (*real_statx)(int, const char *, int, unsigned int, struct statx *) = NULL;
 #endif
 static int (*real_faccessat)(int, const char *, int, int) = NULL;
 static ssize_t (*real_readlink)(const char *, char *, size_t) = NULL;
@@ -118,16 +125,23 @@ static void init_real_fns(void) {
     real_openat64 = resolve_sym(libc_handle, "openat64");
     real___open_2 = resolve_sym(libc_handle, "__open_2");
     real___openat_2 = resolve_sym(libc_handle, "__openat_2");
+    real___open64_2 = resolve_sym(libc_handle, "__open64_2");
+    real___openat64_2 = resolve_sym(libc_handle, "__openat64_2");
     real_creat = resolve_sym(libc_handle, "creat");
     real_fopen = resolve_sym(libc_handle, "fopen");
+    real_fopen64 = resolve_sym(libc_handle, "fopen64");
     real_freopen = resolve_sym(libc_handle, "freopen");
+    real_freopen64 = resolve_sym(libc_handle, "freopen64");
     real_stat = resolve_sym(libc_handle, "stat");
     real_lstat = resolve_sym(libc_handle, "lstat");
     real_fstatat = resolve_sym(libc_handle, "fstatat");
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(__GLIBC__)
     real_stat64 = resolve_sym(libc_handle, "stat64");
     real_lstat64 = resolve_sym(libc_handle, "lstat64");
     real_fstatat64 = resolve_sym(libc_handle, "fstatat64");
+#endif
+#if !defined(__ANDROID__) && defined(STATX_TYPE)
+    real_statx = resolve_sym(libc_handle, "statx");
 #endif
     real_access = resolve_sym(libc_handle, "access");
     real_faccessat = resolve_sym(libc_handle, "faccessat");
@@ -386,6 +400,22 @@ int __openat_2(int dirfd, const char *pathname, int flags) {
     return call_openat(dirfd, p, flags, 0, false);
 }
 
+int __open64_2(const char *pathname, int flags) {
+    char buf[PATH_MAX];
+    const char *p = translate(pathname, buf, sizeof(buf));
+    if (real___open64_2) return real___open64_2(p, flags);
+    if (real___open_2) return real___open_2(p, flags);
+    return call_open(p, flags, 0, false);
+}
+
+int __openat64_2(int dirfd, const char *pathname, int flags) {
+    char buf[PATH_MAX];
+    const char *p = translate(pathname, buf, sizeof(buf));
+    if (real___openat64_2) return real___openat64_2(dirfd, p, flags);
+    if (real___openat_2) return real___openat_2(dirfd, p, flags);
+    return call_openat(dirfd, p, flags, 0, false);
+}
+
 int creat(const char *pathname, mode_t mode) {
     char buf[PATH_MAX];
     const char *p = translate(pathname, buf, sizeof(buf));
@@ -399,10 +429,24 @@ FILE *fopen(const char *pathname, const char *mode) {
     return real_fopen(translate(pathname, buf, sizeof(buf)), mode);
 }
 
+FILE *fopen64(const char *pathname, const char *mode) {
+    char buf[PATH_MAX];
+    FILE *(*fn)(const char *, const char *) = real_fopen64 ? real_fopen64 : real_fopen;
+    if (!fn) { errno = ENOSYS; return NULL; }
+    return fn(translate(pathname, buf, sizeof(buf)), mode);
+}
+
 FILE *freopen(const char *pathname, const char *mode, FILE *stream) {
     char buf[PATH_MAX];
     if (!real_freopen) { errno = ENOSYS; return NULL; }
     return real_freopen(translate(pathname, buf, sizeof(buf)), mode, stream);
+}
+
+FILE *freopen64(const char *pathname, const char *mode, FILE *stream) {
+    char buf[PATH_MAX];
+    FILE *(*fn)(const char *, const char *, FILE *) = real_freopen64 ? real_freopen64 : real_freopen;
+    if (!fn) { errno = ENOSYS; return NULL; }
+    return fn(translate(pathname, buf, sizeof(buf)), mode, stream);
 }
 
 int stat(const char *pathname, struct stat *statbuf) {
@@ -429,7 +473,7 @@ int fstatat(int dirfd, const char *pathname, struct stat *statbuf, int flags) {
     return real_fstatat(dirfd, translate(pathname, buf, sizeof(buf)), statbuf, flags);
 }
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(__GLIBC__)
 int stat64(const char *pathname, struct stat64 *statbuf) {
     char buf[PATH_MAX];
     const char *p = translate(pathname, buf, sizeof(buf));
@@ -452,6 +496,21 @@ int fstatat64(int dirfd, const char *pathname, struct stat64 *statbuf, int flags
     char buf[PATH_MAX];
     if (!real_fstatat64) { errno = ENOSYS; return -1; }
     return real_fstatat64(dirfd, translate(pathname, buf, sizeof(buf)), statbuf, flags);
+}
+#endif
+
+#if !defined(__ANDROID__) && defined(STATX_TYPE)
+int statx(int dirfd, const char *pathname, int flags, unsigned int mask, struct statx *statxbuf) {
+    char buf[PATH_MAX];
+    const char *p = translate(pathname, buf, sizeof(buf));
+    if (real_statx) return real_statx(dirfd, p, flags, mask, statxbuf);
+#ifdef SYS_statx
+    return (int)syscall(SYS_statx, dirfd, p, flags, mask, statxbuf);
+#else
+    (void)dirfd; (void)p; (void)flags; (void)mask; (void)statxbuf;
+    errno = ENOSYS;
+    return -1;
+#endif
 }
 #endif
 
