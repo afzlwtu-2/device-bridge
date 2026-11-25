@@ -392,7 +392,11 @@ func run() error {
 	if len(a) == 2 && a[0] == "termux-backup" {
 		switch a[1] {
 		case "create":
-			return bootstrap.WriteTermuxBackup(*state, os.Stdout)
+			report, err := bootstrap.WriteTermuxBackup(*state, os.Stdout)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stderr).Encode(report)
 		case "restore":
 			info, err := bootstrap.RestoreTermuxBackup(*state, os.Stdin)
 			if err != nil {

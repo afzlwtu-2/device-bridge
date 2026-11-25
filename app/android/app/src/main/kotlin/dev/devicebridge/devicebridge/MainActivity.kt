@@ -74,7 +74,7 @@ class MainActivity : FlutterActivity() {
     private var guestTerminalSink: EventChannel.EventSink? = null
     private val guestTerminal by lazy { GuestTerminal(this) { guestTerminalSink?.success(it) } }
     private var localTerminalSink: EventChannel.EventSink? = null
-    private val termuxBackup by lazy { TermuxBackup(this, worker) }
+    private val termuxBackup by lazy { TermuxBackup(this, worker, ::bundledChecksum) }
     private val localTerminal by lazy {
         LocalTerminal(this, { ::deviceSettings.isInitialized && deviceSettings.detachedTerminalEnabled() }) {
             localTerminalSink?.success(it)
@@ -699,11 +699,16 @@ class MainActivity : FlutterActivity() {
 
     // Reopen the completed destination so verification covers bytes stored by
     // the Android document provider after writing the copy.
-    private fun checksum(input: java.io.InputStream): String {
-        val binary = GoBinaryManager.resolve(applicationContext, "cli")
+    private fun bundledChecksum(input: java.io.InputStream): String =
+        checksum(input, File(applicationInfo.nativeLibraryDir, "libbridge_cli.so"))
+
+    private fun checksum(
+        input: java.io.InputStream,
+        binary: File = GoBinaryManager.resolve(applicationContext, "cli"),
+    ): String {
         val child = ProcessBuilder(binary.path, "--state", File(filesDir, "devicebridge").path, "checksum", "-").start()
         try {
-            input.use { source -> child.outputStream.use { source.copyTo(it) } }
+            input.use { source -> child.outputStream.use { source.copyTo(it, 128 * 1024) } }
             val output = child.inputStream.bufferedReader().use { it.readText() }
             val error = child.errorStream.bufferedReader().use { it.readText() }
             check(child.waitFor() == 0) { "XXH64 verification failed: $error" }

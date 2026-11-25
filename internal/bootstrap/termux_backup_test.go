@@ -2,10 +2,13 @@ package bootstrap
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/cespare/xxhash/v2"
 )
 
 func TestTermuxBackupRoundTripPreservesHomeAndPackageNames(t *testing.T) {
@@ -36,8 +39,19 @@ func TestTermuxBackupRoundTripPreservesHomeAndPackageNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	var archive bytes.Buffer
-	if err := WriteTermuxBackup(sourceState, &archive); err != nil {
+	unreadable := filepath.Join(source, "unreadable")
+	put(unreadable, "restricted", 0000)
+	// An unprivileged Android UID cannot read a root-owned private file.
+	_, readErr := os.ReadFile(unreadable)
+	report, err := WriteTermuxBackup(sourceState, &archive)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if report.XXH64 != fmt.Sprintf("%016x", xxhash.Sum64(archive.Bytes())) {
+		t.Fatalf("wrong archive checksum: %+v", report)
+	}
+	if os.IsPermission(readErr) && report.Skipped != 1 {
+		t.Fatalf("unreadable source should be reported: %+v", report)
 	}
 	truncated := append([]byte(nil), archive.Bytes()[:archive.Len()-4]...)
 	if _, err := RestoreTermuxBackup(targetState, bytes.NewReader(truncated)); err == nil {
@@ -52,6 +66,11 @@ func TestTermuxBackupRoundTripPreservesHomeAndPackageNames(t *testing.T) {
 	}
 	if !slices.Equal(info.Packages, []string{"bash", "git"}) || info.Previous == "" {
 		t.Fatalf("unexpected restore info: %+v", info)
+	}
+	if os.IsPermission(readErr) {
+		if _, err := os.Lstat(filepath.Join(target, "unreadable")); !os.IsNotExist(err) {
+			t.Fatalf("unreadable file should be absent after restore: %v", err)
+		}
 	}
 	for name, want := range map[string]string{
 		".config/settings":           "private settings",

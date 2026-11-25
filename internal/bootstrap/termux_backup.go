@@ -27,6 +27,11 @@ type TermuxBackupInfo struct {
 	Previous string   `json:"previous_home,omitempty"`
 }
 
+type TermuxBackupReport struct {
+	XXH64   string `json:"xxh64"`
+	Skipped int    `json:"skipped"`
+}
+
 var termuxPackageName = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
 
 func termuxBackupHome(state string) string {
@@ -87,35 +92,44 @@ func termuxInstalledPackages(path string) ([]string, error) {
 	return names, scanner.Err()
 }
 
-func WriteTermuxBackup(state string, output io.Writer) error {
+func WriteTermuxBackup(state string, output io.Writer) (report TermuxBackupReport, err error) {
+	digest := xxhash.New()
+	report.Skipped, err = writeTermuxBackup(state, io.MultiWriter(output, digest))
+	if err == nil {
+		report.XXH64 = fmt.Sprintf("%016x", digest.Sum64())
+	}
+	return report, err
+}
+
+func writeTermuxBackup(state string, output io.Writer) (skipped int, err error) {
 	home := termuxBackupHome(state)
 	guard, err := lockTermuxBackup(filepath.Dir(home))
 	if os.IsNotExist(err) {
-		return errors.New("open Termux once before backing up its Home")
+		return 0, errors.New("open Termux once before backing up its Home")
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer guard.Close()
 	root, err := os.OpenRoot(home)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return errors.New("open Termux once before backing up its Home")
+			return 0, errors.New("open Termux once before backing up its Home")
 		}
-		return err
+		return 0, err
 	}
 	defer root.Close()
 	packages, err := termuxInstalledPackages(filepath.Join(filepath.Dir(home), "usr", "var", "lib", "dpkg", "status"))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	manifest, err := json.Marshal(TermuxBackupInfo{Version: 1, Home: home, Packages: packages})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	compressed, err := gzip.NewWriterLevel(output, gzip.BestSpeed)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	archive := tar.NewWriter(compressed)
 	writeRecord := func(name string, data []byte) error {
@@ -126,16 +140,31 @@ func WriteTermuxBackup(state string, output io.Writer) error {
 		return err
 	}
 	if err := writeRecord("manifest.json", manifest); err != nil {
-		return err
+		return 0, err
 	}
 	digest := xxhash.New()
+	buffer := make([]byte, 128*1024)
+	fileOutput := io.MultiWriter(archive, digest)
+	skipEntry := func(path string, err error) error {
+		if path != "." && (errors.Is(err, fs.ErrPermission) || errors.Is(err, fs.ErrNotExist)) {
+			skipped++
+			return nil
+		}
+		return err
+	}
 	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			if err := skipEntry(path, err); err != nil {
+				return err
+			}
+			if entry != nil && entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return err
+			return skipEntry(path, err)
 		}
 		var link string
 		switch {
@@ -143,7 +172,7 @@ func WriteTermuxBackup(state string, output io.Writer) error {
 		case info.Mode()&os.ModeSymlink != 0:
 			link, err = root.Readlink(path)
 			if err != nil {
-				return err
+				return skipEntry(path, err)
 			}
 		default:
 			return nil // Live sockets, pipes and device nodes have no persistent contents.
@@ -156,12 +185,14 @@ func WriteTermuxBackup(state string, output io.Writer) error {
 		if path == "." {
 			header.Name = "home/"
 		}
-		if err := archive.WriteHeader(header); err != nil || !info.Mode().IsRegular() {
-			return err
+		if !info.Mode().IsRegular() {
+			return archive.WriteHeader(header)
 		}
-		file, err := root.Open(path)
+		// Check that the file is readable before committing its header to the
+		// stream. O_NONBLOCK also handles a file replaced by a FIFO mid-walk.
+		file, err := root.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0)
 		if err != nil {
-			return err
+			return skipEntry(path, err)
 		}
 		defer file.Close()
 		current, err := file.Stat()
@@ -171,22 +202,28 @@ func WriteTermuxBackup(state string, output io.Writer) error {
 		if !os.SameFile(current, info) {
 			return fmt.Errorf("file changed during backup: %s", path)
 		}
-		size, err := io.Copy(io.MultiWriter(archive, digest), file)
-		if err == nil && size != info.Size() {
+		header.Size = current.Size()
+		if err := archive.WriteHeader(header); err != nil {
+			return err
+		}
+		// Read the initial extent. Appends by live log writers do not make
+		// the archive invalid. A shortened source still fails the backup.
+		size, err := io.CopyBuffer(fileOutput, io.LimitReader(file, header.Size), buffer)
+		if err == nil && size != header.Size {
 			return fmt.Errorf("file changed during backup: %s", path)
 		}
 		return err
 	})
 	if err != nil {
-		return err
+		return skipped, err
 	}
 	if err := writeRecord("content.xxh64", []byte(fmt.Sprintf("%016x", digest.Sum64()))); err != nil {
-		return err
+		return skipped, err
 	}
 	if err := archive.Close(); err != nil {
-		return err
+		return skipped, err
 	}
-	return compressed.Close()
+	return skipped, compressed.Close()
 }
 
 func RestoreTermuxBackup(state string, input io.Reader) (TermuxBackupInfo, error) {
@@ -250,6 +287,7 @@ func RestoreTermuxBackup(state string, input io.Reader) (TermuxBackupInfo, error
 	type symlink struct{ name, target string }
 	var links []symlink
 	digest := xxhash.New()
+	buffer := make([]byte, 128*1024)
 	checksum := ""
 	for {
 		header, err = archive.Next()
@@ -293,12 +331,12 @@ func RestoreTermuxBackup(state string, input io.Reader) (TermuxBackupInfo, error
 			if err != nil {
 				return backup, err
 			}
-			_, copyErr := io.Copy(file, archive)
+			_, copyErr := io.CopyBuffer(file, archive, buffer)
 			if copyErr == nil {
 				_, copyErr = file.Seek(0, io.SeekStart)
 			}
 			if copyErr == nil {
-				_, copyErr = io.Copy(digest, file)
+				_, copyErr = io.CopyBuffer(digest, file, buffer)
 			}
 			if err := errors.Join(copyErr, file.Chmod(mode), file.Close()); err != nil {
 				return backup, err
@@ -333,7 +371,13 @@ func RestoreTermuxBackup(state string, input io.Reader) (TermuxBackupInfo, error
 		if err := root.Chtimes(dir.name, dir.time, dir.time); err != nil {
 			return backup, err
 		}
-		if err := root.Chmod(dir.name, dir.mode); err != nil {
+		// Android's app sandbox can trap fchmodat2, which Root.Chmod uses
+		// with AT_SYMLINK_NOFOLLOW. Open the scoped directory and use fchmod.
+		file, err := root.OpenFile(dir.name, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return backup, err
+		}
+		if err := errors.Join(file.Chmod(dir.mode), file.Close()); err != nil {
 			return backup, err
 		}
 	}

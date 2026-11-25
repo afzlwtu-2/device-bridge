@@ -84,7 +84,9 @@ class _SettingsScreenState extends State<SettingsScreen>
       await operation();
     } catch (e) {
       if (mounted) {
-        setState(() => error = '$e');
+        setState(
+          () => error = e is PlatformException ? e.message ?? e.code : '$e',
+        );
       }
     }
     if (mounted) {
@@ -142,11 +144,15 @@ class _SettingsScreenState extends State<SettingsScreen>
       );
       if (!mounted || result == null) return;
       final previous = result['previous_home'] as String? ?? '';
+      final skipped = result['skipped'] as int? ?? 0;
       setState(() {
         notice = restore
             ? 'Termux Home restored. ${result['package_count']} package names '
                   'saved.${previous.isEmpty ? '' : ' Previous Home is at ../$previous.'}'
-            : 'Termux backup saved.';
+            : skipped == 0
+            ? 'Termux backup saved and verified.'
+            : 'Termux backup saved and verified. Skipped $skipped '
+                  'unreadable or disappearing entries.';
       });
     });
   }

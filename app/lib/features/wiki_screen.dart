@@ -826,9 +826,11 @@ class _WikiScreenState extends State<WikiScreen> {
                       (
                         'Settings → Termux backup',
                         'Back up hidden files, projects, configs and installed package names. '
-                            'Links are stored as links. Restore keeps the previous Home and saves '
-                            'a pkg install command for you to run. Standard, Shizuku and Root use '
-                            'the same app-private file access and Android document picker.',
+                            'Links are stored as links. DeviceBridge verifies the saved archive '
+                            'and reports unreadable or disappearing entries. Restore validates '
+                            'the archive before switching Homes, keeps the previous Home and '
+                            'saves a package install command. Standard, Shizuku and Root use '
+                            'the same file access, picker, and verification.',
                       ),
                     ],
                   ),
