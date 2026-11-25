@@ -1,8 +1,20 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+val keystorePropsFile = rootProject.file("key.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) {
+        keystorePropsFile.inputStream().use { load(it) }
+    }
+}
+val releaseStorePath = keystoreProps.getProperty("storeFile")
+    ?: System.getenv("ANDROID_KEYSTORE_PATH")
+val releaseStoreFile = releaseStorePath?.takeIf { it.isNotBlank() }?.let { file(it) }?.takeIf { it.exists() }
 
 android {
     namespace = "dev.devicebridge.devicebridge"
@@ -31,11 +43,25 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (releaseStoreFile != null) {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = keystoreProps.getProperty("storePassword")
+                    ?: System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                    ?: System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+                    ?: System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Use the persistent release keystore when configured; fall back to debug for unconfigured forks/PRs.
+            signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")
         }
     }
     packaging {

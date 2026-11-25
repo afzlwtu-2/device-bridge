@@ -249,8 +249,28 @@ jobs:
           merge-multiple: true
           path: .
 
+      - name: Configure persistent Android release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" ]]; then
+            echo "Missing ANDROID_KEYSTORE_BASE64 secret; refusing to publish APK with an ephemeral key." >&2
+            exit 1
+          fi
+          ks_path="${{ runner.temp }}/release-keystore.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$ks_path"
+          chmod 600 "$ks_path"
+          echo "ANDROID_KEYSTORE_PATH=$ks_path" >> "$GITHUB_ENV"
+
       - name: Build split-per-ABI and universal release APKs
         working-directory: app
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           flutter pub get
           flutter build apk --release --split-per-abi
@@ -303,7 +323,7 @@ jobs:
           print("## DeviceBridge Release Artifacts\n")
           print("All binaries are built in parallel across Linux (`amd64`, `arm64`) and Android (`arm64-v8a`, `armeabi-v7a`, `x86_64`).")
           print("File integrity is verified with **XXH64** (`xxhsum -H1`, DeviceBridge native verification) and **SHA-256** (`sha256sum`).\n")
-          print("> **Note:** Release APKs are currently signed with the project's development key unless a release signing keystore is configured.\n")
+          print("> **Signing:** Release APKs are signed with DeviceBridge's persistent release key for seamless in-place upgrades across releases.\n")
           print("| Artifact | Size | XXH64 (`xxhsum -H1`) | SHA-256 |")
           print("| --- | ---: | --- | --- |")
           for p in files:
