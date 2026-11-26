@@ -900,7 +900,11 @@ class MainActivity : FlutterActivity() {
                 "appVersion" -> result.success(appUpdates.version())
                 "checkAppUpdate" -> appUpdates.check(call.argument<Boolean>("manual") == true, result)
                 "downloadAppUpdate" -> appUpdates.download(call.argument<String>("version"), result)
-                "createTermuxBackup" -> termuxBackup.pick(false, localTerminal, result)
+                "listTermuxBackupEntries" -> termuxBackup.listEntries(call.argument<String>("path"), result)
+                "createTermuxBackup" -> {
+                    val spec = call.argument<Map<String, Any?>>("spec")?.let { JSONObject(it).toString() }
+                    termuxBackup.pick(false, localTerminal, result, spec)
+                }
                 "restoreTermuxBackup" -> termuxBackup.pick(true, localTerminal, result)
                 "savedTermuxPackages" -> result.success(termuxBackup.savedPackages())
                 "localTerminalStart", "localTerminalWrite" -> {

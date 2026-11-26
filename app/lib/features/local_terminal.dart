@@ -515,6 +515,10 @@ class _TerminalSessionEntry {
   StreamSubscription<String>? text;
   bool ready = false;
   bool closing = false;
+  String? setupPhase;
+  String? setupMessage;
+  int? setupBytes;
+  int? setupTotal;
 
   Future<void> close() async {
     closing = true;
@@ -949,7 +953,20 @@ class LocalTerminalScreenState extends State<LocalTerminalScreen>
     await entry.close();
     if (!mounted) return;
     entry.closing = false;
-    setState(() => entry.ready = false);
+    setState(() {
+      entry.ready = false;
+      if (!reattach && entry.remote == null && Platform.isAndroid) {
+        entry.setupPhase = 'prepare';
+        entry.setupMessage = 'Starting Termux terminal...';
+        entry.setupBytes = null;
+        entry.setupTotal = null;
+      } else {
+        entry.setupPhase = null;
+        entry.setupMessage = null;
+        entry.setupBytes = null;
+        entry.setupTotal = null;
+      }
+    });
 
     final local = widget.core;
     if (local is! LocalCore) {
@@ -992,7 +1009,13 @@ class LocalTerminalScreenState extends State<LocalTerminalScreen>
         entry.terminal.write(
           '\r\n${message ?? 'Unable to open this terminal.'}\r\n',
         );
-        setState(() => entry.ready = false);
+        setState(() {
+          entry.ready = false;
+          entry.setupMessage = null;
+          entry.setupPhase = null;
+          entry.setupBytes = null;
+          entry.setupTotal = null;
+        });
       }
     }
   }
@@ -1029,8 +1052,22 @@ class LocalTerminalScreenState extends State<LocalTerminalScreen>
       if (frame['data'] case final String data) {
         entry.rawOutput?.add(base64Decode(data));
       }
-      if (frame['state'] == 'ready') {
-        setState(() => entry.ready = true);
+      if (frame['state'] == 'setup') {
+        setState(() {
+          entry.setupPhase = frame['phase'] as String? ?? 'setup';
+          entry.setupMessage =
+              frame['message'] as String? ?? 'Setting up Termux environment...';
+          entry.setupBytes = (frame['bytes'] as num?)?.toInt();
+          entry.setupTotal = (frame['total'] as num?)?.toInt();
+        });
+      } else if (frame['state'] == 'ready') {
+        setState(() {
+          entry.ready = true;
+          entry.setupPhase = null;
+          entry.setupMessage = null;
+          entry.setupBytes = null;
+          entry.setupTotal = null;
+        });
         if (entry.terminal.viewWidth > 0 && entry.terminal.viewHeight > 0) {
           unawaited(
             _sendFrame({
@@ -1042,7 +1079,13 @@ class LocalTerminalScreenState extends State<LocalTerminalScreen>
       } else if (frame['state'] == 'closed') {
         if (frame['error'] case final String error when error.isNotEmpty) {
           entry.terminal.write('\r\n$error\r\n');
-          setState(() => entry.ready = false);
+          setState(() {
+            entry.ready = false;
+            entry.setupPhase = null;
+            entry.setupMessage = null;
+            entry.setupBytes = null;
+            entry.setupTotal = null;
+          });
           return;
         }
         _handleSessionExited(entry);
@@ -1050,6 +1093,67 @@ class LocalTerminalScreenState extends State<LocalTerminalScreen>
     } on FormatException {
       // ignore malformed frame
     }
+  }
+
+  Widget _buildSetupBanner(BuildContext context, _TerminalSessionEntry entry) {
+    final scheme = Theme.of(context).colorScheme;
+    final bytes = entry.setupBytes;
+    final total = entry.setupTotal;
+    final double? fraction = (bytes != null && total != null && total > 0)
+        ? (bytes / total).clamp(0.0, 1.0)
+        : null;
+    String formatMiB(int value) =>
+        '${(value / (1024 * 1024)).toStringAsFixed(1)} MiB';
+    final detail = switch ((bytes, total, fraction)) {
+      (final int b, final int t, final double f) when t > 0 =>
+        '${formatMiB(b)} / ${formatMiB(t)} · ${(f * 100).floor()}%',
+      (final int b, _, _) when b > 0 => formatMiB(b),
+      _ => null,
+    };
+    return Padding(
+      key: const ValueKey('termux-setup-progress'),
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHigh.withValues(alpha: 0.92),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: scheme.outlineVariant.withValues(alpha: 0.6),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      entry.setupMessage ?? 'Setting up Termux environment...',
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
+                  ),
+                  if (detail != null) ...[
+                    const SizedBox(width: 8),
+                    Text(
+                      detail,
+                      style: Theme.of(context).textTheme.labelMedium
+                          ?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(value: fraction),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   void _sendRawText(String text, {_TerminalSessionEntry? session}) {
@@ -2320,20 +2424,29 @@ class LocalTerminalScreenState extends State<LocalTerminalScreen>
                     borderRadius: palette.terminalCardRadius,
                     border: palette.terminalCardBorder,
                   ),
-                  child: TerminalView(
-                    key: current.viewKey,
-                    current.terminal,
-                    focusNode: current.focusNode,
-                    theme: palette.terminalTheme,
-                    backgroundOpacity: palette.backgroundOpacity,
-                    textStyle: TerminalStyle(
-                      fontFamily: 'MesloLGS NF',
-                      fontSize: _config.fontSize,
-                      height: 1.18,
-                    ),
-                    autofocus: true,
-                    hardwareKeyboardOnly: _keyboardVisible,
-                    readOnly: false,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (!current.ready && current.setupMessage != null)
+                        _buildSetupBanner(context, current),
+                      Expanded(
+                        child: TerminalView(
+                          key: current.viewKey,
+                          current.terminal,
+                          focusNode: current.focusNode,
+                          theme: palette.terminalTheme,
+                          backgroundOpacity: palette.backgroundOpacity,
+                          textStyle: TerminalStyle(
+                            fontFamily: 'MesloLGS NF',
+                            fontSize: _config.fontSize,
+                            height: 1.18,
+                          ),
+                          autofocus: true,
+                          hardwareKeyboardOnly: _keyboardVisible,
+                          readOnly: false,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),

@@ -396,10 +396,35 @@ func run() error {
 		})
 	}
 
-	if len(a) == 2 && a[0] == "termux-backup" {
+	if len(a) >= 2 && a[0] == "termux-backup" {
 		switch a[1] {
+		case "list":
+			fs := flag.NewFlagSet("termux-backup list", flag.ContinueOnError)
+			subpath := fs.String("path", "", "relative path inside Termux Home")
+			if err := fs.Parse(a[2:]); err != nil {
+				return err
+			}
+			entries, err := bootstrap.ListTermuxBackupEntries(*state, *subpath)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"entries":          entries,
+				"default_excludes": bootstrap.DefaultTermuxBackupExcludes,
+			})
 		case "create":
-			report, err := bootstrap.WriteTermuxBackup(*state, os.Stdout)
+			fs := flag.NewFlagSet("termux-backup create", flag.ContinueOnError)
+			specJSON := fs.String("spec", "", "optional JSON TermuxBackupOptions")
+			if err := fs.Parse(a[2:]); err != nil {
+				return err
+			}
+			var opts bootstrap.TermuxBackupOptions
+			if strings.TrimSpace(*specJSON) != "" {
+				if err := json.Unmarshal([]byte(*specJSON), &opts); err != nil {
+					return fmt.Errorf("invalid backup spec: %w", err)
+				}
+			}
+			report, err := bootstrap.WriteTermuxBackupWithOptions(*state, os.Stdout, opts)
 			if err != nil {
 				return err
 			}
@@ -411,7 +436,7 @@ func run() error {
 			}
 			return json.NewEncoder(os.Stdout).Encode(info)
 		}
-		return errors.New("termux-backup create|restore")
+		return errors.New("termux-backup list|create|restore")
 	}
 
 	if a[0] == "tsnet-match" {

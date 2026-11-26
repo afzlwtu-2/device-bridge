@@ -30,12 +30,17 @@ internal class LocalTerminal(
 
     fun start(sessionId: String, initial: String, finished: (Exception?) -> Unit) {
         requests.execute {
+            var startReplied = false
             try {
                 check(!closed) { "The terminal screen has closed." }
                 sessions.remove(sessionId)?.closeTransport?.invoke()
                 val reattach = JSONObject(initial).optBoolean("reattach")
                 val detachedAllowed = allowDetached()
                 check(!reattach || detachedAllowed) { "Background terminal persistence is unavailable." }
+                if (!reattach) {
+                    startReplied = true
+                    activity.runOnUiThread { finished(null) }
+                }
                 if (!reattach && !TermuxBootstrap.isReady(activity.applicationContext)) {
                     val emitLine: (String) -> Unit = { line ->
                         val payload = "$line\r\n"
@@ -45,13 +50,29 @@ internal class LocalTerminal(
                         )
                         activity.runOnUiThread { if (!closed) emit(frame.toString()) }
                     }
+                    val emitProgress: (String, String, Long?, Long?) -> Unit = { phase, message, bytes, total ->
+                        val frame = JSONObject()
+                            .put("session_id", sessionId)
+                            .put("state", "setup")
+                            .put("phase", phase)
+                            .put("message", message)
+                        if (bytes != null) frame.put("bytes", bytes)
+                        if (total != null) frame.put("total", total)
+                        activity.runOnUiThread { if (!closed) emit(frame.toString()) }
+                    }
                     try {
-                        TermuxBootstrap.ensureReady(activity.applicationContext, emitLine)
+                        TermuxBootstrap.ensureReady(activity.applicationContext, emitLine, emitProgress)
                         emitLine("")
                     } catch (setupError: Exception) {
                         emitLine("\r\n\u001b[33mTermux setup could not finish: ${setupError.message ?: setupError}\u001b[0m")
                         emitLine("Check internet connectivity and reopen Terminal to retry.\r\n")
                     }
+                    val launchingFrame = JSONObject()
+                        .put("session_id", sessionId)
+                        .put("state", "setup")
+                        .put("phase", "launching")
+                        .put("message", "Starting shell...")
+                    activity.runOnUiThread { if (!closed) emit(launchingFrame.toString()) }
                 }
                 val background = if (detachedAllowed) {
                     try {
@@ -116,9 +137,20 @@ internal class LocalTerminal(
                     session.closeTransport()
                     throw error
                 }
-                activity.runOnUiThread { finished(null) }
+                if (!startReplied) {
+                    startReplied = true
+                    activity.runOnUiThread { finished(null) }
+                }
             } catch (error: Exception) {
-                activity.runOnUiThread { finished(error) }
+                if (!startReplied) {
+                    activity.runOnUiThread { finished(error) }
+                } else if (!closed) {
+                    val frame = JSONObject()
+                        .put("session_id", sessionId)
+                        .put("state", "closed")
+                        .put("error", error.message ?: "Unable to start terminal session.")
+                    activity.runOnUiThread { if (!closed) emit(frame.toString()) }
+                }
             }
         }
     }

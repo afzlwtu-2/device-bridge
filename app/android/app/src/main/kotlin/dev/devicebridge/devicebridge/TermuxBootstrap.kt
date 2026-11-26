@@ -37,10 +37,26 @@ internal object TermuxBootstrap {
         val bash = File(usr, "bash")
         val fish = File(usr, "fish")
         val starship = File(usr, "starship")
-        return bash.canExecute() && fish.canExecute() && starship.canExecute()
+        if (!(bash.canExecute() && fish.canExecute() && starship.canExecute())) return false
+        val fastfetchCfg = File(context.filesDir, "terminal/files/home/.config/fastfetch/config.jsonc")
+        if (fastfetchCfg.isFile) {
+            val head = runCatching {
+                fastfetchCfg.inputStream().bufferedReader().use {
+                    val buf = CharArray(40)
+                    val n = it.read(buf)
+                    if (n > 0) String(buf, 0, n) else ""
+                }
+            }.getOrDefault("")
+            if (head.startsWith("// DEVICEBRIDGE_FASTFETCH_V1")) return false
+        }
+        return true
     }
 
-    fun ensureReady(context: Context, emitLine: (String) -> Unit) {
+    fun ensureReady(
+        context: Context,
+        emitLine: (String) -> Unit,
+        onProgress: (phase: String, message: String, bytes: Long?, total: Long?) -> Unit = { _, _, _, _ -> },
+    ) {
         if (isReady(context)) return
         synchronized(setupLock) {
             if (isReady(context)) return
@@ -52,18 +68,20 @@ internal object TermuxBootstrap {
             val staged = File(cacheDir, "bootstrap-$arch.zip")
             val preStaged = File("/data/local/tmp/db-bootstrap-$arch.zip")
 
+            onProgress("prepare", "Preparing Termux environment...", null, null)
             var downloadedPath: String? = null
             if (!bash.canExecute()) {
                 if (preStaged.isFile && preStaged.length() > 0) {
                     downloadedPath = preStaged.absolutePath
                 } else if (!staged.isFile || staged.length() == 0L) {
                     emitLine("First-time Terminal setup: downloading Termux bootstrap ($arch)...")
-                    downloadedPath = downloadVerifiedBootstrap(arch, staged, emitLine).absolutePath
+                    downloadedPath = downloadVerifiedBootstrap(arch, staged, emitLine, onProgress).absolutePath
                 } else {
                     downloadedPath = staged.absolutePath
                 }
             }
 
+            onProgress("configure", "Setting up shells and tools...", null, null)
             val executable = GoBinaryManager.resolve(context, "cli")
             val state = File(context.filesDir, "devicebridge").path
             val pb = ProcessBuilder(executable.path, "--state", state, "termux-setup")
@@ -77,7 +95,19 @@ internal object TermuxBootstrap {
             try {
                 proc.inputStream.bufferedReader().useLines { lines ->
                     lines.forEach { line ->
-                        if (line.isNotBlank()) emitLine(line)
+                        if (line.isNotBlank()) {
+                            emitLine(line)
+                            val trimmed = line.trim()
+                            val phase = when {
+                                trimmed.startsWith("Extracting ") -> "extract"
+                                trimmed.startsWith("Updating ") -> "apt_update"
+                                trimmed.startsWith("Installing ") -> "apt_install"
+                                trimmed.startsWith("Generating ") -> "ssh_keys"
+                                trimmed.startsWith("Termux environment ready") -> "ready"
+                                else -> "setup"
+                            }
+                            onProgress(phase, trimmed, null, null)
+                        }
                     }
                 }
                 check(proc.waitFor(10, TimeUnit.MINUTES)) { "Termux setup timed out." }
@@ -88,9 +118,18 @@ internal object TermuxBootstrap {
         }
     }
 
-    private fun downloadVerifiedBootstrap(arch: String, destination: File, emitLine: (String) -> Unit): File {
+    private fun downloadVerifiedBootstrap(
+        arch: String,
+        destination: File,
+        emitLine: (String) -> Unit,
+        onProgress: (phase: String, message: String, bytes: Long?, total: Long?) -> Unit,
+    ): File {
+        onProgress("resolve", "Resolving latest Termux release...", null, null)
+        emitLine("Resolving latest Termux bootstrap release...")
         val tag = resolveLatestTag()
         val assetName = "bootstrap-$arch.zip"
+        onProgress("verify_manifest", "Checking SHA-256 manifest ($tag)...", null, null)
+        emitLine("Verifying SHA-256 checksum ($tag)...")
         val expectedSha = resolveAssetSha256(tag, assetName)
         val encodedTag = tag.replace("+", "%2B")
         val assetUrl = URI("https://github.com/termux/termux-packages/releases/download/$encodedTag/$assetName")
@@ -100,8 +139,15 @@ internal object TermuxBootstrap {
         try {
             val digest = MessageDigest.getInstance("SHA-256")
             var lastReportedMb = -1L
+            var lastProgressMs = 0L
             fetch(assetUrl) { conn ->
                 val total = conn.contentLengthLong
+                onProgress(
+                    "download",
+                    "Downloading $assetName...",
+                    0L,
+                    if (total > 0) total else null,
+                )
                 conn.inputStream.use { input ->
                     part.outputStream().buffered().use { output ->
                         val buf = ByteArray(64 * 1024)
@@ -113,12 +159,22 @@ internal object TermuxBootstrap {
                             check(copied <= MAX_BOOTSTRAP_BYTES) { "Termux bootstrap exceeds size limit." }
                             digest.update(buf, 0, n)
                             output.write(buf, 0, n)
-                            val mb = copied / (4L * 1024L * 1024L)
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            val copiedMb = String.format(Locale.US, "%.1f", copied / (1024.0 * 1024.0))
+                            val totalMb = if (total > 0) String.format(Locale.US, "%.1f", total / (1024.0 * 1024.0)) else null
+                            if (now - lastProgressMs >= 250L || (total > 0 && copied == total)) {
+                                lastProgressMs = now
+                                val msg = if (totalMb != null) {
+                                    "Downloading $assetName ($copiedMb / $totalMb MiB)"
+                                } else {
+                                    "Downloading $assetName ($copiedMb MiB)"
+                                }
+                                onProgress("download", msg, copied, if (total > 0) total else null)
+                            }
+                            val mb = copied / (2L * 1024L * 1024L)
                             if (mb != lastReportedMb) {
                                 lastReportedMb = mb
-                                val copiedMb = String.format(Locale.US, "%.1f", copied / (1024.0 * 1024.0))
-                                if (total > 0) {
-                                    val totalMb = String.format(Locale.US, "%.1f", total / (1024.0 * 1024.0))
+                                if (totalMb != null) {
                                     emitLine("  Downloading $assetName: $copiedMb / $totalMb MiB")
                                 } else {
                                     emitLine("  Downloading $assetName: $copiedMb MiB")

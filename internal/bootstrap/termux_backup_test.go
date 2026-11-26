@@ -91,3 +91,81 @@ func TestTermuxBackupRoundTripPreservesHomeAndPackageNames(t *testing.T) {
 		t.Fatalf("previous Home: %q, %v", got, err)
 	}
 }
+
+func TestTermuxBackupExcludesCachesAndAlwaysPreservesDotEnv(t *testing.T) {
+	testRoot := t.TempDir()
+	sourceState := filepath.Join(testRoot, "org.example.src", "files", "devicebridge")
+	targetState := filepath.Join(testRoot, "org.example.dst", "files", "devicebridge")
+	source := termuxBackupHome(sourceState)
+	target := termuxBackupHome(targetState)
+	put := func(path, value string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	put(filepath.Join(source, ".cache", "pip", "wheel.whl"), "huge cache")
+	put(filepath.Join(source, ".env"), "ROOT_SECRET=yes")
+	put(filepath.Join(source, ".env.local"), "LOCAL_SECRET=yes")
+	put(filepath.Join(source, "projects", "web", "index.ts"), "console.log('ok')")
+	put(filepath.Join(source, "projects", "web", ".env.production"), "PROD_KEY=123")
+	put(filepath.Join(source, "projects", "web", "node_modules", "pkg", "big.js"), "generated")
+	put(filepath.Join(source, "projects", "web", ".node_modules", "pkg", "big.js"), "generated dot")
+	put(filepath.Join(source, "notes", "todo.txt"), "not selected")
+
+	entries, err := ListTermuxBackupEntries(sourceState, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entryByName := map[string]TermuxBackupEntry{}
+	for _, e := range entries {
+		entryByName[e.Name] = e
+	}
+	if !entryByName[".cache"].ExcludedByDefault {
+		t.Fatalf("expected .cache excluded by default: %+v", entryByName[".cache"])
+	}
+	if !entryByName[".env"].AlwaysIncluded || !entryByName[".env.local"].AlwaysIncluded {
+		t.Fatalf("expected .env* always included: %+v", entryByName)
+	}
+
+	excludes := append(append([]string(nil), DefaultTermuxBackupExcludes...), ".*")
+	var archive bytes.Buffer
+	report, err := WriteTermuxBackupWithOptions(sourceState, &archive, TermuxBackupOptions{
+		IncludePaths:    []string{"projects"},
+		ExcludePatterns: &excludes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Excluded == 0 {
+		t.Fatalf("expected generated folders to be excluded, got %+v", report)
+	}
+	if _, err := RestoreTermuxBackup(targetState, &archive); err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range map[string]string{
+		".env":                         "ROOT_SECRET=yes",
+		".env.local":                   "LOCAL_SECRET=yes",
+		"projects/web/index.ts":        "console.log('ok')",
+		"projects/web/.env.production": "PROD_KEY=123",
+	} {
+		got, err := os.ReadFile(filepath.Join(target, rel))
+		if err != nil || string(got) != want {
+			t.Fatalf("%s: got %q (%v), want %q", rel, got, err, want)
+		}
+	}
+	for _, absent := range []string{
+		".cache/pip/wheel.whl",
+		"projects/web/node_modules/pkg/big.js",
+		"projects/web/.node_modules/pkg/big.js",
+		"notes/todo.txt",
+	} {
+		if _, err := os.Lstat(filepath.Join(target, absent)); !os.IsNotExist(err) {
+			t.Fatalf("%s should have been excluded/unselected, got stat err=%v", absent, err)
+		}
+	}
+}

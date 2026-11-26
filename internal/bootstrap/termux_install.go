@@ -15,7 +15,7 @@ import (
 
 const (
 	termuxStarshipSentinel  = "# DEVICEBRIDGE_STARSHIP_V2"
-	termuxFastfetchSentinel = "// DEVICEBRIDGE_FASTFETCH_V1"
+	termuxFastfetchSentinel = "// DEVICEBRIDGE_FASTFETCH_V2"
 	termuxBashSentinel      = "# DEVICEBRIDGE_BASH_V2"
 )
 
@@ -120,34 +120,105 @@ vimcmd_symbol = "[❮](bold yellow)"
 }
 
 func termuxFastfetchConfig() string {
-	return termuxFastfetchSentinel + ` — Compact portrait-friendly system summary
+	diskFolders := "/"
+	if runtime.GOOS == "android" {
+		diskFolders = "/data"
+	}
+	const animeLogo = "     \x1b[38;5;213m▄█████▄ ▄████▄\x1b[0m\n" +
+		"    \x1b[38;5;213m██\x1b[38;5;219m▓▓▓▓▓\x1b[38;5;213m███\x1b[38;5;219m▓▓▓▓\x1b[38;5;213m██\x1b[0m\n" +
+		"   \x1b[38;5;213m█\x1b[38;5;223m ╭───────────╮ \x1b[38;5;213m█\x1b[0m\n" +
+		"   \x1b[38;5;213m█\x1b[38;5;223m │ \x1b[38;5;45m◉\x1b[38;5;223m       \x1b[38;5;45m◉\x1b[38;5;223m │ \x1b[38;5;213m█\x1b[0m\n" +
+		"   \x1b[38;5;213m█\x1b[38;5;223m │ \x1b[38;5;211m〃\x1b[38;5;223m  ╰─╯  \x1b[38;5;211m〃\x1b[38;5;223m │ \x1b[38;5;213m█\x1b[0m\n" +
+		"    \x1b[38;5;147m╭┴─────────┴╮\x1b[0m\n" +
+		"   \x1b[38;5;81m▄█│ \x1b[1;38;5;117mTermux\x1b[0;38;5;81m   │█▄\x1b[0m\n" +
+		"   \x1b[38;5;81m▀ ╰───────────╯ ▀\x1b[0m"
+	// Escape as JSON string literal for fastfetch inline data logo.
+	escapedLogo := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\x1b", `\u001b`, "\n", `\n`).Replace(animeLogo)
+	return termuxFastfetchSentinel + ` — 49-col portrait-safe layout (top ANSI logo + compact card)
 {
   "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
   "logo": {
-    "type": "small",
+    "type": "data",
+    "source": "` + escapedLogo + `",
+    "position": "top",
     "padding": {
-      "top": 1,
-      "right": 2
+      "top": 0,
+      "left": 2,
+      "bottom": 1
     }
   },
   "display": {
-    "separator": " › "
+    "separator": " "
   },
   "modules": [
-    "title",
-    "separator",
-    "os",
-    "host",
-    "kernel",
-    "uptime",
-    "packages",
-    "shell",
-    "terminal",
-    "memory",
-    "disk",
-    "localip",
-    "break",
-    "colors"
+    {
+      "key": "╭──────────╮",
+      "type": "custom"
+    },
+    {
+      "key": "│ {#36} user   {#keys}│",
+      "type": "title",
+      "format": "{user-name}@{host-name}"
+    },
+    {
+      "key": "│ {#34} os     {#keys}│",
+      "type": "os",
+      "format": "{name} {arch}"
+    },
+    {
+      "key": "│ {#35} kernel {#keys}│",
+      "type": "kernel",
+      "format": "{release}"
+    },
+    {
+      "key": "│ {#33}󰅐 uptime {#keys}│",
+      "type": "uptime",
+      "format": "{days}d {hours}h {minutes}m"
+    },
+    {
+      "key": "│ {#32} shell  {#keys}│",
+      "type": "shell",
+      "format": "{process-name} {version}"
+    },
+    {
+      "key": "│ {#36} term   {#keys}│",
+      "type": "terminal",
+      "format": "{pretty-name}"
+    },
+    {
+      "key": "│ {#34}󰏖 pkgs   {#keys}│",
+      "type": "packages"
+    },
+    {
+      "key": "│ {#35} memory {#keys}│",
+      "type": "memory",
+      "format": "{used} / {total}"
+    },
+    {
+      "key": "│ {#33}󰉉 disk   {#keys}│",
+      "type": "disk",
+      "folders": "` + diskFolders + `",
+      "format": "{size-used} / {size-total}"
+    },
+    {
+      "key": "│ {#32}󰩟 ip     {#keys}│",
+      "type": "localip",
+      "showPrefixLen": false,
+      "format": "{ipv4}"
+    },
+    {
+      "key": "├──────────┤",
+      "type": "custom"
+    },
+    {
+      "key": "│ {#39} colors {#keys}│",
+      "type": "colors",
+      "symbol": "circle"
+    },
+    {
+      "key": "╰──────────╯",
+      "type": "custom"
+    }
   ]
 }
 `
@@ -171,7 +242,7 @@ func configureTermuxShellExperience(prefix, home string) error {
 	}
 
 	fastfetchPath := filepath.Join(fastfetchDir, "config.jsonc")
-	if existing, err := os.ReadFile(fastfetchPath); os.IsNotExist(err) || strings.HasPrefix(string(existing), termuxFastfetchSentinel) {
+	if existing, err := os.ReadFile(fastfetchPath); os.IsNotExist(err) || strings.HasPrefix(string(existing), "// DEVICEBRIDGE_FASTFETCH_V") {
 		if err := writeTermuxConfig(fastfetchPath, []byte(termuxFastfetchConfig()), 0o644); err != nil {
 			return err
 		}

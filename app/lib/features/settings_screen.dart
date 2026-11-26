@@ -9,6 +9,7 @@ import 'acl_screen.dart';
 import 'app_updates.dart';
 import 'debug_log_screen.dart';
 import 'permission_wizard.dart';
+import 'termux_backup_dialog.dart';
 import 'wiki_screen.dart';
 
 /// App-wide access, execution-mode submenus, verbose logging, and Go library management.
@@ -172,6 +173,7 @@ class _SettingsScreenState extends State<SettingsScreen>
 
   Future<void> termuxBackup({required bool restore}) async {
     if (saving || _backupBusy) return;
+    Map<String, dynamic>? backupSpec;
     if (restore) {
       final confirmed = await showDialog<bool>(
         context: context,
@@ -195,6 +197,32 @@ class _SettingsScreenState extends State<SettingsScreen>
         ),
       );
       if (confirmed != true || !mounted) return;
+    } else {
+      try {
+        final listing = await LocalCore.channel
+            .invokeMapMethod<String, dynamic>('listTermuxBackupEntries');
+        if (!mounted) return;
+        if (listing != null) {
+          final selection = await showTermuxBackupDialog(
+            context,
+            initialListing: listing,
+            loadFolder: (subpath) =>
+                LocalCore.channel.invokeMapMethod<String, dynamic>(
+                  'listTermuxBackupEntries',
+                  {'path': ?subpath},
+                ),
+          );
+          if (selection == null || !mounted) return;
+          backupSpec = selection.toSpec();
+        }
+      } on PlatformException catch (error) {
+        if (!mounted) return;
+        setState(() {
+          _backupNotice = error.message ?? error.code;
+          _backupFailed = true;
+        });
+        return;
+      }
     }
     setState(() {
       _backupRequest = true;
@@ -204,16 +232,20 @@ class _SettingsScreenState extends State<SettingsScreen>
     try {
       final result = await LocalCore.channel.invokeMapMethod<String, dynamic>(
         restore ? 'restoreTermuxBackup' : 'createTermuxBackup',
+        !restore && backupSpec != null ? {'spec': backupSpec} : null,
       );
       if (!mounted || result == null) return;
       final previous = result['previous_home'] as String? ?? '';
       final skipped = result['skipped'] as int? ?? 0;
+      final excluded = result['excluded'] as int? ?? 0;
       setState(() {
         _backupNotice = restore
             ? 'Termux Home restored. ${result['package_count']} package names '
                   'saved.${previous.isEmpty ? '' : ' Previous Home is at ../$previous.'}'
             : skipped == 0
-            ? 'Termux backup saved and verified.'
+            ? (excluded == 0
+                  ? 'Termux backup saved and verified.'
+                  : 'Termux backup saved and verified ($excluded generated/cache items excluded).')
             : 'Termux backup saved and verified. Skipped $skipped '
                   'unreadable or disappearing entries.';
       });
@@ -525,13 +557,16 @@ class _SettingsScreenState extends State<SettingsScreen>
                     leading: const Icon(Icons.verified_user_outlined),
                     title: const Text('Permissions & setup wizard'),
                     subtitle: Text(() {
-                      final items = (permissions['permissions'] as List? ?? const [])
-                          .whereType<Map>()
-                          .toList();
+                      final items =
+                          (permissions['permissions'] as List? ?? const [])
+                              .whereType<Map>()
+                              .toList();
                       if (items.isEmpty) {
                         return 'Review storage, Wi-Fi, notifications, and privilege auto-grant';
                       }
-                      final granted = items.where((p) => p['granted'] == true).length;
+                      final granted = items
+                          .where((p) => p['granted'] == true)
+                          .length;
                       return '$granted/${items.length} granted · ${_modeLabel(execMode)}';
                     }()),
                     trailing: const Icon(Icons.chevron_right),
@@ -817,8 +852,8 @@ class _SettingsScreenState extends State<SettingsScreen>
                 if (android)
                   section(
                     'Termux backup',
-                    'Includes projects, hidden files, configs and package names. '
-                        'The archive may contain private files.',
+                    'Choose folders & files to back up, exclude generated folders '
+                        '(.cache, node_modules, etc.), and always preserve .env* files.',
                     Icons.inventory_2_outlined,
                     [
                       if (_backupBusy || _backupNotice != null)

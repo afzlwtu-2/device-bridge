@@ -24,6 +24,7 @@ internal class TermuxBackup(
 ) {
     private val prefs = activity.getSharedPreferences("termux-backup", Activity.MODE_PRIVATE)
     private var pending: MethodChannel.Result? = null
+    private var pendingSpec: String? = null
     private var progress: Map<String, Any?>? = null
     private var progressSink: EventChannel.EventSink? = null
     var restoring = false
@@ -36,12 +37,67 @@ internal class TermuxBackup(
         sink?.success(progress)
     }
 
-    fun pick(restore: Boolean, terminal: LocalTerminal, reply: MethodChannel.Result) {
+    fun listEntries(subpath: String?, reply: MethodChannel.Result) {
+        worker.execute {
+            try {
+                val context = activity.applicationContext
+                val cli = GoBinaryManager.resolve(context, "cli")
+                val state = File(context.filesDir, "devicebridge")
+                val cmd = mutableListOf(cli.path, "--state", state.path, "termux-backup", "list")
+                if (!subpath.isNullOrBlank()) {
+                    cmd.add("--path")
+                    cmd.add(subpath)
+                }
+                val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
+                val out = proc.inputStream.bufferedReader().use { it.readText() }
+                val code = proc.waitFor()
+                if (code != 0) {
+                    val msg = out.trim().ifBlank { "Unable to list Termux Home." }
+                    activity.runOnUiThread { reply.error("termux_list_failed", msg, null) }
+                    return@execute
+                }
+                val parsed = JSONObject(out)
+                val entriesJson = parsed.optJSONArray("entries")
+                val entries = mutableListOf<Map<String, Any>>()
+                if (entriesJson != null) {
+                    for (i in 0 until entriesJson.length()) {
+                        val obj = entriesJson.getJSONObject(i)
+                        entries.add(
+                            mapOf(
+                                "path" to obj.optString("path"),
+                                "name" to obj.optString("name"),
+                                "is_dir" to obj.optBoolean("is_dir"),
+                                "size_bytes" to obj.optLong("size_bytes"),
+                                "excluded_by_default" to obj.optBoolean("excluded_by_default"),
+                                "always_included" to obj.optBoolean("always_included"),
+                            )
+                        )
+                    }
+                }
+                val excludesJson = parsed.optJSONArray("default_excludes")
+                val excludes = mutableListOf<String>()
+                if (excludesJson != null) {
+                    for (i in 0 until excludesJson.length()) {
+                        excludes.add(excludesJson.getString(i))
+                    }
+                }
+                val resultMap = mapOf("entries" to entries, "default_excludes" to excludes)
+                activity.runOnUiThread { reply.success(resultMap) }
+            } catch (error: Exception) {
+                activity.runOnUiThread {
+                    reply.error("termux_list_failed", error.message ?: "Unable to list Termux Home.", null)
+                }
+            }
+        }
+    }
+
+    fun pick(restore: Boolean, terminal: LocalTerminal, reply: MethodChannel.Result, specJson: String? = null) {
         if (pending != null) {
             reply.error("backup_busy", "A Termux backup operation is in progress.", null)
             return
         }
         pending = reply
+        pendingSpec = specJson
         restoring = restore
         reportProgress(if (restore) "choose_backup" else "choose_destination")
         if (restore) {
@@ -76,9 +132,10 @@ internal class TermuxBackup(
             return true
         }
         val restore = restoring
+        val spec = pendingSpec
         worker.execute {
             try {
-                val result = runArchive(uri, restore)
+                val result = runArchive(uri, restore, spec)
                 activity.runOnUiThread { finish { it.success(result) } }
             } catch (error: Exception) {
                 Log.w("DeviceBridge.Backup", "Termux archive operation failed", error)
@@ -90,14 +147,19 @@ internal class TermuxBackup(
         return true
     }
 
-    private fun runArchive(uri: Uri, restore: Boolean): Map<String, Any> {
+    private fun runArchive(uri: Uri, restore: Boolean, specJson: String? = null): Map<String, Any> {
         val context = activity.applicationContext
-        val cli = File(context.applicationInfo.nativeLibraryDir, "libbridge_cli.so")
+        val cli = GoBinaryManager.resolve(context, "cli")
         val state = File(context.filesDir, "devicebridge")
         val errors = File.createTempFile("termux-backup-", ".log", context.cacheDir)
         var process: Process? = null
         try {
-            val child = ProcessBuilder(cli.path, "--state", state.path, "termux-backup", if (restore) "restore" else "create")
+            val cmd = mutableListOf(cli.path, "--state", state.path, "termux-backup", if (restore) "restore" else "create")
+            if (!restore && !specJson.isNullOrBlank()) {
+                cmd.add("--spec")
+                cmd.add(specJson)
+            }
+            val child = ProcessBuilder(cmd)
                 .redirectError(errors).start()
             process = child
             val resolver = context.contentResolver
@@ -126,7 +188,11 @@ internal class TermuxBackup(
                 val report = JSONObject(diagnostic)
                 val actual = readDocument(uri) { track(it, "verify", written, checksum) }
                 check(actual == report.getString("xxh64")) { "The saved backup failed XXH64 verification." }
-                return mapOf("skipped" to report.getInt("skipped"))
+                return mapOf(
+                    "skipped" to report.getInt("skipped"),
+                    "backed_up" to report.optInt("backed_up"),
+                    "excluded" to report.optInt("excluded"),
+                )
             }
             val info = JSONObject(response)
             val packages = info.getJSONArray("packages")
@@ -202,6 +268,7 @@ internal class TermuxBackup(
     private fun finish(complete: (MethodChannel.Result) -> Unit) {
         val result = pending
         pending = null
+        pendingSpec = null
         restoring = false
         progress = null
         progressSink?.success(null)

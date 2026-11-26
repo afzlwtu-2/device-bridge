@@ -84,4 +84,108 @@ void main() {
     );
     expect(find.byType(LinearProgressIndicator), findsNothing);
   });
+
+  testWidgets(
+    'Termux backup folder/exclude picker omits .cache and preserves .env* and custom excludes',
+    (tester) async {
+      final messenger = tester.binding.defaultBinaryMessenger;
+      Map<String, dynamic>? capturedSpec;
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('dev.devicebridge/termux_backup'),
+        (_) async => null,
+      );
+      messenger.setMockMethodCallHandler(LocalCore.channel, (call) async {
+        if (call.method == 'appVersion') return '1.0.4 (1000004)';
+        if (call.method == 'listTermuxBackupEntries') {
+          return {
+            'entries': [
+              {
+                'path': '.cache',
+                'name': '.cache',
+                'is_dir': true,
+                'size_bytes': 0,
+                'excluded_by_default': true,
+                'always_included': false,
+              },
+              {
+                'path': '.env',
+                'name': '.env',
+                'is_dir': false,
+                'size_bytes': 32,
+                'excluded_by_default': false,
+                'always_included': true,
+              },
+              {
+                'path': 'projects',
+                'name': 'projects',
+                'is_dir': true,
+                'size_bytes': 1024,
+                'excluded_by_default': false,
+                'always_included': false,
+              },
+            ],
+            'default_excludes': ['.cache', 'node_modules', '.node_modules'],
+          };
+        }
+        if (call.method == 'createTermuxBackup') {
+          final args = call.arguments as Map?;
+          capturedSpec = args == null
+              ? null
+              : Map<String, dynamic>.from(args['spec'] as Map);
+          return {'skipped': 0, 'excluded': 2};
+        }
+        return null;
+      });
+      addTearDown(() {
+        messenger.setMockMethodCallHandler(
+          const MethodChannel('dev.devicebridge/termux_backup'),
+          null,
+        );
+        messenger.setMockMethodCallHandler(LocalCore.channel, null);
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(home: SettingsScreen(core: _SettingsCore())),
+      );
+      await tester.pumpAndSettle();
+      final create = find.byKey(const ValueKey('termux-backup-create'));
+      await tester.scrollUntilVisible(create, 400);
+      await tester.ensureVisible(create);
+      await tester.pumpAndSettle();
+      await tester.tap(create);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('termux-backup-dialog')),
+        findsOneWidget,
+      );
+      final excludeInput = find.byKey(
+        const ValueKey('termux-backup-exclude-input'),
+      );
+      await tester.ensureVisible(excludeInput);
+      await tester.enterText(excludeInput, '.next');
+      final addExclude = find.byKey(
+        const ValueKey('termux-backup-exclude-add'),
+      );
+      await tester.ensureVisible(addExclude);
+      await tester.pumpAndSettle();
+      await tester.tap(addExclude);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('termux-backup-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(capturedSpec, isNotNull);
+      expect(capturedSpec!['include_paths'], containsAll(['.env', 'projects']));
+      expect(capturedSpec!['include_paths'], isNot(contains('.cache')));
+      expect(
+        capturedSpec!['exclude_patterns'],
+        containsAll(['.cache', 'node_modules', '.node_modules', '.next']),
+      );
+      expect(
+        find.textContaining('2 generated/cache items excluded'),
+        findsOneWidget,
+      );
+    },
+  );
 }
