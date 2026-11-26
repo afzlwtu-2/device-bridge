@@ -18,6 +18,13 @@ class SshBootstrapDialog extends StatefulWidget {
     required this.core,
     this.initialHost,
     this.initialPort,
+    this.initialUser,
+    this.initialExpectedHostKey,
+    this.initialTransport,
+    this.initialRemoteApproved,
+    this.initialPassword,
+    this.initialPrivateKeyPem,
+    this.associateSshHostId,
     this.autoProbe = false,
     this.termuxCompanion = false,
     this.tailscaleSsh = false,
@@ -28,6 +35,13 @@ class SshBootstrapDialog extends StatefulWidget {
   final CoreBridge core;
   final String? initialHost;
   final int? initialPort;
+  final String? initialUser;
+  final String? initialExpectedHostKey;
+  final String? initialTransport;
+  final bool? initialRemoteApproved;
+  final String? initialPassword;
+  final String? initialPrivateKeyPem;
+  final String? associateSshHostId;
   final bool autoProbe;
   final bool termuxCompanion;
   final bool tailscaleSsh;
@@ -83,12 +97,32 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
       installSystemd = false;
       openFirewall = false;
     }
-    if (widget.tailscaleSsh) {
+    if (widget.initialTransport != null && widget.initialTransport!.isNotEmpty) {
+      _transport = widget.initialTransport!;
+      _remoteApproved =
+          widget.initialRemoteApproved ??
+          (_transport == 'tailnet' || _transport == 'wireguard');
+    } else if (widget.tailscaleSsh) {
       _transport = 'tailnet';
-      _remoteApproved = true;
+      _remoteApproved = widget.initialRemoteApproved ?? true;
+    } else if (widget.initialRemoteApproved != null) {
+      _remoteApproved = widget.initialRemoteApproved!;
+    }
+    if ((widget.initialUser ?? '').trim().isNotEmpty) {
+      userCtrl.text = widget.initialUser!.trim();
+    }
+    if ((widget.initialPassword ?? '').isNotEmpty) {
+      passCtrl.text = widget.initialPassword!;
+    }
+    if ((widget.initialPrivateKeyPem ?? '').trim().isNotEmpty) {
+      keyCtrl.text = widget.initialPrivateKeyPem!.trim();
     }
     hostCtrl = TextEditingController(text: widget.initialHost ?? '');
     portCtrl = TextEditingController(text: '${widget.initialPort ?? 22}');
+    if ((widget.initialExpectedHostKey ?? '').trim().isNotEmpty) {
+      hostFingerprint = widget.initialExpectedHostKey!.trim();
+      viaTailnet = _transport == 'tailnet';
+    }
     hostCtrl.addListener(_invalidateProbe);
     portCtrl.addListener(_invalidateProbe);
     _loadProviders();
@@ -406,6 +440,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
         input: jsonEncode(payload),
       );
       final parsed = Map<String, dynamic>.from(res as Map);
+      final pairedPeerId = parsed['paired_peer_id'] as String?;
       await _saveHostAndPeerSsh(
         host: host,
         port: port,
@@ -413,8 +448,21 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
         hostKey: hostFingerprint ?? '',
         isTailnet: viaTailnet || parsed['via_tailnet'] == true,
         pem: keyCtrl.text.trim(),
-        peerId: parsed['paired_peer_id'] as String?,
+        peerId: pairedPeerId,
       );
+      if (widget.associateSshHostId != null &&
+          widget.associateSshHostId!.isNotEmpty &&
+          pairedPeerId != null &&
+          pairedPeerId.isNotEmpty) {
+        try {
+          await widget.core.run([
+            'ssh-hosts',
+            'associate',
+            widget.associateSshHostId!,
+            pairedPeerId,
+          ]);
+        } catch (_) {}
+      }
       if (mounted) {
         setState(() => result = parsed);
       }

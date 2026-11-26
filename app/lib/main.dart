@@ -229,6 +229,7 @@ class _BridgeHomeState extends State<BridgeHome> {
     'homeCache',
   );
   int tab = 0;
+  int _devicesTab = 0;
   bool _terminalOpen = false;
   bool _terminalVisited = false;
   String? _terminalPeerName;
@@ -240,8 +241,6 @@ class _BridgeHomeState extends State<BridgeHome> {
   bool _openingThemeEditor = false;
   String? error;
   List<dynamic> peers = [], candidates = [];
-  List<Map<String, dynamic>> tailnetSshTargets = [];
-  bool _refreshingTailnetSsh = false;
   Map<String, dynamic>? identity, capabilities;
   StreamSubscription<Map<String, dynamic>>? networkEvents;
   StreamSubscription<void>? _sharedDraftEvents;
@@ -366,7 +365,6 @@ class _BridgeHomeState extends State<BridgeHome> {
       if (tab == 1) {
         unawaited(_refreshLanCandidates());
       }
-      unawaited(_refreshTailnetSshTargets());
       if (Platform.isAndroid && widget.core is LocalCore) {
         unawaited(_refreshPermissions(autoGrant: true, promptWizard: true));
       }
@@ -522,25 +520,19 @@ class _BridgeHomeState extends State<BridgeHome> {
     } catch (_) {}
   }
 
-  Future<void> _refreshTailnetSshTargets() async {
-    if (_refreshingTailnetSsh) return;
-    _refreshingTailnetSsh = true;
+  Future<List<Map<String, dynamic>>> _loadTailnetSshTargets() async {
     try {
       final raw = await widget.core.run([
         'discover-ssh',
         '-',
       ], input: jsonEncode({'tailnet_only': true, 'include_paired_tailnet': true}));
-      final list = (raw as List? ?? const [])
+      return (raw as List? ?? const [])
           .whereType<Map>()
           .map((m) => Map<String, dynamic>.from(m))
           .where((t) => t['source'] == 'tailnet' && t['ssh_enabled'] == true)
           .toList();
-      if (mounted) {
-        setState(() => tailnetSshTargets = list);
-      }
     } catch (_) {
-    } finally {
-      _refreshingTailnetSsh = false;
+      return const [];
     }
   }
 
@@ -1018,10 +1010,7 @@ class _BridgeHomeState extends State<BridgeHome> {
                   names[v.clamp(0, names.length - 1)],
                 );
                 setState(() => tab = v);
-                if (v == 1) {
-                  unawaited(_refreshLanCandidates());
-                  unawaited(_refreshTailnetSshTargets());
-                }
+                if (v == 1) unawaited(_refreshLanCandidates());
               },
               destinations: [
                 NavigationDestination(
@@ -1220,10 +1209,7 @@ class _BridgeHomeState extends State<BridgeHome> {
     onOpenNetworks: _openConnections,
     onGoToTab: (index) {
       setState(() => tab = index);
-      if (index == 1) {
-        unawaited(_refreshLanCandidates());
-        unawaited(_refreshTailnetSshTargets());
-      }
+      if (index == 1) unawaited(_refreshLanCandidates());
     },
     permissionsStatus: _permissionsStatus,
     onOpenPermissions: () => unawaited(_openPermissionWizard()),
@@ -1236,7 +1222,8 @@ class _BridgeHomeState extends State<BridgeHome> {
     String? initialTransport,
     bool initialRemoteApproved = false,
   ]) async {
-    await Navigator.push<void>(
+    final beforeIds = sshHosts.map((h) => '${h['id'] ?? ''}').toSet();
+    final upgraded = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
         builder: (_) => SshHostScreen(
@@ -1250,60 +1237,184 @@ class _BridgeHomeState extends State<BridgeHome> {
       ),
     );
     await refreshPeers();
-    unawaited(_refreshTailnetSshTargets());
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {
+      if (upgraded == true) {
+        _devicesTab = 0;
+      } else {
+        final afterIds = sshHosts.map((h) => '${h['id'] ?? ''}').toSet();
+        if (afterIds.difference(beforeIds).isNotEmpty) {
+          _devicesTab = 1;
+        }
+      }
+    });
   }
 
-  Widget _tailnetSshCard(Map<String, dynamic> target) {
-    final name = '${target['name'] ?? ''}'.trim();
-    final host = '${target['host'] ?? ''}'.trim();
-    final connectHost = '${target['connect_host'] ?? ''}'.trim();
-    final port = (target['port'] as num?)?.toInt() ?? 22;
-    final pingMs = (target['ping_ms'] as num?)?.toDouble();
-    final banner = '${target['banner'] ?? ''}'.trim();
-    final alreadyPaired = target['already_paired'] == true;
-    final isTailscaleSsh =
-        target['tailscale_ssh'] == true || banner.contains('Tailscale');
-    final displayTitle = name.isNotEmpty
-        ? name
-        : (host.isNotEmpty ? host : connectHost);
-    final openTarget = host.isNotEmpty ? host : connectHost;
-    final details = <String>[
-      if (connectHost.isNotEmpty && connectHost != displayTitle) connectHost,
-      isTailscaleSsh ? 'Tailscale SSH :$port' : 'SSH :$port',
-      if (pingMs != null && pingMs > 0) '${pingMs.toStringAsFixed(1)} ms',
-      if (banner.isNotEmpty) banner,
-      if (alreadyPaired) 'Already paired',
-    ];
-    return Card(
-      key: ValueKey('tailscale-ssh-device-$openTarget'),
-      child: ListTile(
-        leading: const Icon(Icons.hub_outlined),
-        title: Text(displayTitle),
-        subtitle: Text(details.join(' · ')),
-        trailing: Chip(label: Text(alreadyPaired ? 'Paired · SSH' : 'Add SSH')),
-        onTap: busy
-            ? null
-            : () => _openSshHost(
-                null,
-                openTarget.isNotEmpty ? openTarget : null,
-                port > 0 ? port : 22,
-                'tailnet',
-                true,
-              ),
-      ),
-    );
-  }
-
-  Future<void> _openSshBootstrap() async {
+  Future<void> _openSshBootstrap([Map<String, dynamic>? savedHost]) async {
     final added = await showDialog<bool>(
       context: context,
-      builder: (_) => SshBootstrapDialog(core: widget.core),
+      builder: (_) => SshBootstrapDialog(
+        core: widget.core,
+        initialHost: savedHost == null ? null : '${savedHost['host'] ?? ''}',
+        initialPort: savedHost == null
+            ? null
+            : (savedHost['port'] as num?)?.toInt() ?? 22,
+        initialUser: savedHost == null ? null : '${savedHost['user'] ?? ''}',
+        initialExpectedHostKey: savedHost == null
+            ? null
+            : '${savedHost['expected_host_key'] ?? ''}',
+        initialTransport: savedHost == null
+            ? null
+            : '${savedHost['transport'] ?? ''}',
+        initialRemoteApproved: savedHost?['remote_approved'] == true,
+        associateSshHostId: savedHost == null
+            ? null
+            : '${savedHost['id'] ?? ''}',
+      ),
     );
     if (added == true) {
       await refreshPeers();
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() => _devicesTab = 0);
+      }
     }
+  }
+
+  Future<void> _openTailscaleSshPicker() async {
+    var loading = true;
+    var targets = <Map<String, dynamic>>[];
+    var startedLoad = false;
+    final picked = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          if (!startedLoad) {
+            startedLoad = true;
+            unawaited(
+              _loadTailnetSshTargets().then((found) {
+                if (!ctx.mounted) return;
+                setDialogState(() {
+                  loading = false;
+                  targets = found;
+                });
+              }),
+            );
+          }
+          return AlertDialog(
+            key: const ValueKey('tailscale-ssh-picker-dialog'),
+            title: const Text('Add from Tailscale SSH'),
+            content: SizedBox(
+              width: 440,
+              child: loading
+                  ? const SizedBox(
+                      height: 80,
+                      child: Center(child: CircularProgressIndicator()),
+                    )
+                  : targets.isEmpty
+                  ? const Text(
+                      'No online Tailscale devices with SSH found. Sign in to Tailscale in Networks first.',
+                    )
+                  : SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Text(
+                            'Select a Tailscale SSH device to add to your SSH devices list:',
+                          ),
+                          const SizedBox(height: 8),
+                          for (final target in targets) ...[
+                            Builder(
+                              builder: (_) {
+                                final name = '${target['name'] ?? ''}'.trim();
+                                final host = '${target['host'] ?? ''}'.trim();
+                                final connectHost =
+                                    '${target['connect_host'] ?? ''}'.trim();
+                                final port =
+                                    (target['port'] as num?)?.toInt() ?? 22;
+                                final pingMs =
+                                    (target['ping_ms'] as num?)?.toDouble();
+                                final banner = '${target['banner'] ?? ''}'
+                                    .trim();
+                                final alreadyPaired =
+                                    target['already_paired'] == true;
+                                final isTailscaleSsh =
+                                    target['tailscale_ssh'] == true ||
+                                    banner.contains('Tailscale');
+                                final displayTitle = name.isNotEmpty
+                                    ? name
+                                    : (host.isNotEmpty ? host : connectHost);
+                                final openTarget = host.isNotEmpty
+                                    ? host
+                                    : connectHost;
+                                final details = <String>[
+                                  if (connectHost.isNotEmpty &&
+                                      connectHost != displayTitle)
+                                    connectHost,
+                                  isTailscaleSsh
+                                      ? 'Tailscale SSH :$port'
+                                      : 'SSH :$port',
+                                  if (pingMs != null && pingMs > 0)
+                                    '${pingMs.toStringAsFixed(1)} ms',
+                                  if (alreadyPaired) 'Already paired',
+                                ];
+                                return ListTile(
+                                  key: ValueKey(
+                                    'tailscale-ssh-device-$openTarget',
+                                  ),
+                                  contentPadding: EdgeInsets.zero,
+                                  leading: const Icon(Icons.hub_outlined),
+                                  title: Text(displayTitle),
+                                  subtitle: Text(details.join(' · ')),
+                                  trailing: const Chip(
+                                    label: Text('Add to SSH'),
+                                  ),
+                                  onTap: () => Navigator.pop(ctx, target),
+                                );
+                              },
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  setDialogState(() => loading = true);
+                  unawaited(
+                    _loadTailnetSshTargets().then((found) {
+                      if (!ctx.mounted) return;
+                      setDialogState(() {
+                        loading = false;
+                        targets = found;
+                      });
+                    }),
+                  );
+                },
+                child: const Text('Refresh'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    if (picked == null || !mounted) return;
+    final host = '${picked['host'] ?? ''}'.trim();
+    final connectHost = '${picked['connect_host'] ?? ''}'.trim();
+    final openTarget = host.isNotEmpty ? host : connectHost;
+    final port = (picked['port'] as num?)?.toInt() ?? 22;
+    await _openSshHost(
+      null,
+      openTarget.isNotEmpty ? openTarget : null,
+      port > 0 ? port : 22,
+      'tailnet',
+      true,
+    );
   }
 
   Future<void> _addDevice() async {
@@ -1325,6 +1436,7 @@ class _BridgeHomeState extends State<BridgeHome> {
               ),
               ListTile(
                 key: const ValueKey('add-device-scan-invite'),
+                visualDensity: VisualDensity.compact,
                 leading: const Icon(Icons.qr_code_scanner),
                 title: const Text('Scan or enter invitation'),
                 subtitle: const Text(
@@ -1334,6 +1446,7 @@ class _BridgeHomeState extends State<BridgeHome> {
               ),
               ListTile(
                 key: const ValueKey('add-device-show-invite'),
+                visualDensity: VisualDensity.compact,
                 leading: const Icon(Icons.qr_code),
                 title: const Text('Show my invitation'),
                 subtitle: const Text('Let another device pair with this device'),
@@ -1342,13 +1455,25 @@ class _BridgeHomeState extends State<BridgeHome> {
               const Divider(height: 1),
               ListTile(
                 key: const ValueKey('add-device-ssh-only'),
+                visualDensity: VisualDensity.compact,
                 leading: const Icon(Icons.terminal),
                 title: const Text('Add SSH Device only (no agent)'),
                 subtitle: const Text('Over available transports'),
                 onTap: () => Navigator.pop(context, 'ssh_only'),
               ),
               ListTile(
+                key: const ValueKey('add-device-tailscale-ssh'),
+                visualDensity: VisualDensity.compact,
+                leading: const Icon(Icons.hub_outlined),
+                title: const Text('Add from Tailscale SSH'),
+                subtitle: const Text(
+                  'Pick an online Tailscale SSH peer to add to SSH devices',
+                ),
+                onTap: () => Navigator.pop(context, 'tailscale_ssh'),
+              ),
+              ListTile(
                 key: const ValueKey('add-device-ssh-agent'),
+                visualDensity: VisualDensity.compact,
                 leading: const Icon(Icons.dns_outlined),
                 title: const Text('Add agent via SSH'),
                 subtitle: const Text(
@@ -1370,6 +1495,8 @@ class _BridgeHomeState extends State<BridgeHome> {
         await _createInvitation();
       case 'ssh_only':
         await _openSshHost();
+      case 'tailscale_ssh':
+        await _openTailscaleSshPicker();
       case 'ssh_agent':
         await _openSshBootstrap();
     }
@@ -1424,80 +1551,130 @@ class _BridgeHomeState extends State<BridgeHome> {
             ),
           ],
         ),
+        const SizedBox(height: 16),
+        SegmentedButton<int>(
+          key: const ValueKey('devices-section-tabs'),
+          segments: [
+            const ButtonSegment<int>(
+              value: 0,
+              icon: Icon(Icons.devices_outlined),
+              label: Text('Direct'),
+            ),
+            ButtonSegment<int>(
+              value: 1,
+              icon: const Icon(Icons.terminal),
+              label: Text(
+                standaloneSshHosts.isEmpty
+                    ? 'SSH'
+                    : 'SSH (${standaloneSshHosts.length})',
+              ),
+            ),
+          ],
+          selected: {_devicesTab},
+          onSelectionChanged: (sel) =>
+              setState(() => _devicesTab = sel.first),
+        ),
         const SizedBox(height: 20),
-        if (activePeers.isNotEmpty)
-          Text(
-            'DeviceBridge devices',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-        ...activePeers.map(_peerCard),
-        if (standaloneSshHosts.isNotEmpty) ...[
-          const SizedBox(height: 20),
-          Text('SSH devices', style: Theme.of(context).textTheme.titleMedium),
-          ...standaloneSshHosts.map(
-            (host) => Card(
-              child: ListTile(
-                leading: const Icon(Icons.terminal),
-                title: Text('${host['name']}'),
-                subtitle: Text(
-                  '${host['user']}@${host['host']}:${host['port']}',
+        if (_devicesTab == 0) ...[
+          if (activePeers.isNotEmpty)
+            Text(
+              'DeviceBridge devices',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ...activePeers.map(_peerCard),
+          if (activePeers.isEmpty && nearby.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Text(
+                'No active devices yet. Tap Add Device to pair via invitation or deploy an agent over SSH.',
+              ),
+            ),
+          if (nearby.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            Text(
+              'Nearby DeviceBridge devices',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            for (final entry in nearby.entries)
+              ListTile(
+                key: ValueKey('nearby-device-${entry.key}'),
+                leading: const Icon(Icons.wifi),
+                title: Text(
+                  entry.value['device_name'] as String? ??
+                      'DeviceBridge device',
                 ),
+                subtitle: Text('${entry.value['endpoint']} · Unpaired'),
                 trailing: const Icon(Icons.chevron_right),
-                onTap: () => _openSshHost(host),
+                onTap: busy
+                    ? null
+                    : () => _pairWithInvitation(
+                        peerId: entry.key,
+                        peerName: entry.value['device_name'] as String?,
+                      ),
+              ),
+          ],
+          if (revokedPeers.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 8),
+            Text(
+              'Revoked devices (${revokedPeers.length})',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            ...revokedPeers.map(_peerCard),
+          ],
+        ] else ...[
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                key: const ValueKey('devices-browse-tailscale-ssh'),
+                onPressed: busy ? null : _openTailscaleSshPicker,
+                icon: const Icon(Icons.hub_outlined),
+                label: const Text('Add from Tailscale SSH'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          if (standaloneSshHosts.isNotEmpty) ...[
+            Text('SSH devices', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            for (final host in standaloneSshHosts)
+              Card(
+                key: ValueKey('ssh-device-card-${host['id'] ?? host['host']}'),
+                child: ListTile(
+                  leading: const Icon(Icons.terminal),
+                  title: Text('${host['name']}'),
+                  subtitle: Text(
+                    '${host['user']}@${host['host']}:${host['port']}'
+                    '${(host['transport'] ?? '').toString().isNotEmpty ? ' · ${host['transport']}' : ''}',
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextButton.icon(
+                        key: ValueKey(
+                          'ssh-device-upgrade-${host['id'] ?? host['host']}',
+                        ),
+                        onPressed: busy ? null : () => _openSshBootstrap(host),
+                        icon: const Icon(Icons.upgrade, size: 18),
+                        label: const Text('Upgrade'),
+                      ),
+                      const Icon(Icons.chevron_right),
+                    ],
+                  ),
+                  onTap: () => _openSshHost(host),
+                ),
+              ),
+          ] else
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Text(
+                'No SSH devices saved yet. Tap Add Device or Add from Tailscale SSH to add an SSH host.',
               ),
             ),
-          ),
-        ],
-        if (activePeers.isEmpty && standaloneSshHosts.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 24),
-            child: Text(
-              'No active devices yet. Tap Add Device to pair with an invitation, add an SSH host, or deploy an agent over SSH.',
-            ),
-          ),
-        if (nearby.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          Text(
-            'Nearby DeviceBridge devices',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          for (final entry in nearby.entries)
-            ListTile(
-              key: ValueKey('nearby-device-${entry.key}'),
-              leading: const Icon(Icons.wifi),
-              title: Text(
-                entry.value['device_name'] as String? ?? 'DeviceBridge device',
-              ),
-              subtitle: Text('${entry.value['endpoint']} · Unpaired'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: busy
-                  ? null
-                  : () => _pairWithInvitation(
-                      peerId: entry.key,
-                      peerName: entry.value['device_name'] as String?,
-                    ),
-            ),
-        ],
-        if (tailnetSshTargets.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          Text(
-            'Tailscale SSH devices',
-            key: const ValueKey('devices-tailscale-ssh-section'),
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          const SizedBox(height: 8),
-          ...tailnetSshTargets.map(_tailnetSshCard),
-        ],
-        if (revokedPeers.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          const Divider(),
-          const SizedBox(height: 8),
-          Text(
-            'Revoked devices (${revokedPeers.length})',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          const SizedBox(height: 8),
-          ...revokedPeers.map(_peerCard),
         ],
       ],
     );

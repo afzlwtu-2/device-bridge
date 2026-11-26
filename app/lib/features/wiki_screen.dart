@@ -576,7 +576,7 @@ class _WikiScreenState extends State<WikiScreen> {
                       ),
                       (
                         'Pairing & adding devices',
-                        'Keep DeviceBridge open on both devices. Devices automatically lists nearby unpaired DeviceBridge installations on local Wi-Fi under Nearby DeviceBridge devices and Tailscale devices with SSH under Tailscale SSH devices. Use Add Device to pair via QR/code (Scan or enter invitation / Show my invitation), add an SSH-only host (no agent) over available transports, or deploy and auto-pair bridge-agent via SSH (root systemd service) over available transports. Verify the fingerprint before approving.',
+                        'Keep DeviceBridge open on both devices. Devices separates Direct (DeviceBridge agent peers, nearby Wi-Fi devices, and revoked devices) from SSH (saved SSH-only hosts). Tailscale SSH peers are browsed on demand through Add from Tailscale SSH so your SSH list stays uncluttered, and any saved SSH host can be upgraded to a paired Agent / Direct device. Use Add Device to pair via QR/code, add an SSH host, or deploy bridge-agent via SSH (root systemd service) over available transports.',
                       ),
                       (
                         'Pairing permissions and efficiency',

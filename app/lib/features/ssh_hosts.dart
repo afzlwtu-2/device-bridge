@@ -452,20 +452,33 @@ class _SshHostScreenState extends State<SshHostScreen> {
             ),
             if (saved['agent_peer_id'] == null)
               OutlinedButton.icon(
+                key: const ValueKey('ssh-host-upgrade-agent'),
                 onPressed: _busy
                     ? null
                     : () async {
-                        await showDialog<bool>(
+                        final upgraded = await showDialog<bool>(
                           context: context,
                           builder: (_) => SshBootstrapDialog(
                             core: widget.core,
-                            initialHost: '${saved['host']}',
-                            initialPort: saved['port'] as int,
+                            initialHost: '${saved['host'] ?? ''}',
+                            initialPort: (saved['port'] as num?)?.toInt() ?? 22,
+                            initialUser: '${saved['user'] ?? ''}',
+                            initialExpectedHostKey:
+                                '${saved['expected_host_key'] ?? ''}',
+                            initialTransport: '${saved['transport'] ?? ''}',
+                            initialRemoteApproved:
+                                saved['remote_approved'] == true,
+                            initialPassword: _password.text,
+                            initialPrivateKeyPem: _key,
+                            associateSshHostId: '${saved['id'] ?? ''}',
                           ),
                         );
+                        if (upgraded == true && mounted) {
+                          Navigator.pop(this.context, true);
+                        }
                       },
-                icon: const Icon(Icons.install_desktop),
-                label: const Text('Install DeviceBridge agent'),
+                icon: const Icon(Icons.upgrade),
+                label: const Text('Upgrade to Agent / Direct device'),
               ),
             TextButton(
               onPressed: _busy
