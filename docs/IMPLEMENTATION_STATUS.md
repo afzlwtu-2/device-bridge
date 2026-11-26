@@ -1,5 +1,9 @@
 # Implementation status
 
+**2026-11-26 — Android GitHub update discovery.** GitHub's unauthenticated REST endpoint returned HTTP 403 with zero requests remaining. The updater now resolves the public latest-release link, validates the repository and stable version, and uses the release's XXH64 manifest and APK response length to select and size the update. It pins the selected APK's checksum for download and still verifies the APK's exact length, package, version and signer before installation.
+
+Two headless x86_64 Waydroid profiles tested the updater with local release-signed debug builds. Version 1.0.2 reported that it was up to date. Version 1.0.1 offered 1.0.2 at startup and from Settings, then installed the published APK in place through Android's Standard installer. The installed APK's XXH64 matched `526ec5992bc49036`. The focused Flutter updater test passed.
+
 **2026-11-25 — Android 1.0.1 updates and Termux backups.** Release builds check GitHub at startup and expose the installed version and a manual check in Settings. After consent, DeviceBridge downloads a compatible APK, checks its XXH64, package, version and signer, then uses verified, enabled Root or Android's package installer. CI validates the tag against the source version. Split and universal APKs use the same increasing version code.
 
 The old 1.0.0 debug app on the Poco reproduced a backup failure on unreadable files. On Android, the document provider could also fail on read-only opens, and the app sandbox trapped the restore syscall used for directory modes. Backups now report skipped entries, verify the saved archive, and use the selected document's existing grant. Restore uses directory file descriptors for permissions and validates the archive before replacing Home.

@@ -10,7 +10,6 @@ import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import io.flutter.plugin.common.MethodChannel
-import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -27,9 +26,7 @@ internal class AppUpdates(
     private val rootEnabled: () -> Boolean,
     private val checksum: (InputStream) -> String,
 ) {
-    private data class Release(val version: String, val apkName: String, val size: Long) {
-        fun asset(name: String) = "https://github.com/$REPO/releases/download/v$version/$name"
-    }
+    private data class Release(val version: String, val apkName: String, val size: Long, val xxh64: String)
 
     private data class Install(val apk: File, val reply: MethodChannel.Result)
 
@@ -95,24 +92,39 @@ internal class AppUpdates(
 
     private fun latestRelease(current: String): Release? {
         val local = versionParts(current) ?: error("The installed version is not recognized.")
-        val json = readText("https://api.github.com/repos/$REPO/releases/latest", 2L * 1024 * 1024, true)
-            ?.let(::JSONObject) ?: return null
-        val tag = json.getString("tag_name")
-        if (!tag.startsWith("v") || json.optBoolean("draft") || json.optBoolean("prerelease")) return null
-        val version = tag.removePrefix("v")
+        val latest = URI("https://github.com/$REPO/releases/latest")
+        // The public latest-release link identifies the stable release without the REST API quota.
+        val target = connect(latest, "GET") { connection ->
+            when (val status = connection.responseCode) {
+                in REDIRECTS -> redirect(latest, connection)
+                404 -> null
+                else -> error("GitHub returned HTTP $status while checking for the latest release.")
+            }
+        } ?: return null
+        val tagPrefix = "/$REPO/releases/tag/v"
+        check(target.scheme == "https" && target.rawAuthority == "github.com" &&
+            target.rawPath?.startsWith(tagPrefix) == true && target.rawQuery == null && target.rawFragment == null) {
+            "GitHub redirected to an unexpected release page."
+        }
+        val version = target.rawPath.removePrefix(tagPrefix)
         val remote = versionParts(version) ?: return null
         val firstDifference = remote.zip(local).firstOrNull { (next, old) -> next != old } ?: return null
         if (firstDifference.first < firstDifference.second) return null
 
-        val assets = json.getJSONArray("assets")
-        val sizes = (0 until assets.length()).map { assets.getJSONObject(it) }
-            .filter { it.optString("state") == "uploaded" }
-            .associate { it.getString("name") to it.getLong("size") }
+        val assets = fetchAsset(asset(version, "CHECKSUMS.xxh64"), "GET") { connection ->
+            val data = ByteArrayOutputStream()
+            connection.inputStream.use { copyBounded(it, data, CHECKSUM_LIMIT) }
+            data.toString(Charsets.UTF_8.name()).lineSequence().mapNotNull { line ->
+                val match = CHECKSUM_LINE.matchEntire(line.trimEnd()) ?: return@mapNotNull null
+                match.groupValues[2] to match.groupValues[1].lowercase(Locale.ROOT)
+            }.toMap()
+        }
         val apk = (Build.SUPPORTED_ABIS.map { "devicebridge-android-$it.apk" } +
-            "devicebridge-android-universal.apk").firstOrNull { (sizes[it] ?: 0L) in 1L..MAX_APK_BYTES }
+            "devicebridge-android-universal.apk").firstOrNull { it in assets }
             ?: error("GitHub has no compatible APK for this release.")
-        check((sizes["CHECKSUMS.xxh64"] ?: 0L) in 1L..CHECKSUM_LIMIT) { "The release checksum file is unavailable." }
-        return Release(version, apk, sizes.getValue(apk))
+        val size = fetchAsset(asset(version, apk), "HEAD") { it.contentLengthLong }
+        check(size in 1L..MAX_APK_BYTES) { "GitHub returned an invalid APK size." }
+        return Release(version, apk, size, assets.getValue(apk))
     }
 
     private fun versionParts(value: String): List<Int>? {
@@ -121,12 +133,6 @@ internal class AppUpdates(
     }
 
     private fun downloadVerified(release: Release): File {
-        val checksums = readText(release.asset("CHECKSUMS.xxh64"), CHECKSUM_LIMIT).orEmpty()
-        val expected = checksums.lineSequence().firstNotNullOfOrNull { line ->
-            val match = CHECKSUM_LINE.matchEntire(line.trimEnd()) ?: return@firstNotNullOfOrNull null
-            match.groupValues[1].lowercase(Locale.ROOT).takeIf { match.groupValues[2] == release.apkName }
-        } ?: error("The release does not list an XXH64 checksum for this APK.")
-
         val directory = File(activity.cacheDir, "updates")
         check(directory.isDirectory || directory.mkdirs()) { "Cannot open the update cache." }
         // Any prior file belongs to a completed or interrupted update in this app.
@@ -134,10 +140,12 @@ internal class AppUpdates(
         val apk = File.createTempFile("devicebridge-", ".apk", directory)
         try {
             val bytes = apk.outputStream().buffered().use { output ->
-                fetch(release.asset(release.apkName)) { copyBounded(it, output, release.size) }
+                fetchAsset(asset(release.version, release.apkName), "GET") { connection ->
+                    connection.inputStream.use { copyBounded(it, output, release.size) }
+                }
             }
             check(bytes == release.size) { "The update download was incomplete." }
-            check(checksum(apk.inputStream()) == expected) { "The downloaded APK failed XXH64 verification." }
+            check(checksum(apk.inputStream()) == release.xxh64) { "The downloaded APK failed XXH64 verification." }
             val installed = installedPackage()
             val candidate = activity.packageManager.getPackageArchiveInfo(apk.path, PackageManager.GET_SIGNING_CERTIFICATES)
                 ?: error("Android could not verify the update APK.")
@@ -221,40 +229,42 @@ internal class AppUpdates(
         else pending.reply.success(installed)
     }
 
-    private fun readText(url: String, maxBytes: Long, allowMissing: Boolean = false): String? =
-        fetch(url, allowMissing) { input ->
-            val data = ByteArrayOutputStream()
-            copyBounded(input, data, maxBytes)
-            data.toString(Charsets.UTF_8.name())
-        }
+    private fun asset(version: String, name: String) = URI("https://github.com/$REPO/releases/download/v$version/$name")
 
-    private fun <T> fetch(address: String, allowMissing: Boolean = false, read: (InputStream) -> T): T? {
-        var url = URI(address)
+    private fun <T> fetchAsset(address: URI, method: String, read: (HttpURLConnection) -> T): T {
+        var url = address
         repeat(5) {
-            check(url.scheme == "https" && url.host in DOWNLOAD_HOSTS && url.userInfo == null && url.port == -1) {
-                "GitHub redirected to an unexpected download host."
-            }
-            val connection = url.toURL().openConnection() as HttpURLConnection
-            try {
-                connection.instanceFollowRedirects = false
-                connection.connectTimeout = 10_000
-                connection.readTimeout = 20_000
-                connection.setRequestProperty("User-Agent", "DeviceBridge-Android")
-                if (url.host == "api.github.com") {
-                    connection.setRequestProperty("Accept", "application/vnd.github+json")
-                }
+            val next = connect(url, method) { connection ->
                 when (val status = connection.responseCode) {
-                    200 -> return connection.inputStream.use(read)
-                    301, 302, 303, 307, 308 -> url = url.resolve(connection.getHeaderField("Location")
-                        ?: error("GitHub returned a redirect without a destination."))
-                    404 -> if (allowMissing) return null else error("The release asset is unavailable.")
-                    else -> error("GitHub returned HTTP $status.")
+                    200 -> return read(connection)
+                    in REDIRECTS -> redirect(url, connection)
+                    404 -> error("The release asset is unavailable.")
+                    else -> error("GitHub returned HTTP $status while opening the release asset.")
                 }
-            } finally {
-                connection.disconnect()
             }
+            url = next
         }
         error("GitHub returned too many redirects.")
+    }
+
+    private fun redirect(url: URI, connection: HttpURLConnection): URI =
+        url.resolve(connection.getHeaderField("Location") ?: error("GitHub returned a redirect without a destination."))
+
+    private inline fun <T> connect(url: URI, method: String, read: (HttpURLConnection) -> T): T {
+        check(url.scheme == "https" && url.host in DOWNLOAD_HOSTS && url.userInfo == null && url.port == -1) {
+            "GitHub redirected to an unexpected download host."
+        }
+        val connection = url.toURL().openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = method
+            connection.instanceFollowRedirects = false
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 20_000
+            connection.setRequestProperty("User-Agent", "DeviceBridge-Android")
+            return read(connection)
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun copyBounded(input: InputStream, output: OutputStream, limit: Long): Long {
@@ -275,7 +285,8 @@ internal class AppUpdates(
         private const val INSTALL_APK = 411
         private const val CHECKSUM_LIMIT = 128L * 1024
         private const val MAX_APK_BYTES = 1024L * 1024 * 1024
-        private val DOWNLOAD_HOSTS = setOf("api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com")
+        private val REDIRECTS = setOf(301, 302, 303, 307, 308)
+        private val DOWNLOAD_HOSTS = setOf("github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com")
         private val STABLE_VERSION = Regex("(0|[1-9][0-9]{0,3})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})")
         private val CHECKSUM_LINE = Regex("([0-9a-fA-F]{16}) [ *](\\S+)")
     }
