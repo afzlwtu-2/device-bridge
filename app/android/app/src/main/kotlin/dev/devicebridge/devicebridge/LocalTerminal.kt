@@ -36,6 +36,23 @@ internal class LocalTerminal(
                 val reattach = JSONObject(initial).optBoolean("reattach")
                 val detachedAllowed = allowDetached()
                 check(!reattach || detachedAllowed) { "Background terminal persistence is unavailable." }
+                if (!reattach && !TermuxBootstrap.isReady(activity.applicationContext)) {
+                    val emitLine: (String) -> Unit = { line ->
+                        val payload = "$line\r\n"
+                        val frame = JSONObject().put("session_id", sessionId).put(
+                            "data",
+                            Base64.encodeToString(payload.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
+                        )
+                        activity.runOnUiThread { if (!closed) emit(frame.toString()) }
+                    }
+                    try {
+                        TermuxBootstrap.ensureReady(activity.applicationContext, emitLine)
+                        emitLine("")
+                    } catch (setupError: Exception) {
+                        emitLine("\r\n\u001b[33mTermux setup could not finish: ${setupError.message ?: setupError}\u001b[0m")
+                        emitLine("Check internet connectivity and reopen Terminal to retry.\r\n")
+                    }
+                }
                 val background = if (detachedAllowed) {
                     try {
                         val socket = detached.attach(sessionId, initial, reattach)

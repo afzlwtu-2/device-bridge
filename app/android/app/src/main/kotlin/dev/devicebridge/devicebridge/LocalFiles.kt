@@ -1,9 +1,13 @@
 package dev.devicebridge.devicebridge
 
+import android.Manifest
 import android.app.Activity
 import android.content.ClipData
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract as DC
 import android.util.AtomicFile
@@ -18,6 +22,14 @@ import java.nio.file.Files
 import java.util.UUID
 
 internal const val TERMUX_DOCUMENTS_AUTHORITY = "com.termux.documents"
+
+internal fun hasAllFilesAccess(context: Context): Boolean {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        return Environment.isExternalStorageManager()
+    }
+    return context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
+        context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+}
 
 internal fun requireSafFolder(uri: Uri): Uri {
     check(uri.authority != TERMUX_DOCUMENTS_AUTHORITY) { "Open the paired Termux device in Files to access Termux Home" }
@@ -49,7 +61,7 @@ class LocalFiles(private val activity: Activity, private val checksum: (InputStr
     }
     private fun join(a: String, b: String) = if (a.isEmpty()) b else "$a/$b"
     private fun internal(ref: Ref): File {
-        if (ref.kind == "internal") check(Environment.isExternalStorageManager()) { "Grant phone storage access first" }
+        if (ref.kind == "internal") check(hasAllFilesAccess(activity)) { "Grant phone storage access first" }
         val root = when (ref.kind) {
             "termux_home" -> termuxHomeDir()
             "downloads" -> File(activity.filesDir, "devicebridge/downloads").apply { mkdirs() }.canonicalFile
@@ -95,7 +107,7 @@ class LocalFiles(private val activity: Activity, private val checksum: (InputStr
     }
 
     fun roots(): List<Map<String, Any?>> = listOf(
-        mapOf("id" to "internal", "name" to "Internal storage", "available" to Environment.isExternalStorageManager(), "native_path" to Environment.getExternalStorageDirectory().canonicalPath),
+        mapOf("id" to "internal", "name" to "Internal storage", "available" to hasAllFilesAccess(activity), "native_path" to Environment.getExternalStorageDirectory().canonicalPath),
         mapOf("id" to "termux_home", "name" to "Termux Home", "available" to true, "native_path" to termuxHomeDir().canonicalPath),
         mapOf("id" to "recycle_bin", "name" to "Recycle Bin", "available" to true),
     )

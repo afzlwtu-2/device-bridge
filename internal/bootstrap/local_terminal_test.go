@@ -156,7 +156,7 @@ func TestConfigureTermuxPrefixUpgradesSSHConfigAndTsnetWrapper(t *testing.T) {
 		t.Fatal(err)
 	}
 	tmuxCfg := string(tmuxRaw)
-	if !strings.Contains(tmuxCfg, "DEVICEBRIDGE_TMUX_V7") || !strings.Contains(tmuxCfg, "unbind-key -T root MouseDrag1Pane") || !strings.Contains(tmuxCfg, "bind-key -n M-v copy-mode") {
+	if !strings.Contains(tmuxCfg, "DEVICEBRIDGE_TMUX_V8") || !strings.Contains(tmuxCfg, "unbind-key -T root MouseDrag1Pane") || !strings.Contains(tmuxCfg, "bind-key -n M-v copy-mode") || !strings.Contains(tmuxCfg, termuxSystemLibDir()+":") {
 		t.Fatalf("unexpected tmux config: %s", tmuxCfg)
 	}
 }
@@ -376,5 +376,63 @@ func TestFilterTermuxSSHDAddrsExcludesLoopbackAndTailscale(t *testing.T) {
 	want := []string{"192.168.1.10", "192.168.233.11"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("filterTermuxSSHDAddrs = %v, want %v", got, want)
+	}
+}
+
+func TestConfigureTermuxPrefixInstallsStarshipFastfetchAndBash(t *testing.T) {
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	termRoot := filepath.Join(tmp, "terminal")
+	prefix := filepath.Join(termRoot, "files", "usr")
+	home := filepath.Join(termRoot, "files", "home")
+	cache := filepath.Join(termRoot, "cache")
+	if err := os.MkdirAll(filepath.Join(prefix, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// First run with bash only (no fish yet) -> tmux defaults to bash.
+	if err := os.WriteFile(filepath.Join(prefix, "bin", "bash"), []byte("#!/system/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureTermuxPrefix(stateDir, "/app/cli.bin", termRoot, prefix, home, cache); err != nil {
+		t.Fatal(err)
+	}
+	tmuxBefore, err := os.ReadFile(filepath.Join(home, ".tmux.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(tmuxBefore), filepath.Join(prefix, "bin", "bash")) {
+		t.Fatalf("expected bash default-shell before fish is installed: %s", string(tmuxBefore))
+	}
+
+	// Install executable fish -> re-running configureTermuxPrefix upgrades tmux default-shell to fish.
+	if err := os.WriteFile(filepath.Join(prefix, "bin", "fish"), []byte("#!/system/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureTermuxPrefix(stateDir, "/app/cli.bin", termRoot, prefix, home, cache); err != nil {
+		t.Fatal(err)
+	}
+	tmuxAfter, err := os.ReadFile(filepath.Join(home, ".tmux.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(tmuxAfter), filepath.Join(prefix, "bin", "fish")) {
+		t.Fatalf("expected fish default-shell after fish is installed: %s", string(tmuxAfter))
+	}
+
+	starshipCfg, err := os.ReadFile(filepath.Join(home, ".config", "starship.toml"))
+	if err != nil || !strings.Contains(string(starshipCfg), termuxStarshipSentinel) {
+		t.Fatalf("missing starship.toml: %v", err)
+	}
+	fastfetchCfg, err := os.ReadFile(filepath.Join(home, ".config", "fastfetch", "config.jsonc"))
+	if err != nil || !strings.Contains(string(fastfetchCfg), termuxFastfetchSentinel) {
+		t.Fatalf("missing fastfetch config.jsonc: %v", err)
+	}
+	bashrc, err := os.ReadFile(filepath.Join(home, ".bashrc"))
+	if err != nil || !strings.Contains(string(bashrc), "starship init bash") {
+		t.Fatalf("missing bashrc starship init: %v", err)
+	}
+	fishCfg, err := os.ReadFile(filepath.Join(home, ".config", "fish", "config.fish"))
+	if err != nil || !strings.Contains(string(fishCfg), "starship init fish | source") || !strings.Contains(string(fishCfg), "fastfetch") {
+		t.Fatalf("unexpected fish config: %s (%v)", string(fishCfg), err)
 	}
 }

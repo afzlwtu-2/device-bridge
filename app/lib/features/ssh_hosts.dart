@@ -6,6 +6,7 @@ import '../core/bridge.dart';
 import 'guest_files.dart';
 import 'guest_terminal.dart';
 import 'ssh_bootstrap.dart';
+import 'ssh_key_picker.dart';
 import 'network_rules.dart';
 
 /// Saved SSH identity and account; secrets live only for this screen/session.
@@ -379,10 +380,11 @@ class _SshHostScreenState extends State<SshHostScreen> {
           const SizedBox(height: 12),
           _field(_password, 'Password (optional)', secret: true),
           OutlinedButton.icon(
+            key: const ValueKey('ssh-host-choose-key'),
             onPressed: _busy
                 ? null
                 : () => _perform(() async {
-                    final key = await widget.core.pickSshKeyText();
+                    final key = await pickSshPrivateKey(context, widget.core);
                     if (mounted && key != null) setState(() => _key = key);
                   }),
             icon: const Icon(Icons.key),

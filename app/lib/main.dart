@@ -23,6 +23,7 @@ import 'features/settings_screen.dart';
 import 'features/app_updates.dart';
 import 'features/acl_screen.dart';
 import 'features/phone_files.dart';
+import 'features/permission_wizard.dart';
 import 'features/quick_share.dart';
 import 'features/ssh_hosts.dart';
 import 'features/local_terminal.dart';
@@ -252,6 +253,8 @@ class _BridgeHomeState extends State<BridgeHome> {
   bool checkingInvitations = false;
   Timer? pairingCompletion;
   bool checkingPairingCompletion = false;
+  Map<String, dynamic>? _permissionsStatus;
+  bool _permissionWizardChecked = false;
   final pairingDeadlines = <String, DateTime>{};
   final registry = FeatureRegistry()..register(RemoteFilesFeature());
   @override
@@ -359,6 +362,9 @@ class _BridgeHomeState extends State<BridgeHome> {
       );
       if (mounted) {
         setState(() {});
+      }
+      if (Platform.isAndroid && widget.core is LocalCore) {
+        unawaited(_refreshPermissions(autoGrant: true, promptWizard: true));
       }
     } catch (e) {
       DebugTrace.logError('Home', 'Initialize failed', error: e);
@@ -820,13 +826,16 @@ class _BridgeHomeState extends State<BridgeHome> {
                   key: const ValueKey('top-settings-button'),
                   tooltip: 'Settings',
                   icon: const Icon(Icons.settings_outlined),
-                  onPressed: () {
-                    Navigator.push(
+                  onPressed: () async {
+                    await Navigator.push(
                       context,
                       MaterialPageRoute<void>(
                         builder: (_) => SettingsScreen(core: widget.core),
                       ),
                     );
+                    if (mounted && Platform.isAndroid && widget.core is LocalCore) {
+                      unawaited(_refreshPermissions(autoGrant: false));
+                    }
                   },
                 ),
                 PopupMenuButton<String>(
@@ -1110,6 +1119,50 @@ class _BridgeHomeState extends State<BridgeHome> {
     );
   }
 
+  Future<void> _refreshPermissions({
+    bool autoGrant = true,
+    bool promptWizard = false,
+  }) async {
+    try {
+      final status = await widget.core.permissionsStatus(autoGrant: autoGrant);
+      if (!mounted) return;
+      setState(() => _permissionsStatus = status);
+      if (promptWizard && !_permissionWizardChecked) {
+        _permissionWizardChecked = true;
+        if (status['wizard_completed'] != true &&
+            status['all_essential_granted'] != true) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) unawaited(_openPermissionWizard(initialStatus: status));
+          });
+        }
+      }
+    } catch (e) {
+      DebugTrace.logCore('Permissions', 'Unable to read permissions: $e');
+    }
+  }
+
+  Future<void> _openPermissionWizard({
+    Map<String, dynamic>? initialStatus,
+  }) async {
+    final updated = await showPermissionWizard(
+      context,
+      widget.core,
+      initialStatus: initialStatus ?? _permissionsStatus,
+    );
+    if (!mounted) return;
+    if (updated != null) {
+      setState(() => _permissionsStatus = updated);
+    }
+    unawaited(_refreshPermissions(autoGrant: false));
+    try {
+      final caps = await widget.core.platformCapabilities();
+      if (mounted) {
+        setState(() => capabilities = caps);
+        _saveHomeCache();
+      }
+    } catch (_) {}
+  }
+
   Future<void> _openConnections() async {
     await Navigator.push(
       context,
@@ -1175,6 +1228,8 @@ class _BridgeHomeState extends State<BridgeHome> {
     ),
     onOpenNetworks: _openConnections,
     onGoToTab: (index) => setState(() => tab = index),
+    permissionsStatus: _permissionsStatus,
+    onOpenPermissions: () => unawaited(_openPermissionWizard()),
   );
 
   String _discoverGroup(Map<String, dynamic> target) =>

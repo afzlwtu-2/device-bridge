@@ -389,6 +389,13 @@ func run() error {
 		return bootstrap.EnsureTermuxAdapted(*state, exe)
 	}
 
+	if a[0] == "termux-setup" {
+		exe, _ := os.Executable()
+		return bootstrap.SetupTermuxEnvironment(context.Background(), *state, exe, func(line string) {
+			fmt.Println(line)
+		})
+	}
+
 	if len(a) == 2 && a[0] == "termux-backup" {
 		switch a[1] {
 		case "create":

@@ -307,8 +307,8 @@ class _WikiScreenState extends State<WikiScreen> {
                     summary: 'When enabled in Settings, DeviceBridge verifies live root on every Settings/capability read and automatically disables the toggle if root is removed.',
                     rows: const [
                       (
-                        'Permissions',
-                        'Superuser grant (Magisk / KernelSU / APatch). Android Nearby/Location prompts are bypassed for shell link control.',
+                        'Permissions & auto-grant',
+                        'Superuser grant (Magisk / KernelSU / APatch). On launch or when Root access is enabled, DeviceBridge automatically grants runtime and special app permissions (MANAGE_EXTERNAL_STORAGE, ACCESS_FINE_LOCATION, NEARBY_WIFI_DEVICES, POST_NOTIFICATIONS, CAMERA, REQUEST_INSTALL_PACKAGES, and Termux RUN_COMMAND when installed) via su. Android Nearby/Location prompts are bypassed for shell link control.',
                       ),
                       (
                         'Connection strategy',
@@ -338,8 +338,8 @@ class _WikiScreenState extends State<WikiScreen> {
                     summary: 'Runs privileged shell commands via Shizuku.newProcess without rooting the phone.',
                     rows: const [
                       (
-                        'Permissions',
-                        'Shizuku service running (via Wireless Debugging / USB ADB) + user permission grant inside Shizuku app.',
+                        'Permissions & auto-grant',
+                        'Shizuku service running (via Wireless Debugging / USB ADB) + user permission grant inside Shizuku app. When Shizuku access is active, DeviceBridge automatically grants runtime permissions (pm grant) and All Files / Install Unknown Apps app-ops (appops set) without root.',
                       ),
                       (
                         'Connection strategy',
@@ -362,8 +362,8 @@ class _WikiScreenState extends State<WikiScreen> {
                         'Uses pure public Android APIs and never calls su.',
                     rows: const [
                       (
-                        'Permissions',
-                        'Runtime ACCESS_FINE_LOCATION and NEARBY_WIFI_DEVICES (Android 13+) for Hotspot / Wi-Fi Direct.',
+                        'Permissions & startup wizard',
+                        'On first launch in Standard mode, DeviceBridge opens the Permissions setup wizard (also in Settings → Permissions & setup wizard) to request runtime permissions (ACCESS_FINE_LOCATION, NEARBY_WIFI_DEVICES on Android 13+, POST_NOTIFICATIONS, optional CAMERA for QR pairing) and open Android settings for All Files Access (MANAGE_EXTERNAL_STORAGE on Android 11+, or storage runtime permissions on Android 9–10).',
                       ),
                       (
                         'Connection strategy',
@@ -878,6 +878,10 @@ class _WikiScreenState extends State<WikiScreen> {
                     ],
                     summary: 'Recommended on Android for serving or copying large /storage/emulated/0 folders.',
                     rows: const [
+                      (
+                        'First-run & File manager handling',
+                        'If Internal storage has not been granted yet, File manager displays an inline Grant storage access prompt (plus Open Termux Home fallback) instead of failing, and Root/Shizuku modes grant MANAGE_EXTERNAL_STORAGE automatically.',
+                      ),
                       (
                         'Why it beats ContentProvider IPC',
                         'Reads and writes files directly via kernel syscalls instead of per-file ContentProvider Binder IPC round-trips, saving CPU and battery on large folder transfers.',

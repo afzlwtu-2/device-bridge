@@ -8,6 +8,7 @@ import '../core/debug_trace.dart';
 import 'acl_screen.dart';
 import 'app_updates.dart';
 import 'debug_log_screen.dart';
+import 'permission_wizard.dart';
 import 'wiki_screen.dart';
 
 /// App-wide access, execution-mode submenus, verbose logging, and Go library management.
@@ -23,6 +24,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   static const _backupEvents = EventChannel('dev.devicebridge/termux_backup');
   Map<String, dynamic> values = {};
   Map<String, dynamic> goRuntime = {};
+  Map<String, dynamic> permissions = {};
   bool loading = true, saving = false;
   String? error;
   String? notice;
@@ -59,6 +61,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     try {
       final result = await widget.core.appSettings();
       String? version;
+      Map<String, dynamic> permStatus = {};
       if (result['android'] == true && widget.core is LocalCore) {
         if (mounted) {
           _backupSubscription ??= _backupEvents.receiveBroadcastStream().listen(
@@ -78,6 +81,11 @@ class _SettingsScreenState extends State<SettingsScreen>
         } on PlatformException {
           // Settings remains usable if the platform version is unavailable.
         }
+        try {
+          permStatus = await widget.core.permissionsStatus(autoGrant: false);
+        } on PlatformException {
+          // Settings remains usable if permission inspection fails.
+        }
       }
       Map<String, dynamic> rt = {};
       if (result['go_runtime'] is Map) {
@@ -91,6 +99,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         setState(() {
           values = result;
           goRuntime = rt;
+          permissions = permStatus;
           appVersion = version;
           loading = false;
         });
@@ -134,9 +143,23 @@ class _SettingsScreenState extends State<SettingsScreen>
       DebugTrace.logFlow('Settings', 'debug_mode -> $value');
     }
     final result = await widget.core.appSettings(update: {key: value});
+    Map<String, dynamic>? updatedPerms;
+    String? nextNotice;
+    if (value &&
+        (key == 'root_enabled' || key == 'shizuku_enabled') &&
+        result['android'] == true) {
+      try {
+        updatedPerms = await widget.core.permissionsStatus(autoGrant: false);
+        nextNotice = updatedPerms['all_granted'] == true
+            ? '${key == 'root_enabled' ? 'Root access' : 'Shizuku'} enabled and all permissions granted.'
+            : '${key == 'root_enabled' ? 'Root access' : 'Shizuku'} enabled.';
+      } catch (_) {}
+    }
     if (mounted) {
       setState(() {
         values = result;
+        if (updatedPerms != null) permissions = updatedPerms;
+        if (nextNotice != null) notice = nextNotice;
         if (result.containsKey('debug_mode')) {
           DebugTrace.setEnabled(result['debug_mode'] != false);
         }
@@ -497,6 +520,33 @@ class _SettingsScreenState extends State<SettingsScreen>
                     ),
                   ),
                 if (android) ...[
+                  ListTile(
+                    key: const ValueKey('settings-permissions-wizard'),
+                    leading: const Icon(Icons.verified_user_outlined),
+                    title: const Text('Permissions & setup wizard'),
+                    subtitle: Text(() {
+                      final items = (permissions['permissions'] as List? ?? const [])
+                          .whereType<Map>()
+                          .toList();
+                      if (items.isEmpty) {
+                        return 'Review storage, Wi-Fi, notifications, and privilege auto-grant';
+                      }
+                      final granted = items.where((p) => p['granted'] == true).length;
+                      return '$granted/${items.length} granted · ${_modeLabel(execMode)}';
+                    }()),
+                    trailing: const Icon(Icons.chevron_right),
+                    enabled: !saving,
+                    onTap: () async {
+                      final updated = await showPermissionWizard(
+                        context,
+                        widget.core,
+                        initialStatus: permissions.isEmpty ? null : permissions,
+                      );
+                      if (mounted && updated != null) {
+                        await load();
+                      }
+                    },
+                  ),
                   ListTile(
                     key: const ValueKey('check-app-update'),
                     leading: const Icon(Icons.system_update_outlined),

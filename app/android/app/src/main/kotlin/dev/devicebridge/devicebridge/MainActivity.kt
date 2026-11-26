@@ -56,6 +56,7 @@ class MainActivity : FlutterActivity() {
     private lateinit var documentsGateway: DocumentsGateway
     private lateinit var directLink: DirectLinkController
     private lateinit var deviceSettings: DeviceSettings
+    private lateinit var permissionManager: PermissionManager
     private lateinit var lan: LanCoordinator
     private lateinit var tailnet: TailnetCoordinator
     private val tailnetScreenChanged: () -> Unit = {
@@ -603,6 +604,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (::permissionManager.isInitialized && permissionManager.handlePermissionResult(requestCode)) return
         if (requestCode == 405) {
             wifiPermGranted = grantResults.isNotEmpty() && grantResults.any { it == PackageManager.PERMISSION_GRANTED }
             wifiPermLatch?.countDown()
@@ -690,6 +692,7 @@ class MainActivity : FlutterActivity() {
         if (::termuxControl.isInitialized) termuxControl.close()
         if (::documentsGateway.isInitialized) documentsGateway.close()
         if (::directLink.isInitialized) directLink.close()
+        if (::permissionManager.isInitialized) permissionManager.close()
         if (::deviceSettings.isInitialized) deviceSettings.close()
         try { usbStateReceiver?.let { unregisterReceiver(it) } } catch (_: Exception) {}
         usbStateReceiver = null
@@ -754,7 +757,11 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
-        deviceSettings = DeviceSettings(applicationContext) { action -> runOnUiThread { action() } }
+        deviceSettings = DeviceSettings(
+            applicationContext,
+            onPrivilegedAccess = { if (::permissionManager.isInitialized) permissionManager.autoGrantPrivilegedPermissions() },
+        ) { action -> runOnUiThread { action() } }
+        permissionManager = PermissionManager(this, deviceSettings, ::isTermuxInstalled)
         tailnet = AndroidTailnet.coordinator(applicationContext)
         AndroidTailnet.screenChanged = tailnetScreenChanged
         tailnet.syncPrefs(deviceSettings.tsnetConfig())
@@ -819,6 +826,9 @@ class MainActivity : FlutterActivity() {
         }
         lanRef = lan
         worker.execute {
+            try {
+                permissionManager.status(autoGrantIfPrivileged = true)
+            } catch (_: Exception) {}
             try {
                 directLink.resumeOrphanedIfPresent()
             } catch (_: Exception) {}
@@ -1181,6 +1191,55 @@ class MainActivity : FlutterActivity() {
                         startActivityForResult(intent, 404)
                     }
                 }
+                "listSshKeys" -> {
+                    worker.execute {
+                        try {
+                            val termuxHome = File(filesDir, "terminal/files/home").canonicalFile
+                            val sshDir = File(termuxHome, ".ssh")
+                            val skip = setOf("known_hosts", "known_hosts.old", "config", "authorized_keys", "authorized_keys2")
+                            val out = mutableListOf<Map<String, String>>()
+                            if (sshDir.isDirectory) {
+                                sshDir.listFiles()?.forEach { file ->
+                                    val name = file.name
+                                    val canon = runCatching { file.canonicalFile }.getOrNull()
+                                    if (canon != null &&
+                                        canon.path.startsWith(termuxHome.path + File.separator) &&
+                                        canon.isFile &&
+                                        !name.endsWith(".pub") &&
+                                        !skip.contains(name)
+                                    ) {
+                                        val rel = canon.path.removePrefix(termuxHome.path + File.separator)
+                                        out.add(mapOf("name" to name, "path" to rel, "source" to "termux_home"))
+                                    }
+                                }
+                            }
+                            out.sortWith(compareBy<Map<String, String>>({ if (it["name"]?.startsWith("id_") == true) 0 else 1 }, { it["name"] ?: "" }))
+                            runOnUiThread { result.success(out) }
+                        } catch (e: Exception) {
+                            runOnUiThread { result.error("ssh_key_list_failed", e.message, null) }
+                        }
+                    }
+                }
+                "readSshKey" -> {
+                    val relPath = call.argument<String>("path") ?: ""
+                    worker.execute {
+                        try {
+                            val termuxHome = File(filesDir, "terminal/files/home").canonicalFile
+                            val candidate = File(termuxHome, relPath).canonicalFile
+                            check(
+                                relPath.isNotBlank() &&
+                                    !relPath.startsWith("/") &&
+                                    candidate.path.startsWith(termuxHome.path + File.separator) &&
+                                    candidate.isFile &&
+                                    candidate.length() in 1L..65536L,
+                            ) { "Invalid SSH key path inside Termux Home" }
+                            val text = candidate.readText(Charsets.UTF_8)
+                            runOnUiThread { result.success(text) }
+                        } catch (e: Exception) {
+                            runOnUiThread { result.error("ssh_key_read_failed", e.message, null) }
+                        }
+                    }
+                }
                 "openLogin" -> {
                     val value = call.argument<String>("url") ?: ""
                     val uri = Uri.parse(value)
@@ -1192,7 +1251,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "platformCapabilities" -> {
                     worker.execute {
-                        val allFiles = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
+                        val allFiles = hasAllFilesAccess(applicationContext)
                         val caps = directLink.capabilitiesMap().toMutableMap()
                         caps["cellular"] = packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)
                         caps["tailnet_enabled"] = tailnet.enabled()
@@ -1271,6 +1330,24 @@ class MainActivity : FlutterActivity() {
                         runOnUiThread { result.success(info) }
                     }
                 }
+                "permissionsStatus" -> {
+                    val autoGrant = call.argument<Boolean>("auto_grant") != false
+                    worker.execute {
+                        val snap = permissionManager.status(autoGrantIfPrivileged = autoGrant)
+                        runOnUiThread { result.success(snap) }
+                    }
+                }
+                "requestAppPermission" -> {
+                    val id = call.argument<String>("id") ?: ""
+                    permissionManager.request(id, result)
+                }
+                "autoGrantPermissions" -> {
+                    worker.execute {
+                        permissionManager.autoGrantPrivilegedPermissions()
+                        val snap = permissionManager.status(autoGrantIfPrivileged = false)
+                        runOnUiThread { result.success(snap) }
+                    }
+                }
                 "connectionSetup" -> {
                     val kind = call.argument<String>("kind")
                     if (kind == "shizuku" || kind == "termux") {
@@ -1279,9 +1356,8 @@ class MainActivity : FlutterActivity() {
                         else { startActivity(intent); result.success(null) }
                         return@setMethodCallHandler
                     }
-                    if (kind == "all_files_access" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))
-                        try { startActivity(intent); result.success(null) } catch (e: Exception) { result.error("unavailable", e.message, null) }
+                    if (kind == "all_files_access") {
+                        permissionManager.request("storage", result)
                     } else if (kind == "wifi_direct" && !packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) {
                         result.error("unavailable", "This device does not report Wi-Fi Direct support", null)
                     } else {
@@ -1775,7 +1851,7 @@ class MainActivity : FlutterActivity() {
         val agentFile = readAgentStatusFiles()
         val sshd = readSshdRuntime()
         val tsnetCfg = deviceSettings.tsnetConfig()
-        val allFiles = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
+        val allFiles = hasAllFilesAccess(applicationContext)
 
         return mapOf(
             "os" to "android",

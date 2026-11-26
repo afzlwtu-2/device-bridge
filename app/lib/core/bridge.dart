@@ -35,6 +35,19 @@ abstract interface class CoreBridge {
   Future<String?> pickSshKeyText();
   Future<void> openLogin(String url);
   Future<void> openConnectionSetup(String kind);
+  Future<Map<String, dynamic>> permissionsStatus({bool autoGrant = true}) async =>
+      const {
+        'execution_mode': 'standard',
+        'wizard_completed': true,
+        'all_essential_granted': true,
+        'all_granted': true,
+        'has_missing_runtime': false,
+        'permissions': <Map<String, dynamic>>[],
+      };
+  Future<Map<String, dynamic>> requestAppPermission(String id) async =>
+      permissionsStatus(autoGrant: false);
+  Future<Map<String, dynamic>> autoGrantPermissions() async =>
+      permissionsStatus(autoGrant: false);
   Future<Map<String, dynamic>> platformCapabilities();
   Future<Map<String, dynamic>> prepareDirectLink(
     String kind, {
@@ -584,7 +597,15 @@ class LocalCore implements CoreBridge {
 
   @override
   Future<List<Map<String, String>>> listSshKeys() async {
-    if (Platform.isAndroid) return [];
+    if (Platform.isAndroid) {
+      final raw = await channel.invokeMethod<List>('listSshKeys') ?? const [];
+      return raw
+          .whereType<Map>()
+          .map(
+            (e) => e.map((k, v) => MapEntry('$k', '$v')),
+          )
+          .toList();
+    }
     final home = Platform.environment['HOME'];
     if (home == null || home.isEmpty) {
       return [];
@@ -624,10 +645,12 @@ class LocalCore implements CoreBridge {
 
   @override
   Future<String?> readSshKey(Map<String, String> keyRef) async {
-    if (Platform.isAndroid) return null;
     final p = keyRef['path'];
     if (p == null || p.isEmpty) {
       return null;
+    }
+    if (Platform.isAndroid) {
+      return channel.invokeMethod<String>('readSshKey', {'path': p});
     }
     return File(p).readAsString();
   }
@@ -662,6 +685,66 @@ class LocalCore implements CoreBridge {
         'Use your desktop network settings to configure $kind, then refresh Networks.',
       );
     }
+  }
+
+  Future<Map<String, dynamic>> _normalizePermissionSnapshot(
+    Map<String, dynamic> status,
+  ) async {
+    final perms = (status['permissions'] as List? ?? const [])
+        .whereType<Map>()
+        .map((m) => Map<String, dynamic>.from(m))
+        .toList();
+    final storageGranted = perms.any(
+      (p) => p['id'] == 'storage' && p['granted'] == true,
+    );
+    if (storageGranted && !_phoneStorageExported) {
+      try {
+        await run(['export', 'phone_storage', '/storage/emulated/0']);
+        _phoneStorageExported = true;
+        await channel.invokeMethod('refreshExports');
+      } catch (_) {}
+    }
+    return {...status, 'permissions': perms};
+  }
+
+  @override
+  Future<Map<String, dynamic>> permissionsStatus({bool autoGrant = true}) async {
+    if (!Platform.isAndroid) {
+      return const {
+        'execution_mode': 'desktop',
+        'wizard_completed': true,
+        'all_essential_granted': true,
+        'all_granted': true,
+        'has_missing_runtime': false,
+        'permissions': <Map<String, dynamic>>[],
+      };
+    }
+    final raw = await channel.invokeMethod<Map>('permissionsStatus', {
+      'auto_grant': autoGrant,
+    });
+    return _normalizePermissionSnapshot(
+      Map<String, dynamic>.from(raw ?? const {}),
+    );
+  }
+
+  @override
+  Future<Map<String, dynamic>> requestAppPermission(String id) async {
+    if (!Platform.isAndroid) return permissionsStatus(autoGrant: false);
+    final raw = await channel.invokeMethod<Map>('requestAppPermission', {
+      'id': id,
+    });
+    return _normalizePermissionSnapshot(
+      Map<String, dynamic>.from(raw ?? const {}),
+    );
+  }
+
+  @override
+  Future<Map<String, dynamic>> autoGrantPermissions() async {
+    if (!Platform.isAndroid) return permissionsStatus(autoGrant: false);
+    final raw = await channel.invokeMethod<Map>('autoGrantPermissions');
+    return _normalizePermissionSnapshot(
+      Map<String, dynamic>.from(raw ?? const {}),
+    );
   }
 
   @override

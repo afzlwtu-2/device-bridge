@@ -8,7 +8,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** Permission opt-ins and execution-mode settings. Never assumes stale root grants. */
-class DeviceSettings(private val context: Context, private val deliver: (() -> Unit) -> Unit) {
+class DeviceSettings(
+    private val context: Context,
+    private val onPrivilegedAccess: () -> Unit = {},
+    private val deliver: (() -> Unit) -> Unit,
+) {
     private val prefs = context.getSharedPreferences("devicebridge-settings", Context.MODE_PRIVATE)
     private val worker = Executors.newSingleThreadExecutor()
     private var pending: MethodChannel.Result? = null
@@ -16,8 +20,10 @@ class DeviceSettings(private val context: Context, private val deliver: (() -> U
     @Volatile private var lastRootResult: Boolean = false
     private val permissionListener = Shizuku.OnRequestPermissionResultListener { code, grant ->
         if (code == 713) {
-            prefs.edit().putBoolean("shizuku_enabled", grant == PackageManager.PERMISSION_GRANTED).apply()
+            val granted = grant == PackageManager.PERMISSION_GRANTED
+            prefs.edit().putBoolean("shizuku_enabled", granted).apply()
             worker.execute {
+                if (granted) onPrivilegedAccess()
                 val snapshot = read()
                 deliver {
                     pending?.success(snapshot)
@@ -89,6 +95,18 @@ class DeviceSettings(private val context: Context, private val deliver: (() -> U
         ),
     )
 
+    fun autoEnableShizukuIfAlreadyGranted(): Boolean {
+        if (prefs.contains("shizuku_enabled")) return prefs.getBoolean("shizuku_enabled", false)
+        val running = try { Shizuku.pingBinder() } catch (_: Exception) { false }
+        val granted = running && try {
+            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        } catch (_: Exception) { false }
+        if (granted) {
+            prefs.edit().putBoolean("shizuku_enabled", true).apply()
+        }
+        return granted
+    }
+
     fun isShizukuEnabledAndGranted(): Boolean {
         if (!prefs.getBoolean("shizuku_enabled", false)) return false
         val running = try { Shizuku.pingBinder() } catch (_: Exception) { false }
@@ -101,6 +119,7 @@ class DeviceSettings(private val context: Context, private val deliver: (() -> U
     }
 
     fun read(): Map<String, Any?> {
+        autoEnableShizukuIfAlreadyGranted()
         val running = try { Shizuku.pingBinder() } catch (_: Exception) { false }
         val shizukuGranted = running && try { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED } catch (_: Exception) { false }
         val rootVerified = verifyRootEnabled(forceRefresh = true)
@@ -116,6 +135,7 @@ class DeviceSettings(private val context: Context, private val deliver: (() -> U
             "keep_awake" to prefs.getBoolean("keep_awake", false),
             "show_hidden" to prefs.getBoolean("show_hidden", false),
             "verbose_logging" to prefs.getBoolean("verbose_logging", true),
+            "permissions_wizard_done" to prefs.getBoolean("permissions_wizard_done", false),
             "execution_mode" to executionMode,
             "root_enabled" to rootVerified,
             "root_verified" to rootVerified,
@@ -174,6 +194,7 @@ class DeviceSettings(private val context: Context, private val deliver: (() -> U
                 "show_hidden",
                 "verbose_logging",
                 "debug_mode",
+                "permissions_wizard_done",
                 "root_enabled",
                 "root_feature_direct_link",
                 "root_feature_neighbors",
@@ -227,6 +248,7 @@ class DeviceSettings(private val context: Context, private val deliver: (() -> U
                     lastRootCheckMs = System.currentTimeMillis()
                     lastRootResult = true
                     prefs.edit().putBoolean("root_enabled", true).putString("root_status", "Permission verified · UID 0").apply()
+                    onPrivilegedAccess()
                     val snapshot = read()
                     deliver { pending?.success(snapshot); pending = null }
                 } catch (e: Exception) {
@@ -274,6 +296,7 @@ class DeviceSettings(private val context: Context, private val deliver: (() -> U
         if (values["root_enabled"] == false) editor.putString("root_status", "Disabled in DeviceBridge")
         editor.apply()
         worker.execute {
+            if (values["shizuku_enabled"] == true) onPrivilegedAccess()
             val snapshot = read()
             deliver { result.success(snapshot) }
         }

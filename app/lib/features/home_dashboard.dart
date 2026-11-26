@@ -37,6 +37,8 @@ class HomeDashboard extends StatefulWidget {
     required this.onOpenFiles,
     required this.onOpenNetworks,
     required this.onGoToTab,
+    this.permissionsStatus,
+    this.onOpenPermissions,
   });
 
   final CoreBridge core;
@@ -47,6 +49,8 @@ class HomeDashboard extends StatefulWidget {
   final VoidCallback onOpenFiles;
   final Future<void> Function() onOpenNetworks;
   final ValueChanged<int> onGoToTab;
+  final Map<String, dynamic>? permissionsStatus;
+  final VoidCallback? onOpenPermissions;
 
   @override
   State<HomeDashboard> createState() => _HomeDashboardState();
@@ -257,6 +261,16 @@ class _HomeDashboardState extends State<HomeDashboard>
         .length;
 
     final alerts = <_HomeAlert>[
+      if (widget.permissionsStatus?['all_essential_granted'] == false &&
+          widget.onOpenPermissions != null)
+        _HomeAlert(
+          level: TrafficLightLevel.amber,
+          title: 'Permissions needed',
+          detail:
+              'Grant storage or Wi-Fi permissions for File manager and Direct links.',
+          actionLabel: 'Review',
+          onAction: widget.onOpenPermissions!,
+        ),
       if (listenerState == 'receiver_error')
         _HomeAlert(
           level: TrafficLightLevel.red,

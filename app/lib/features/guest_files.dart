@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:material_ui/material_ui.dart';
 
 import '../core/bridge.dart';
+import 'ssh_key_picker.dart';
 import 'guest_terminal.dart';
 
 class GuestFilesScreen extends StatefulWidget {
@@ -255,7 +256,10 @@ class _GuestFilesScreenState extends State<GuestFilesScreen> {
               onPressed: _busy
                   ? null
                   : () => _operate(() async {
-                      final selected = await widget.core.pickSshKeyText();
+                      final selected = await pickSshPrivateKey(
+                        context,
+                        widget.core,
+                      );
                       if (selected != null && mounted) {
                         setState(() => _key = selected);
                       }

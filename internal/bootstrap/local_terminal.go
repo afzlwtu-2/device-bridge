@@ -82,7 +82,10 @@ func extractBootstrapZipIfPresent(zipPath, prefix string) error {
 			return err
 		}
 		mode := f.Mode()
-		if mode == 0 || strings.HasPrefix(clean, "bin/") || strings.HasPrefix(clean, "libexec/") || strings.HasPrefix(clean, "lib/apt/") {
+		if mode == 0 {
+			mode = 0o644
+		}
+		if strings.HasPrefix(clean, "bin/") || strings.HasPrefix(clean, "libexec/") || strings.HasPrefix(clean, "lib/apt/") || strings.HasSuffix(clean, ".so") || strings.Contains(clean, ".so.") {
 			mode = 0o755
 		}
 		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
@@ -305,6 +308,16 @@ esac
 	// Configure ~/.tmux.conf ported from laptop ~/.tmux.conf for Android touchscreen ergonomics.
 	tmuxCfgPath := filepath.Join(home, ".tmux.conf")
 	fishBin := filepath.Join(prefix, "bin", "fish")
+	bashBin := filepath.Join(prefix, "bin", "bash")
+	defaultShell := "/system/bin/sh"
+	defaultCmd := "/system/bin/sh -l"
+	if isExecutableFile(fishBin) {
+		defaultShell = fishBin
+		defaultCmd = fishBin + " -l"
+	} else if isExecutableFile(bashBin) {
+		defaultShell = bashBin
+		defaultCmd = bashBin + " -l"
+	}
 	tmpDir := filepath.Join(prefix, "tmp")
 	ldPreloadLine := ""
 	fishLdPreloadLine := ""
@@ -312,19 +325,22 @@ esac
 		ldPreloadLine = fmt.Sprintf("set-environment -g LD_PRELOAD %q\nset-environment -g DB_TERMUX_ADAPT_SO %q\n", ctx.AdaptSo, ctx.AdaptSo)
 		fishLdPreloadLine = termuxFishAdapterBlock(ctx.AdaptSo)
 	}
-	if existingTmux, err := os.ReadFile(tmuxCfgPath); os.IsNotExist(err) || pathChanged || !strings.Contains(string(existingTmux), "DEVICEBRIDGE_TMUX_V7") {
-		tmuxCfg := fmt.Sprintf(`# DEVICEBRIDGE_TMUX_V7 (ported from laptop ~/.tmux.conf for Android touchscreen)
+	existingTmux, tmuxErr := os.ReadFile(tmuxCfgPath)
+	expectedDefaultShellLine := fmt.Sprintf("set -g default-shell %q", defaultShell)
+	if os.IsNotExist(tmuxErr) || pathChanged || !strings.Contains(string(existingTmux), "DEVICEBRIDGE_TMUX_V8") || !strings.Contains(string(existingTmux), expectedDefaultShellLine) || !strings.Contains(string(existingTmux), "STARSHIP_CONFIG") {
+		tmuxCfg := fmt.Sprintf(`# DEVICEBRIDGE_TMUX_V8 (ported from laptop ~/.tmux.conf for Android touchscreen)
 # -------------------------------------------------------------------
 # 0. DeviceBridge / Termux Environment Propagation
 # -------------------------------------------------------------------
 set -g default-shell %q
-set -g default-command "%s -l"
+set -g default-command %q
 set-environment -g PREFIX %q
 set-environment -g HOME %q
+set-environment -g STARSHIP_CONFIG "%s/.config/starship.toml"
 set-environment -g TMPDIR %q
 set-environment -g TMUX_TMPDIR %q
 set-environment -g TERMINFO "%s/share/terminfo"
-set-environment -g LD_LIBRARY_PATH "%s/lib"
+set-environment -g LD_LIBRARY_PATH %q
 %sset-environment -g TERMUX_CACHE_DIR %q
 set-environment -g TERMUX__CACHE_DIR %q
 set-environment -g TERMUX__PREFIX %q
@@ -425,7 +441,7 @@ bind-key f display-popup -w 85%% -h 85%% -E "tmux new-session -A -s scratch"
 set -g bell-action any
 set -g visual-bell off
 setw -g monitor-bell on
-`, fishBin, fishBin, prefix, home, tmpDir, tmpDir, prefix, prefix, ldPreloadLine,
+`, defaultShell, defaultCmd, prefix, home, home, tmpDir, tmpDir, prefix, termuxLDLibraryPath(prefix), ldPreloadLine,
 			cacheDir, cacheDir, prefix, home, filepath.Join(termRoot, "files"), ctx.AppRoot, ctx.AppPkg,
 			termuxAPTConfig(prefix), prefix, prefix, prefix, prefix, prefix, home, home, cacheDir, stateDir, tailnetSock, home, prefix)
 		_ = os.WriteFile(tmuxCfgPath, []byte(tmuxCfg), 0o644)
@@ -439,17 +455,21 @@ setw -g monitor-bell on
 		}
 	}
 
+	if err := configureTermuxShellExperience(prefix, home); err != nil {
+		return err
+	}
+
 	fishCfg := filepath.Join(home, ".config", "fish", "config.fish")
 	existingFish, fishErr := os.ReadFile(fishCfg)
-	if os.IsNotExist(fishErr) || pathChanged || strings.Contains(string(existingFish), "# Commands to run in interactive sessions can go here") || !strings.Contains(string(existingFish), "TMUX_TMPDIR") || !strings.Contains(string(existingFish), "if not set -q DEVICEBRIDGE_CLI") || !strings.Contains(string(existingFish), "TERMUX_APP__PACKAGE_NAME") {
-		cfg := fmt.Sprintf(`# DeviceBridge integrated Terminal (fish + tmux + Nerd Fonts + tlstore + shared tsnet & OpenSSH)
+	if os.IsNotExist(fishErr) || pathChanged || strings.Contains(string(existingFish), "# Commands to run in interactive sessions can go here") || !strings.Contains(string(existingFish), "TMUX_TMPDIR") || !strings.Contains(string(existingFish), "if not set -q DEVICEBRIDGE_CLI") || !strings.Contains(string(existingFish), "TERMUX_APP__PACKAGE_NAME") || (strings.HasPrefix(string(existingFish), "# DeviceBridge integrated Terminal") && !strings.Contains(string(existingFish), "DEVICEBRIDGE_FISH_V3")) {
+		cfg := fmt.Sprintf(`# DeviceBridge integrated Terminal (DEVICEBRIDGE_FISH_V3: fish + starship + tmux + Nerd Fonts + shared tsnet & OpenSSH)
 set -gx PREFIX %q
 set -gx HOME %q
 set -gx TMPDIR %q
 set -gx TMUX_TMPDIR %q
 set -gx TERMINFO "$PREFIX/share/terminfo"
 set -gx SHELL "$PREFIX/bin/fish"
-set -gx LD_LIBRARY_PATH "$PREFIX/lib"
+set -gx LD_LIBRARY_PATH %q
 %sset -gx TERMUX_CACHE_DIR %q
 set -gx TERMUX__CACHE_DIR %q
 set -gx TERMUX__PREFIX "$PREFIX"
@@ -465,6 +485,7 @@ set -gx PKG_CONFIG_PATH "$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig"
 set -gx XDG_CONFIG_HOME "$HOME/.config"
 set -gx XDG_DATA_HOME "$HOME/.local/share"
 set -gx XDG_CACHE_HOME %q
+set -gx STARSHIP_CONFIG "$HOME/.config/starship.toml"
 set -gx DEVICEBRIDGE_STATE %q
 if not set -q DEVICEBRIDGE_CLI
     set -gx DEVICEBRIDGE_CLI %q
@@ -480,6 +501,15 @@ if not contains "$PREFIX/bin" $PATH
 end
 
 if status is-interactive
+    set -g fish_color_command cyan --bold
+    set -g fish_color_param normal
+    set -g fish_color_error red --bold
+    set -g fish_color_autosuggestion brblack
+
+    alias ll "ls -lh"
+    alias la "ls -lha"
+    alias cls "clear"
+
     if command -q fastfetch
         if test -f "$HOME/.config/fastfetch/config.jsonc"
             fastfetch --config "$HOME/.config/fastfetch/config.jsonc"
@@ -487,22 +517,30 @@ if status is-interactive
             fastfetch
         end
     end
+    if command -q starship
+        starship init fish | source
+    end
+    if command -q zoxide
+        zoxide init fish | source
+    end
 end
 
-function fish_prompt
-    set -l last_status $status
-    set -l cwd (prompt_pwd)
-    set_color --bold cyan
-    printf "\uf120 %%s" $cwd
-    if test $last_status -ne 0
-        set_color --bold red
-        printf " [%%d]" $last_status
+if not command -q starship
+    function fish_prompt
+        set -l last_status $status
+        set -l cwd (prompt_pwd)
+        set_color --bold cyan
+        printf "\uf120 %%s" $cwd
+        if test $last_status -ne 0
+            set_color --bold red
+            printf " [%%d]" $last_status
+        end
+        set_color --bold brgreen
+        printf " ❯ "
+        set_color normal
     end
-    set_color --bold brgreen
-    printf " ❯ "
-    set_color normal
 end
-`, prefix, home, tmpDir, tmpDir, fishLdPreloadLine, cacheDir, cacheDir, filepath.Join(termRoot, "files"), ctx.AppRoot, ctx.AppPkg, cacheDir, stateDir, cliBin, tailnetSock)
+`, prefix, home, tmpDir, tmpDir, termuxLDLibraryPath("$PREFIX"), fishLdPreloadLine, cacheDir, cacheDir, filepath.Join(termRoot, "files"), ctx.AppRoot, ctx.AppPkg, cacheDir, stateDir, cliBin, tailnetSock)
 		_ = os.WriteFile(fishCfg, []byte(cfg), 0o644)
 	} else if fishErr == nil {
 		if err := refreshTermuxFishConfig(fishCfg, existingFish, ctx.AdaptSo); err != nil {
@@ -639,7 +677,7 @@ append_quoted() {
 
 INNER="export"
 append_quoted "PREFIX=$REAL_PREFIX" "HOME=$REAL_HOME" "TMPDIR=$REAL_TMP" "TMUX_TMPDIR=$REAL_TMP" \
-  "TERMINFO=$REAL_PREFIX/share/terminfo" "TERM=$REAL_TERM" "LD_LIBRARY_PATH=$REAL_PREFIX/lib" \
+  "TERMINFO=$REAL_PREFIX/share/terminfo" "TERM=$REAL_TERM" "LD_LIBRARY_PATH=` + termuxSystemLibDir() + `:$REAL_PREFIX/lib" \
   "TERMUX_CACHE_DIR=$REAL_CACHE" "TERMUX__CACHE_DIR=$REAL_CACHE" "TERMUX__PREFIX=$REAL_PREFIX" \
   "TERMUX__HOME=$TERMINAL_HOME" "TERMUX__ROOTFS=${REAL_PREFIX%%/*}" \
   TERMUX_APP__DATA_DIR=%s TERMUX_APP__PACKAGE_NAME=%s \
@@ -1094,7 +1132,7 @@ export HOME=%q
 export TMPDIR="%s/tmp"
 export TMUX_TMPDIR="%s/tmp"
 export TERMINFO="%s/share/terminfo"
-export LD_LIBRARY_PATH="%s/lib"
+export LD_LIBRARY_PATH=%q
 %sexport TERMUX_CACHE_DIR=%q
 export TERMUX__CACHE_DIR=%q
 export TERMUX__PREFIX=%q
@@ -1129,7 +1167,7 @@ if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
   exec "$SHELL" -c "$SSH_ORIGINAL_COMMAND"
 fi
 exec "$SHELL" -l
-`, prefix, home, prefix, prefix, prefix, prefix, dbShellPreload,
+`, prefix, home, prefix, prefix, prefix, termuxLDLibraryPath(prefix), dbShellPreload,
 		cacheDir, cacheDir, prefix, home, filepath.Join(termRoot, "files"), ctx.AppRoot, ctx.AppPkg,
 		termuxAPTConfig(prefix), prefix, prefix, prefix, prefix, prefix, home, home, cacheDir,
 		stateDir, cliBin, tailnetSock, home, prefix, prefix)
@@ -1394,7 +1432,7 @@ func startTermuxSSHDIfNeeded(prefix, home, adaptSo string) {
 		"HOME=" + home,
 		"PREFIX=" + prefix,
 		"TMPDIR=" + filepath.Join(prefix, "tmp"),
-		"LD_LIBRARY_PATH=" + filepath.Join(prefix, "lib"),
+		"LD_LIBRARY_PATH=" + termuxLDLibraryPath(prefix),
 		"PATH=" + filepath.Join(home, ".local", "bin") + ":" + filepath.Join(prefix, "bin") + ":/system/bin",
 	}
 	if adaptSo != "" {
@@ -1511,7 +1549,7 @@ func PrepareLocalTerminalEnvironment(stateDir, requestedShell string) (shellPath
 			"TMUX_TMPDIR=" + tmpDir,
 			"TERMINFO=" + filepath.Join(prefix, "share", "terminfo"),
 			"SHELL=" + fishBin,
-			"LD_LIBRARY_PATH=" + filepath.Join(prefix, "lib"),
+			"LD_LIBRARY_PATH=" + termuxLDLibraryPath(prefix),
 			"TERMUX_CACHE_DIR=" + cacheDir,
 			"TERMUX__CACHE_DIR=" + cacheDir,
 			"TERMUX__PREFIX=" + prefix,
@@ -1527,6 +1565,7 @@ func PrepareLocalTerminalEnvironment(stateDir, requestedShell string) (shellPath
 			"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
 			"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
 			"XDG_CACHE_HOME=" + cacheDir,
+			"STARSHIP_CONFIG=" + filepath.Join(home, ".config", "starship.toml"),
 			"DEVICEBRIDGE_STATE=" + stateDir,
 			"DEVICEBRIDGE_CLI=" + cliBin,
 			"DEVICEBRIDGE_TAILNET_SOCKET=" + tailnetSock,
@@ -1606,22 +1645,41 @@ Match host *,!*.*,!*:*,!localhost exec "%s --state %s tsnet-match %%h"
 		}
 	}
 
+	_ = configureTermuxShellExperience("", home)
 	fishCfg := filepath.Join(home, ".config", "fish", "config.fish")
-	if _, statErr := os.Stat(fishCfg); os.IsNotExist(statErr) {
-		cfg := `# DeviceBridge integrated Ghostty-style terminal
+	if existing, statErr := os.ReadFile(fishCfg); os.IsNotExist(statErr) || (strings.HasPrefix(string(existing), "# DeviceBridge integrated Ghostty-style terminal") && !strings.Contains(string(existing), "DEVICEBRIDGE_FISH_V2")) {
+		cfg := `# DeviceBridge integrated Ghostty-style terminal (DEVICEBRIDGE_FISH_V2)
 set -gx fish_greeting ""
-function fish_prompt
-    set -l last_status $status
-    set -l cwd (prompt_pwd)
-    set_color --bold cyan
-    printf "󰆍 %s" $cwd
-    if test $last_status -ne 0
-        set_color --bold red
-        printf " [%d]" $last_status
+set -gx STARSHIP_CONFIG "$HOME/.config/starship.toml"
+if status is-interactive
+    if command -q fastfetch
+        if test -f "$HOME/.config/fastfetch/config.jsonc"
+            fastfetch --config "$HOME/.config/fastfetch/config.jsonc"
+        else
+            fastfetch
+        end
     end
-    set_color --bold brgreen
-    printf " ❯ "
-    set_color normal
+    if command -q starship
+        starship init fish | source
+    end
+    if command -q zoxide
+        zoxide init fish | source
+    end
+end
+if not command -q starship
+    function fish_prompt
+        set -l last_status $status
+        set -l cwd (prompt_pwd)
+        set_color --bold cyan
+        printf "󰆍 %s" $cwd
+        if test $last_status -ne 0
+            set_color --bold red
+            printf " [%d]" $last_status
+        end
+        set_color --bold brgreen
+        printf " ❯ "
+        set_color normal
+    end
 end
 `
 		_ = os.WriteFile(fishCfg, []byte(cfg), 0o644)

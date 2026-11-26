@@ -47,6 +47,8 @@ void main() {
     await tester.pumpAndSettle();
     final create = find.byKey(const ValueKey('termux-backup-create'));
     await tester.scrollUntilVisible(create, 400);
+    await tester.ensureVisible(create);
+    await tester.pumpAndSettle();
     await tester.tap(create);
     await tester.pumpAndSettle();
 

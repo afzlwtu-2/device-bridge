@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -301,7 +302,17 @@ class _FileManagerState extends State<FileManager> with WidgetsBindingObserver {
           pane.path = '';
         }
       }
-      pane.entries = pane.root.isEmpty ? [] : await listAt(pane, pane.path);
+      final selectedRoot = pane.roots
+          .where((r) => r['id'] == pane.root)
+          .firstOrNull;
+      if (pane.device == 'local' &&
+          selectedRoot != null &&
+          selectedRoot['available'] != true) {
+        pane.entries = [];
+        pane.error = null;
+      } else {
+        pane.entries = pane.root.isEmpty ? [] : await listAt(pane, pane.path);
+      }
     } catch (e) {
       pane.error = '$e';
       pane.entries = [];
@@ -320,13 +331,16 @@ class _FileManagerState extends State<FileManager> with WidgetsBindingObserver {
       if (info['available'] != true) {
         try {
           if (root == 'internal') {
-            await widget.core.openConnectionSetup('all_files_access');
+            await widget.core.requestAppPermission('storage');
           } else {
             await widget.core.pickTargetTree();
           }
           localRoots = (await widget.core.localFiles('roots', {}) as List)
               .map((e) => Map<String, dynamic>.from(e as Map))
               .toList();
+          if (localRoots.any((r) => r['id'] == 'internal' && r['available'] == true)) {
+            unawaited(widget.core.platformCapabilities().catchError((_) => <String, dynamic>{}));
+          }
         } catch (e) {
           if (mounted) {
             setState(
@@ -1134,6 +1148,8 @@ class _FileManagerState extends State<FileManager> with WidgetsBindingObserver {
     final other = panes[1 - index];
     final canSync = supportsFolderSync(pane);
     final inTrash = isRecycleBin(pane);
+    final missingStorageAccess = pane.device == 'local' &&
+        pane.roots.any((r) => r['id'] == pane.root && r['available'] != true);
     final entries = pane.entries
         .where(
           (entry) =>
@@ -1194,7 +1210,76 @@ class _FileManagerState extends State<FileManager> with WidgetsBindingObserver {
                 child: Text(pane.error!, style: const TextStyle(fontSize: 11)),
               ),
             Expanded(
-              child: entries.isEmpty && !pane.busy && pane.error == null
+              child: missingStorageAccess && !pane.busy
+                  ? Center(
+                      key: ValueKey('file-pane-$index-storage-prompt'),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.folder_off_outlined,
+                              size: 32,
+                              color: cs.primary,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Phone storage access needed',
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context).textTheme.titleSmall
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              'Allow All Files Access in Android settings (or enable Root / Shizuku in Settings) to browse Internal storage.',
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 12),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              alignment: WrapAlignment.center,
+                              children: [
+                                FilledButton.icon(
+                                  key: ValueKey(
+                                    'file-pane-$index-grant-storage',
+                                  ),
+                                  onPressed: transferring
+                                      ? null
+                                      : () => chooseRoot(pane, pane.root),
+                                  icon: const Icon(
+                                    Icons.verified_user_outlined,
+                                    size: 16,
+                                  ),
+                                  label: const Text('Grant storage access'),
+                                ),
+                                if (pane.roots.any(
+                                  (r) =>
+                                      r['id'] == 'termux_home' &&
+                                      r['available'] == true,
+                                ))
+                                  OutlinedButton.icon(
+                                    key: ValueKey(
+                                      'file-pane-$index-open-termux-home',
+                                    ),
+                                    onPressed: transferring
+                                        ? null
+                                        : () => chooseRoot(pane, 'termux_home'),
+                                    icon: const Icon(
+                                      Icons.terminal_outlined,
+                                      size: 16,
+                                    ),
+                                    label: const Text('Open Termux Home'),
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
+                  : entries.isEmpty && !pane.busy && pane.error == null
                   ? Center(
                       child: Padding(
                         padding: const EdgeInsets.all(12),

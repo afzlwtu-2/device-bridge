@@ -16,7 +16,9 @@ import 'package:devicebridge/features/ssh_bootstrap.dart';
 import 'package:devicebridge/features/appearance.dart';
 import 'package:devicebridge/features/amoled_editor.dart';
 import 'package:devicebridge/features/phone_files.dart';
+import 'package:devicebridge/features/permission_wizard.dart';
 import 'package:devicebridge/features/quick_share.dart';
+import 'package:devicebridge/features/ssh_key_picker.dart';
 import 'package:devicebridge/features/registry.dart';
 import 'package:devicebridge/features/remote_files.dart';
 import 'package:devicebridge/features/folder_exclusions.dart';
@@ -64,6 +66,22 @@ class FakeCore implements CoreBridge {
   Future<void> openLogin(String url) async {}
   @override
   Future<void> openConnectionSetup(String kind) async {}
+  @override
+  Future<Map<String, dynamic>> permissionsStatus({bool autoGrant = true}) async =>
+      const {
+        'execution_mode': 'standard',
+        'wizard_completed': true,
+        'all_essential_granted': true,
+        'all_granted': true,
+        'has_missing_runtime': false,
+        'permissions': <Map<String, dynamic>>[],
+      };
+  @override
+  Future<Map<String, dynamic>> requestAppPermission(String id) async =>
+      permissionsStatus(autoGrant: false);
+  @override
+  Future<Map<String, dynamic>> autoGrantPermissions() async =>
+      permissionsStatus(autoGrant: false);
   @override
   Future<Map<String, dynamic>> platformCapabilities() async => {
     'cellular': true,
@@ -866,6 +884,7 @@ void main() {
       expect(find.text('Recover on unmetered Wi-Fi'), findsNothing);
       expect(find.text('Laptop'), findsNothing);
       await tester.scrollUntilVisible(find.text('Root access'), 250);
+      await tester.scrollUntilVisible(find.text('Shizuku access'), 250);
       expect(find.text('Shizuku access'), findsOneWidget);
       await tester.scrollUntilVisible(find.text('Keep screen awake'), 250);
       await tester.tap(find.text('Keep screen awake'));
@@ -5446,4 +5465,284 @@ void registerNetworkRefactorTests() {
       expect(find.text('All services allowed'), findsOneWidget);
     },
   );
+  testWidgets(
+    'FileManager prompts cleanly when Internal storage permission is missing and switches to Termux Home',
+    (tester) async {
+      var storageGranted = false;
+      final core = _PermFileCore(() => storageGranted, () {
+        storageGranted = true;
+      });
+      await tester.pumpWidget(MaterialApp(home: FileManager(core: core)));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('file-pane-0-storage-prompt')),
+        findsOneWidget,
+      );
+      expect(find.text('Phone storage access needed'), findsNWidgets(2));
+      expect(core.listedInternalBeforeGrant, isFalse);
+
+      await tester.tap(
+        find.byKey(const ValueKey('file-pane-0-open-termux-home')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('termux-notes.txt'), findsOneWidget);
+
+      await tester.tap(
+        find.byKey(const ValueKey('file-pane-1-grant-storage')),
+      );
+      await tester.pumpAndSettle();
+      expect(core.requestedPermissions, contains('storage'));
+      expect(find.text('DCIM'), findsOneWidget);
+    },
+  );
+  testWidgets(
+    'PermissionWizardDialog requests Standard runtime permissions and supports Shizuku auto-grant',
+    (tester) async {
+      final core = _PermWizardCore();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: PermissionWizardDialog(core: core)),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Permissions setup'), findsOneWidget);
+      expect(find.text('Phone storage (All files access)'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('permission-wizard-runtime-batch')),
+        findsOneWidget,
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('permission-wizard-runtime-batch')),
+      );
+      await tester.pumpAndSettle();
+      expect(core.requested, contains('runtime_batch'));
+
+      await tester.tap(find.byKey(const ValueKey('permission-wizard-shizuku')));
+      await tester.pumpAndSettle();
+      expect(core.wizardSettings['shizuku_enabled'], isTrue);
+      expect(
+        find.text('Shizuku verified and all permissions granted automatically.'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('permission-wizard-done')));
+      await tester.pumpAndSettle();
+      expect(core.wizardSettings['permissions_wizard_done'], isTrue);
+    },
+  );
+  testWidgets(
+    'pickSshPrivateKey picks from Termux ~/.ssh or Termux Home instead of only device storage',
+    (tester) async {
+      final core = _SshKeyPickerCore();
+      String? picked;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => ElevatedButton(
+                onPressed: () async {
+                  picked = await pickSshPrivateKey(context, core);
+                },
+                child: const Text('Pick key'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Pick key'));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('ssh-key-item-id_ed25519')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('ssh-key-item-id_ed25519')));
+      await tester.pumpAndSettle();
+      expect(picked, 'TERMUX_ED25519_KEY');
+      expect(core.usedSystemPicker, isFalse);
+    },
+  );
+}
+
+class _SshKeyPickerCore extends FakeCore {
+  bool usedSystemPicker = false;
+
+  @override
+  Future<List<Map<String, String>>> listSshKeys() async => [
+    {'name': 'id_ed25519', 'path': '.ssh/id_ed25519'},
+  ];
+
+  @override
+  Future<String?> readSshKey(Map<String, String> keyRef) async =>
+      keyRef['path'] == '.ssh/id_ed25519' ? 'TERMUX_ED25519_KEY' : null;
+
+  @override
+  Future<String?> pickSshKeyText() async {
+    usedSystemPicker = true;
+    return 'INTERNAL_KEY';
+  }
+}
+
+class _PermFileCore extends FakeCore {
+  _PermFileCore(this.hasStorage, this.grantStorage);
+
+  final bool Function() hasStorage;
+  final VoidCallback grantStorage;
+  bool listedInternalBeforeGrant = false;
+  final List<String> requestedPermissions = [];
+
+  @override
+  Future<dynamic> localFiles(
+    String operation,
+    Map<String, dynamic> arguments,
+  ) async {
+    final granted = hasStorage();
+    if (operation == 'roots') {
+      return [
+        {'id': 'internal', 'name': 'Internal storage', 'available': granted},
+        {
+          'id': 'termux_home',
+          'name': 'Termux Home',
+          'available': true,
+          'native_path':
+              '/data/user/0/dev.devicebridge.devicebridge/files/terminal/files/home',
+        },
+        {'id': 'recycle_bin', 'name': 'Recycle Bin', 'available': true},
+      ];
+    }
+    if (operation == 'list') {
+      final kind = '${arguments['kind'] ?? ''}';
+      if (kind == 'internal') {
+        if (!granted) {
+          listedInternalBeforeGrant = true;
+          throw PlatformException(
+            code: 'local_files_failed',
+            message: 'Grant phone storage access first',
+          );
+        }
+        return {
+          'entries': [
+            {'name': 'DCIM', 'path': 'DCIM', 'kind': 'directory', 'size': 0},
+          ],
+          'next': '',
+        };
+      }
+      if (kind == 'termux_home') {
+        return {
+          'entries': [
+            {
+              'name': 'termux-notes.txt',
+              'path': 'termux-notes.txt',
+              'kind': 'file',
+              'size': 42,
+            },
+          ],
+          'next': '',
+        };
+      }
+    }
+    return {'entries': []};
+  }
+
+  @override
+  Future<Map<String, dynamic>> requestAppPermission(String id) async {
+    requestedPermissions.add(id);
+    if (id == 'storage') {
+      grantStorage();
+    }
+    return permissionsStatus(autoGrant: false);
+  }
+}
+
+class _PermWizardCore extends FakeCore {
+  final Map<String, dynamic> wizardSettings = {
+    'permissions_wizard_done': false,
+  };
+  final List<String> requested = [];
+  bool storageGranted = false;
+  bool wifiGranted = false;
+  bool notifGranted = false;
+  bool shizukuGranted = false;
+
+  Map<String, dynamic> _snapshot() {
+    final mode = shizukuGranted ? 'shizuku' : 'standard';
+    final items = [
+      {
+        'id': 'storage',
+        'title': 'Phone storage (All files access)',
+        'description': 'Browse internal phone folders.',
+        'granted': storageGranted,
+        'required': true,
+        'kind': 'special',
+      },
+      {
+        'id': 'wifi_nearby',
+        'title': 'Wi-Fi & Nearby devices',
+        'description': 'Required in Standard mode.',
+        'granted': wifiGranted,
+        'required': mode == 'standard',
+        'kind': 'runtime',
+      },
+      {
+        'id': 'notifications',
+        'title': 'Notifications',
+        'description': 'Transfer controls.',
+        'granted': notifGranted,
+        'required': true,
+        'kind': 'runtime',
+      },
+    ];
+    final allGranted = items.every((e) => e['granted'] == true);
+    return {
+      'execution_mode': mode,
+      'root_enabled': false,
+      'shizuku_running': true,
+      'shizuku_granted': shizukuGranted,
+      'shizuku_enabled': shizukuGranted,
+      'wizard_completed': wizardSettings['permissions_wizard_done'] == true,
+      'all_essential_granted': allGranted,
+      'all_granted': allGranted,
+      'has_missing_runtime': !wifiGranted || !notifGranted,
+      'permissions': items,
+    };
+  }
+
+  @override
+  Future<Map<String, dynamic>> appSettings({
+    Map<String, dynamic>? update,
+  }) async {
+    if (update != null) {
+      wizardSettings.addAll(update);
+      if (update['shizuku_enabled'] == true) {
+        shizukuGranted = true;
+      }
+    }
+    return Map<String, dynamic>.from(wizardSettings);
+  }
+
+  @override
+  Future<Map<String, dynamic>> permissionsStatus({bool autoGrant = true}) async =>
+      _snapshot();
+
+  @override
+  Future<Map<String, dynamic>> autoGrantPermissions() async {
+    if (shizukuGranted) {
+      storageGranted = true;
+      wifiGranted = true;
+      notifGranted = true;
+    }
+    return _snapshot();
+  }
+
+  @override
+  Future<Map<String, dynamic>> requestAppPermission(String id) async {
+    requested.add(id);
+    if (id == 'runtime_batch') {
+      wifiGranted = true;
+      notifGranted = true;
+    } else if (id == 'storage') {
+      storageGranted = true;
+    }
+    return _snapshot();
+  }
 }

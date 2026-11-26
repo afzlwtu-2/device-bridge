@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../core/bridge.dart';
+import 'ssh_key_picker.dart';
 
 /// Connects via SSH (user-supplied credentials, held in memory only for setup),
 /// inspects host key fingerprint, starts/schedules precompiled bridge-agent in systemd,
@@ -452,7 +453,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
       error = null;
     });
     try {
-      final pem = await widget.core.pickSshKeyText();
+      final pem = await pickSshPrivateKey(context, widget.core);
       if (!mounted) return;
       if (pem != null && pem.trim().isNotEmpty) {
         setState(() {
@@ -559,12 +560,11 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
               spacing: 8,
               runSpacing: 8,
               children: [
-                if (!Platform.isAndroid)
-                  OutlinedButton.icon(
-                    onPressed: busy ? null : _importFromSshDir,
-                    icon: const Icon(Icons.vpn_key_outlined, size: 18),
-                    label: const Text('Import from .ssh'),
-                  ),
+                OutlinedButton.icon(
+                  onPressed: busy ? null : _importFromSshDir,
+                  icon: const Icon(Icons.vpn_key_outlined, size: 18),
+                  label: const Text('Import from .ssh'),
+                ),
                 OutlinedButton.icon(
                   onPressed: busy ? null : _browseKeyFile,
                   icon: const Icon(Icons.folder_open, size: 18),
