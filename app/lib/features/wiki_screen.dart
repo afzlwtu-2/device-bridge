@@ -576,7 +576,7 @@ class _WikiScreenState extends State<WikiScreen> {
                       ),
                       (
                         'Pairing & adding devices',
-                        'Keep DeviceBridge open on both devices. Devices automatically lists nearby unpaired DeviceBridge installations on local Wi-Fi under Nearby DeviceBridge devices. Use Add Device to pair via QR/code (Scan or enter invitation / Show my invitation), add an SSH-only host (no agent) over available transports, or deploy and auto-pair bridge-agent via SSH (root systemd service) over available transports. Verify the fingerprint before approving.',
+                        'Keep DeviceBridge open on both devices. Devices automatically lists nearby unpaired DeviceBridge installations on local Wi-Fi under Nearby DeviceBridge devices and Tailscale devices with SSH under Tailscale SSH devices. Use Add Device to pair via QR/code (Scan or enter invitation / Show my invitation), add an SSH-only host (no agent) over available transports, or deploy and auto-pair bridge-agent via SSH (root systemd service) over available transports. Verify the fingerprint before approving.',
                       ),
                       (
                         'Pairing permissions and efficiency',

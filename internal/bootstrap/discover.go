@@ -21,9 +21,11 @@ type DiscoverNetworkInput struct {
 }
 
 type DiscoverRequest struct {
-	Networks []DiscoverNetworkInput `json:"networks,omitempty"`
-	Ports    []int                  `json:"ports,omitempty"`
-	Tailnet  TailnetOptions         `json:"-"`
+	Networks             []DiscoverNetworkInput `json:"networks,omitempty"`
+	Ports                []int                  `json:"ports,omitempty"`
+	TailnetOnly          bool                   `json:"tailnet_only,omitempty"`
+	IncludePairedTailnet bool                   `json:"include_paired_tailnet,omitempty"`
+	Tailnet              TailnetOptions         `json:"-"`
 }
 
 type DiscoveredTarget struct {
@@ -137,8 +139,9 @@ func DiscoverSSH(ctx context.Context, s *storage.Store, req DiscoverRequest) ([]
 
 	var wg sync.WaitGroup
 
-	// Scan ordinary local networks for SSH setup targets.
-	type scanJob struct {
+	// Scan ordinary local networks for SSH setup targets unless tailnet-only is requested.
+	if !req.TailnetOnly {
+		type scanJob struct {
 		source      string
 		sourceLabel string
 		iface       string
@@ -289,8 +292,9 @@ func DiscoverSSH(ctx context.Context, s *storage.Store, req DiscoverRequest) ([]
 			}(self, n.Interface, src, srcLabel)
 		}
 	}
+	}
 
-	// 2. New devices on tsnet / tailscaled with SSH enabled (ports 8022, 22, 2222)
+	// 2. Tailscale / tsnet peers with SSH enabled (ports 8022, 22, 2222)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -309,7 +313,7 @@ func DiscoverSSH(ctx context.Context, s *storage.Store, req DiscoverRequest) ([]
 				continue
 			}
 			ip := preferredTailnetIP(peer.IPs)
-			if ip == "" || pairedTailnetIPs[ip] {
+			if ip == "" || (!req.IncludePairedTailnet && pairedTailnetIPs[ip]) {
 				continue
 			}
 			displayName := strings.TrimSpace(peer.Name)
@@ -382,10 +386,11 @@ func DiscoverSSH(ctx context.Context, s *storage.Store, req DiscoverRequest) ([]
 						Host:         j.name,
 						ConnectHost:  j.ip,
 						Port:         j.port,
-						Banner:       banner,
-						PingMs:       rttMs,
-						SSHEnabled:   true,
-						TailscaleSSH: strings.Contains(strings.ToLower(banner), "tailscale"),
+						Banner:        banner,
+						PingMs:        rttMs,
+						SSHEnabled:    true,
+						TailscaleSSH:  strings.Contains(strings.ToLower(banner), "tailscale"),
+						AlreadyPaired: pairedTailnetIPs[j.ip],
 					})
 				}
 			}()

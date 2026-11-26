@@ -1021,6 +1021,10 @@ void main() {
       expect(find.text('Add SSH device'), findsNothing);
       expect(find.byKey(const ValueKey('devices-add-device-button')), findsOneWidget);
       expect(find.text('Add Device'), findsOneWidget);
+      expect(find.text('Tailscale SSH devices'), findsOneWidget);
+      expect(find.byKey(const ValueKey('tailscale-ssh-device-probook')), findsOneWidget);
+      expect(find.text('probook'), findsOneWidget);
+      expect(find.text('arch-box'), findsNothing);
 
       await tester.tap(find.byKey(const ValueKey('devices-add-device-button')));
       await tester.pumpAndSettle();
@@ -1095,6 +1099,21 @@ void main() {
         find.textContaining('Paired: tailnet (probook:8731)'),
         findsOneWidget,
       );
+
+      // Tapping a Tailscale SSH device opens Add SSH device with Tailscale preselected.
+      await tester.pumpWidget(DeviceBridgeApp(core: core));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Devices').last);
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('tailscale-ssh-device-probook')),
+        200,
+      );
+      await tester.tap(find.byKey(const ValueKey('tailscale-ssh-device-probook')));
+      await tester.pumpAndSettle();
+      expect(find.text('Add SSH device'), findsOneWidget);
+      expect(find.text('probook'), findsOneWidget);
+      expect(find.text('Tailscale — sign-in required'), findsOneWidget);
     },
   );
 

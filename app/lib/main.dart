@@ -240,6 +240,8 @@ class _BridgeHomeState extends State<BridgeHome> {
   bool _openingThemeEditor = false;
   String? error;
   List<dynamic> peers = [], candidates = [];
+  List<Map<String, dynamic>> tailnetSshTargets = [];
+  bool _refreshingTailnetSsh = false;
   Map<String, dynamic>? identity, capabilities;
   StreamSubscription<Map<String, dynamic>>? networkEvents;
   StreamSubscription<void>? _sharedDraftEvents;
@@ -364,6 +366,7 @@ class _BridgeHomeState extends State<BridgeHome> {
       if (tab == 1) {
         unawaited(_refreshLanCandidates());
       }
+      unawaited(_refreshTailnetSshTargets());
       if (Platform.isAndroid && widget.core is LocalCore) {
         unawaited(_refreshPermissions(autoGrant: true, promptWizard: true));
       }
@@ -517,6 +520,28 @@ class _BridgeHomeState extends State<BridgeHome> {
         setState(() => candidates = found);
       }
     } catch (_) {}
+  }
+
+  Future<void> _refreshTailnetSshTargets() async {
+    if (_refreshingTailnetSsh) return;
+    _refreshingTailnetSsh = true;
+    try {
+      final raw = await widget.core.run([
+        'discover-ssh',
+        '-',
+      ], input: jsonEncode({'tailnet_only': true, 'include_paired_tailnet': true}));
+      final list = (raw as List? ?? const [])
+          .whereType<Map>()
+          .map((m) => Map<String, dynamic>.from(m))
+          .where((t) => t['source'] == 'tailnet' && t['ssh_enabled'] == true)
+          .toList();
+      if (mounted) {
+        setState(() => tailnetSshTargets = list);
+      }
+    } catch (_) {
+    } finally {
+      _refreshingTailnetSsh = false;
+    }
   }
 
   Future<void> _createInvitation() async {
@@ -993,7 +1018,10 @@ class _BridgeHomeState extends State<BridgeHome> {
                   names[v.clamp(0, names.length - 1)],
                 );
                 setState(() => tab = v);
-                if (v == 1) unawaited(_refreshLanCandidates());
+                if (v == 1) {
+                  unawaited(_refreshLanCandidates());
+                  unawaited(_refreshTailnetSshTargets());
+                }
               },
               destinations: [
                 NavigationDestination(
@@ -1192,7 +1220,10 @@ class _BridgeHomeState extends State<BridgeHome> {
     onOpenNetworks: _openConnections,
     onGoToTab: (index) {
       setState(() => tab = index);
-      if (index == 1) unawaited(_refreshLanCandidates());
+      if (index == 1) {
+        unawaited(_refreshLanCandidates());
+        unawaited(_refreshTailnetSshTargets());
+      }
     },
     permissionsStatus: _permissionsStatus,
     onOpenPermissions: () => unawaited(_openPermissionWizard()),
@@ -1202,6 +1233,8 @@ class _BridgeHomeState extends State<BridgeHome> {
     Map<String, dynamic>? host,
     String? initialHost,
     int initialPort = 22,
+    String? initialTransport,
+    bool initialRemoteApproved = false,
   ]) async {
     await Navigator.push<void>(
       context,
@@ -1211,11 +1244,55 @@ class _BridgeHomeState extends State<BridgeHome> {
           host: host,
           initialHost: initialHost,
           initialPort: initialPort,
+          initialTransport: initialTransport,
+          initialRemoteApproved: initialRemoteApproved,
         ),
       ),
     );
     await refreshPeers();
+    unawaited(_refreshTailnetSshTargets());
     if (mounted) setState(() {});
+  }
+
+  Widget _tailnetSshCard(Map<String, dynamic> target) {
+    final name = '${target['name'] ?? ''}'.trim();
+    final host = '${target['host'] ?? ''}'.trim();
+    final connectHost = '${target['connect_host'] ?? ''}'.trim();
+    final port = (target['port'] as num?)?.toInt() ?? 22;
+    final pingMs = (target['ping_ms'] as num?)?.toDouble();
+    final banner = '${target['banner'] ?? ''}'.trim();
+    final alreadyPaired = target['already_paired'] == true;
+    final isTailscaleSsh =
+        target['tailscale_ssh'] == true || banner.contains('Tailscale');
+    final displayTitle = name.isNotEmpty
+        ? name
+        : (host.isNotEmpty ? host : connectHost);
+    final openTarget = host.isNotEmpty ? host : connectHost;
+    final details = <String>[
+      if (connectHost.isNotEmpty && connectHost != displayTitle) connectHost,
+      isTailscaleSsh ? 'Tailscale SSH :$port' : 'SSH :$port',
+      if (pingMs != null && pingMs > 0) '${pingMs.toStringAsFixed(1)} ms',
+      if (banner.isNotEmpty) banner,
+      if (alreadyPaired) 'Already paired',
+    ];
+    return Card(
+      key: ValueKey('tailscale-ssh-device-$openTarget'),
+      child: ListTile(
+        leading: const Icon(Icons.hub_outlined),
+        title: Text(displayTitle),
+        subtitle: Text(details.join(' · ')),
+        trailing: Chip(label: Text(alreadyPaired ? 'Paired · SSH' : 'Add SSH')),
+        onTap: busy
+            ? null
+            : () => _openSshHost(
+                null,
+                openTarget.isNotEmpty ? openTarget : null,
+                port > 0 ? port : 22,
+                'tailnet',
+                true,
+              ),
+      ),
+    );
   }
 
   Future<void> _openSshBootstrap() async {
@@ -1400,6 +1477,16 @@ class _BridgeHomeState extends State<BridgeHome> {
                       peerName: entry.value['device_name'] as String?,
                     ),
             ),
+        ],
+        if (tailnetSshTargets.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          Text(
+            'Tailscale SSH devices',
+            key: const ValueKey('devices-tailscale-ssh-section'),
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          ...tailnetSshTargets.map(_tailnetSshCard),
         ],
         if (revokedPeers.isNotEmpty) ...[
           const SizedBox(height: 24),

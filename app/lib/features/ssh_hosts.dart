@@ -18,9 +18,13 @@ class SshHostScreen extends StatefulWidget {
     this.host,
     this.initialHost,
     this.initialPort = 22,
+    this.initialTransport,
+    this.initialRemoteApproved = false,
   });
   final String? initialHost;
   final int initialPort;
+  final String? initialTransport;
+  final bool initialRemoteApproved;
   final CoreBridge core;
   final Map<String, dynamic>? host;
   @override
@@ -63,6 +67,10 @@ class _SshHostScreenState extends State<SshHostScreen> {
     super.initState();
     _host.text = widget.initialHost ?? '';
     _port.text = '${widget.initialPort}';
+    if (widget.initialTransport != null && widget.initialTransport!.isNotEmpty) {
+      _transport = widget.initialTransport!;
+    }
+    _remoteApproved = widget.initialRemoteApproved;
     _loadProviders();
     final h = _saved;
     if (h != null) {
