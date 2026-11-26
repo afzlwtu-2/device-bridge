@@ -142,156 +142,156 @@ func DiscoverSSH(ctx context.Context, s *storage.Store, req DiscoverRequest) ([]
 	// Scan ordinary local networks for SSH setup targets unless tailnet-only is requested.
 	if !req.TailnetOnly {
 		type scanJob struct {
-		source      string
-		sourceLabel string
-		iface       string
-		localIP     netip.Addr
-		ip          netip.Addr
-		port        int
-	}
-	var jobs []scanJob
-	seenJob := map[string]bool{}
-	for _, n := range req.Networks {
-		src, srcLabel := sourceInfoForKind(n.Kind, n.Interface)
-		if src != "lan" {
-			continue
+			source      string
+			sourceLabel string
+			iface       string
+			localIP     netip.Addr
+			ip          netip.Addr
+			port        int
 		}
-		hosts, self, err := subnetScanHosts(n.CIDR)
-		if err != nil || (!self.IsPrivate() && !self.IsLoopback()) {
-			continue
-		}
-		for _, ip := range hosts {
-			for _, port := range ports {
-				key := n.Interface + ":" + ip.String() + ":" + strconv.Itoa(port)
-				if seenJob[key] {
-					continue
+		var jobs []scanJob
+		seenJob := map[string]bool{}
+		for _, n := range req.Networks {
+			src, srcLabel := sourceInfoForKind(n.Kind, n.Interface)
+			if src != "lan" {
+				continue
+			}
+			hosts, self, err := subnetScanHosts(n.CIDR)
+			if err != nil || (!self.IsPrivate() && !self.IsLoopback()) {
+				continue
+			}
+			for _, ip := range hosts {
+				for _, port := range ports {
+					key := n.Interface + ":" + ip.String() + ":" + strconv.Itoa(port)
+					if seenJob[key] {
+						continue
+					}
+					seenJob[key] = true
+					jobs = append(jobs, scanJob{
+						source:      src,
+						sourceLabel: srcLabel,
+						iface:       n.Interface,
+						localIP:     self,
+						ip:          ip,
+						port:        port,
+					})
 				}
-				seenJob[key] = true
-				jobs = append(jobs, scanJob{
-					source:      src,
-					sourceLabel: srcLabel,
-					iface:       n.Interface,
-					localIP:     self,
-					ip:          ip,
-					port:        port,
-				})
 			}
 		}
-	}
 
-	if len(jobs) > 0 {
-		jobCh := make(chan scanJob, len(jobs))
-		for _, j := range jobs {
-			jobCh <- j
+		if len(jobs) > 0 {
+			jobCh := make(chan scanJob, len(jobs))
+			for _, j := range jobs {
+				jobCh <- j
+			}
+			close(jobCh)
+			workers := 96
+			if len(jobs) < workers {
+				workers = len(jobs)
+			}
+			for i := 0; i < workers; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for j := range jobCh {
+						if ctx.Err() != nil {
+							return
+						}
+						addr := net.JoinHostPort(j.ip.String(), strconv.Itoa(j.port))
+						d := net.Dialer{
+							Timeout:   400 * time.Millisecond,
+							LocalAddr: &net.TCPAddr{IP: net.ParseIP(j.localIP.String())},
+						}
+						start := time.Now()
+						conn, err := d.DialContext(ctx, "tcp4", addr)
+						if err != nil {
+							continue
+						}
+						rttMs := float64(time.Since(start).Microseconds()) / 1000.0
+						banner, isSSH := probeSSHBanner(conn, 450*time.Millisecond)
+						_ = conn.Close()
+						if !isSSH {
+							continue
+						}
+						name := ""
+						lctx, lcancel := context.WithTimeout(ctx, 150*time.Millisecond)
+						if names, le := net.DefaultResolver.LookupAddr(lctx, j.ip.String()); le == nil && len(names) > 0 {
+							name = strings.TrimSuffix(names[0], ".")
+						}
+						lcancel()
+						addResult(DiscoveredTarget{
+							Source:        j.source,
+							SourceLabel:   j.sourceLabel,
+							Name:          name,
+							Host:          j.ip.String(),
+							ConnectHost:   j.ip.String(),
+							Port:          j.port,
+							Interface:     j.iface,
+							Banner:        banner,
+							PingMs:        rttMs,
+							SSHEnabled:    true,
+							AlreadyPaired: pairedHosts[j.ip.String()],
+						})
+					}
+				}()
+			}
 		}
-		close(jobCh)
-		workers := 96
-		if len(jobs) < workers {
-			workers = len(jobs)
-		}
-		for i := 0; i < workers; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for j := range jobCh {
-					if ctx.Err() != nil {
-						return
-					}
-					addr := net.JoinHostPort(j.ip.String(), strconv.Itoa(j.port))
-					d := net.Dialer{
-						Timeout:   400 * time.Millisecond,
-						LocalAddr: &net.TCPAddr{IP: net.ParseIP(j.localIP.String())},
-					}
-					start := time.Now()
-					conn, err := d.DialContext(ctx, "tcp4", addr)
-					if err != nil {
-						continue
-					}
-					rttMs := float64(time.Since(start).Microseconds()) / 1000.0
-					banner, isSSH := probeSSHBanner(conn, 450*time.Millisecond)
-					_ = conn.Close()
-					if !isSSH {
-						continue
-					}
-					name := ""
-					lctx, lcancel := context.WithTimeout(ctx, 150*time.Millisecond)
-					if names, le := net.DefaultResolver.LookupAddr(lctx, j.ip.String()); le == nil && len(names) > 0 {
-						name = strings.TrimSuffix(names[0], ".")
-					}
-					lcancel()
-					addResult(DiscoveredTarget{
-						Source:        j.source,
-						SourceLabel:   j.sourceLabel,
-						Name:          name,
-						Host:          j.ip.String(),
-						ConnectHost:   j.ip.String(),
-						Port:          j.port,
-						Interface:     j.iface,
-						Banner:        banner,
-						PingMs:        rttMs,
-						SSHEnabled:    true,
-						AlreadyPaired: pairedHosts[j.ip.String()],
-					})
-				}
-			}()
-		}
-	}
 
-	// 1b. Hotspot clients that may not run SSH (DeviceBridge agent on 8731)
-	for _, n := range req.Networks {
-		src, srcLabel := sourceInfoForKind(n.Kind, n.Interface)
-		if src != "hotspot" && src != "wifi_direct" {
-			continue
-		}
-		hosts, self, err := subnetScanHosts(n.CIDR)
-		if err != nil {
-			continue
-		}
-		hCh := make(chan netip.Addr, len(hosts))
-		for _, ip := range hosts {
-			hCh <- ip
-		}
-		close(hCh)
-		workers := 48
-		if len(hosts) < workers {
-			workers = len(hosts)
-		}
-		for i := 0; i < workers; i++ {
-			wg.Add(1)
-			go func(local netip.Addr, iface, sType, sLabel string) {
-				defer wg.Done()
-				for ip := range hCh {
-					if ctx.Err() != nil {
-						return
+		// 1b. Hotspot clients that may not run SSH (DeviceBridge agent on 8731)
+		for _, n := range req.Networks {
+			src, srcLabel := sourceInfoForKind(n.Kind, n.Interface)
+			if src != "hotspot" && src != "wifi_direct" {
+				continue
+			}
+			hosts, self, err := subnetScanHosts(n.CIDR)
+			if err != nil {
+				continue
+			}
+			hCh := make(chan netip.Addr, len(hosts))
+			for _, ip := range hosts {
+				hCh <- ip
+			}
+			close(hCh)
+			workers := 48
+			if len(hosts) < workers {
+				workers = len(hosts)
+			}
+			for i := 0; i < workers; i++ {
+				wg.Add(1)
+				go func(local netip.Addr, iface, sType, sLabel string) {
+					defer wg.Done()
+					for ip := range hCh {
+						if ctx.Err() != nil {
+							return
+						}
+						ep := net.JoinHostPort(ip.String(), "8731")
+						d := net.Dialer{
+							Timeout:   350 * time.Millisecond,
+							LocalAddr: &net.TCPAddr{IP: net.ParseIP(local.String())},
+						}
+						start := time.Now()
+						c, err := d.DialContext(ctx, "tcp4", ep)
+						if err != nil {
+							continue
+						}
+						rttMs := float64(time.Since(start).Microseconds()) / 1000.0
+						_ = c.Close()
+						addResult(DiscoveredTarget{
+							Source:        sType,
+							SourceLabel:   sLabel,
+							Host:          ip.String(),
+							ConnectHost:   ip.String(),
+							Port:          0,
+							Interface:     iface,
+							PingMs:        rttMs,
+							SSHEnabled:    false,
+							AlreadyPaired: pairedHosts[ip.String()],
+							Endpoint:      ep,
+						})
 					}
-					ep := net.JoinHostPort(ip.String(), "8731")
-					d := net.Dialer{
-						Timeout:   350 * time.Millisecond,
-						LocalAddr: &net.TCPAddr{IP: net.ParseIP(local.String())},
-					}
-					start := time.Now()
-					c, err := d.DialContext(ctx, "tcp4", ep)
-					if err != nil {
-						continue
-					}
-					rttMs := float64(time.Since(start).Microseconds()) / 1000.0
-					_ = c.Close()
-					addResult(DiscoveredTarget{
-						Source:        sType,
-						SourceLabel:   sLabel,
-						Host:          ip.String(),
-						ConnectHost:   ip.String(),
-						Port:          0,
-						Interface:     iface,
-						PingMs:        rttMs,
-						SSHEnabled:    false,
-						AlreadyPaired: pairedHosts[ip.String()],
-						Endpoint:      ep,
-					})
-				}
-			}(self, n.Interface, src, srcLabel)
+				}(self, n.Interface, src, srcLabel)
+			}
 		}
-	}
 	}
 
 	// 2. Tailscale / tsnet peers with SSH enabled (ports 8022, 22, 2222)
@@ -380,12 +380,12 @@ func DiscoverSSH(ctx context.Context, s *storage.Store, req DiscoverRequest) ([]
 						srcLabel = "Tailscale"
 					}
 					addResult(DiscoveredTarget{
-						Source:       "tailnet",
-						SourceLabel:  srcLabel,
-						Name:         j.name,
-						Host:         j.name,
-						ConnectHost:  j.ip,
-						Port:         j.port,
+						Source:        "tailnet",
+						SourceLabel:   srcLabel,
+						Name:          j.name,
+						Host:          j.name,
+						ConnectHost:   j.ip,
+						Port:          j.port,
 						Banner:        banner,
 						PingMs:        rttMs,
 						SSHEnabled:    true,
