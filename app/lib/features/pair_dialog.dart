@@ -48,7 +48,7 @@ class SharePairInvitationDialog extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'On the other device, open Pair device and scan this QR or paste the code. The invitation expires in five minutes.',
+              'On the other device, open Add Device → Scan or enter invitation and scan this QR or paste the code. The invitation expires in five minutes.',
             ),
             const SizedBox(height: 12),
             Center(

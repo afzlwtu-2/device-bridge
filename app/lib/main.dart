@@ -25,6 +25,7 @@ import 'features/acl_screen.dart';
 import 'features/phone_files.dart';
 import 'features/permission_wizard.dart';
 import 'features/quick_share.dart';
+import 'features/ssh_bootstrap.dart';
 import 'features/ssh_hosts.dart';
 import 'features/local_terminal.dart';
 
@@ -239,9 +240,6 @@ class _BridgeHomeState extends State<BridgeHome> {
   bool _openingThemeEditor = false;
   String? error;
   List<dynamic> peers = [], candidates = [];
-  List<Map<String, dynamic>> discoveredTargets = [];
-  bool discoverAttempted = false;
-  String discoverTab = 'lan';
   Map<String, dynamic>? identity, capabilities;
   StreamSubscription<Map<String, dynamic>>? networkEvents;
   StreamSubscription<void>? _sharedDraftEvents;
@@ -362,6 +360,9 @@ class _BridgeHomeState extends State<BridgeHome> {
       );
       if (mounted) {
         setState(() {});
+      }
+      if (tab == 1) {
+        unawaited(_refreshLanCandidates());
       }
       if (Platform.isAndroid && widget.core is LocalCore) {
         unawaited(_refreshPermissions(autoGrant: true, promptWizard: true));
@@ -516,45 +517,6 @@ class _BridgeHomeState extends State<BridgeHome> {
         setState(() => candidates = found);
       }
     } catch (_) {}
-  }
-
-  Future<void> discover() async {
-    await task(() async {
-      setState(() => discoverAttempted = true);
-      await _refreshLanCandidates();
-      final nets = <Map<String, dynamic>>[];
-      try {
-        nets.addAll(await widget.core.networks());
-      } catch (_) {}
-      final activeNet = widget.core.network;
-      if (activeNet != null) {
-        nets.removeWhere(
-          (n) =>
-              n['interface'] == activeNet['interface'] &&
-              n['cidr'] == activeNet['cidr'],
-        );
-        nets.add(activeNet);
-      }
-      final raw = await widget.core.run([
-        'discover-ssh',
-        '-',
-      ], input: jsonEncode({'networks': nets}));
-      final list = (raw as List? ?? const [])
-          .whereType<Map>()
-          .map((m) => Map<String, dynamic>.from(m))
-          .where((t) => const {'lan', 'tailnet'}.contains(t['source'] ?? 'lan'))
-          .toList();
-      discoveredTargets = list;
-      discoverTab = 'lan';
-      for (final tabKey in ['lan', 'tailnet']) {
-        final hasAny = list.any((t) => _discoverGroup(t) == tabKey);
-        if (hasAny) {
-          discoverTab = tabKey;
-          break;
-        }
-      }
-      await refreshPeers();
-    });
   }
 
   Future<void> _createInvitation() async {
@@ -1031,6 +993,7 @@ class _BridgeHomeState extends State<BridgeHome> {
                   names[v.clamp(0, names.length - 1)],
                 );
                 setState(() => tab = v);
+                if (v == 1) unawaited(_refreshLanCandidates());
               },
               destinations: [
                 NavigationDestination(
@@ -1227,118 +1190,13 @@ class _BridgeHomeState extends State<BridgeHome> {
       ),
     ),
     onOpenNetworks: _openConnections,
-    onGoToTab: (index) => setState(() => tab = index),
+    onGoToTab: (index) {
+      setState(() => tab = index);
+      if (index == 1) unawaited(_refreshLanCandidates());
+    },
     permissionsStatus: _permissionsStatus,
     onOpenPermissions: () => unawaited(_openPermissionWizard()),
   );
-
-  String _discoverGroup(Map<String, dynamic> target) =>
-      target['source'] == 'tailnet' ? 'tailnet' : 'lan';
-
-  IconData _discoveredIcon(Map<String, dynamic> target) =>
-      switch ('${target['source'] ?? 'lan'}') {
-        'tailnet' => Icons.hub_outlined,
-        _ => Icons.wifi,
-      };
-
-  Widget _discoveredCard(Map<String, dynamic> target) {
-    final source = '${target['source'] ?? 'lan'}';
-    final sourceLabel = '${target['source_label'] ?? source}';
-    final name = '${target['name'] ?? ''}'.trim();
-    final host = '${target['host'] ?? ''}'.trim();
-    final connectHost = '${target['connect_host'] ?? ''}'.trim();
-    final port = (target['port'] as num?)?.toInt() ?? 0;
-    final pingMs = (target['ping_ms'] as num?)?.toDouble();
-    final banner = '${target['banner'] ?? ''}'.trim();
-    final iface = '${target['interface'] ?? ''}'.trim();
-    final alreadyPaired = target['already_paired'] == true;
-    final isTailscaleSsh =
-        source == 'tailnet' &&
-        (target['tailscale_ssh'] == true || banner.contains('Tailscale'));
-    final titleText = name.isNotEmpty && name != host
-        ? '$name ($host)'
-        : (host.isNotEmpty ? host : sourceLabel);
-    final portText = port > 0
-        ? (isTailscaleSsh ? 'Tailscale SSH :$port' : 'SSH :$port')
-        : 'SSH';
-    final details = <String>[
-      sourceLabel,
-      if (connectHost.isNotEmpty && connectHost != host) connectHost,
-      if (iface.isNotEmpty) iface,
-      portText,
-      if (pingMs != null && pingMs > 0) '${pingMs.toStringAsFixed(1)} ms',
-      if (banner.isNotEmpty) banner,
-      if (alreadyPaired) 'Already paired',
-    ];
-    return Card(
-      child: ListTile(
-        leading: Icon(_discoveredIcon(target)),
-        title: Text(titleText),
-        subtitle: Text(details.join(' · ')),
-        trailing: const Chip(label: Text('Add SSH')),
-        onTap: busy
-            ? null
-            : () async {
-                await _openSshHost(
-                  null,
-                  host.isNotEmpty ? host : null,
-                  port > 0 ? port : 22,
-                );
-              },
-      ),
-    );
-  }
-
-  Widget _discoveredSection() {
-    final lanTargets = discoveredTargets
-        .where((t) => _discoverGroup(t) == 'lan')
-        .toList();
-    final tailnetTargets = discoveredTargets
-        .where((t) => _discoverGroup(t) == 'tailnet')
-        .toList();
-
-    final tabs = [
-      ('lan', 'Wi-Fi / LAN (${lanTargets.length})'),
-      if (tailnetTargets.isNotEmpty)
-        ('tailnet', 'Tailscale (${tailnetTargets.length})'),
-    ];
-    final activeList = switch (discoverTab) {
-      'tailnet' => tailnetTargets,
-      _ => lanTargets,
-    };
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SizedBox(height: 20),
-        Text(
-          'Discovered SSH hosts',
-          style: Theme.of(context).textTheme.titleMedium,
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final t in tabs)
-              ChoiceChip(
-                label: Text(t.$2),
-                selected: discoverTab == t.$1,
-                onSelected: (_) => setState(() => discoverTab = t.$1),
-              ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        if (activeList.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 8),
-            child: Text('No SSH-enabled devices found under this connection.'),
-          )
-        else
-          ...activeList.map(_discoveredCard),
-      ],
-    );
-  }
 
   Future<void> _openSshHost([
     Map<String, dynamic>? host,
@@ -1360,31 +1218,84 @@ class _BridgeHomeState extends State<BridgeHome> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _pairDevice() async {
+  Future<void> _openSshBootstrap() async {
+    final added = await showDialog<bool>(
+      context: context,
+      builder: (_) => SshBootstrapDialog(core: widget.core),
+    );
+    if (added == true) {
+      await refreshPeers();
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _addDevice() async {
     final choice = await showModalBottomSheet<String>(
       context: context,
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.qr_code_scanner),
-              title: const Text('Scan or enter invitation'),
-              onTap: () => Navigator.pop(context, 'join'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.qr_code),
-              title: const Text('Show my invitation'),
-              subtitle: const Text('Let another device pair with this device'),
-              onTap: () => Navigator.pop(context, 'invite'),
-            ),
-          ],
+        key: const ValueKey('add-device-sheet'),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+                child: Text(
+                  'Pair DeviceBridge device',
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ),
+              ListTile(
+                key: const ValueKey('add-device-scan-invite'),
+                leading: const Icon(Icons.qr_code_scanner),
+                title: const Text('Scan or enter invitation'),
+                subtitle: const Text(
+                  'Pair using another device’s QR code or invitation JSON',
+                ),
+                onTap: () => Navigator.pop(context, 'join'),
+              ),
+              ListTile(
+                key: const ValueKey('add-device-show-invite'),
+                leading: const Icon(Icons.qr_code),
+                title: const Text('Show my invitation'),
+                subtitle: const Text('Let another device pair with this device'),
+                onTap: () => Navigator.pop(context, 'invite'),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                key: const ValueKey('add-device-ssh-only'),
+                leading: const Icon(Icons.terminal),
+                title: const Text('Add SSH Device only (no agent)'),
+                subtitle: const Text('Over available transports'),
+                onTap: () => Navigator.pop(context, 'ssh_only'),
+              ),
+              ListTile(
+                key: const ValueKey('add-device-ssh-agent'),
+                leading: const Icon(Icons.dns_outlined),
+                title: const Text('Add agent via SSH'),
+                subtitle: const Text(
+                  'Install bridge-agent with root access via systemd over available transports',
+                ),
+                onTap: () => Navigator.pop(context, 'ssh_agent'),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
     if (!mounted) return;
-    if (choice == 'join') await _pairWithInvitation();
-    if (choice == 'invite') await _createInvitation();
+    switch (choice) {
+      case 'join':
+        await _pairWithInvitation();
+      case 'invite':
+        await _createInvitation();
+      case 'ssh_only':
+        await _openSshHost();
+      case 'ssh_agent':
+        await _openSshBootstrap();
+    }
   }
 
   Widget devices() {
@@ -1413,19 +1324,10 @@ class _BridgeHomeState extends State<BridgeHome> {
           runSpacing: 12,
           children: [
             FilledButton.icon(
-              onPressed: busy ? null : discover,
-              icon: const Icon(Icons.radar),
-              label: const Text('Discover'),
-            ),
-            OutlinedButton.icon(
-              onPressed: busy ? null : _pairDevice,
-              icon: const Icon(Icons.link),
-              label: const Text('Pair device'),
-            ),
-            OutlinedButton.icon(
-              onPressed: busy ? null : () => _openSshHost(),
-              icon: const Icon(Icons.terminal),
-              label: const Text('Add SSH device'),
+              key: const ValueKey('devices-add-device-button'),
+              onPressed: busy ? null : _addDevice,
+              icon: const Icon(Icons.add),
+              label: const Text('Add Device'),
             ),
             OutlinedButton.icon(
               key: const ValueKey('devices-acl-button'),
@@ -1473,21 +1375,15 @@ class _BridgeHomeState extends State<BridgeHome> {
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 24),
             child: Text(
-              'No active devices yet. Discover nearby devices or pair with an invitation from a device you already use.',
+              'No active devices yet. Tap Add Device to pair with an invitation, add an SSH host, or deploy an agent over SSH.',
             ),
           ),
-        if (nearby.isNotEmpty || discoverAttempted) ...[
+        if (nearby.isNotEmpty) ...[
           const SizedBox(height: 24),
           Text(
             'Nearby DeviceBridge devices',
             style: Theme.of(context).textTheme.titleMedium,
           ),
-          if (nearby.isEmpty)
-            Text(
-              widget.core.network == null
-                  ? 'Connect to local Wi-Fi or select a network in Networks.'
-                  : 'No unpaired devices found. Keep DeviceBridge open on the other device.',
-            ),
           for (final entry in nearby.entries)
             ListTile(
               key: ValueKey('nearby-device-${entry.key}'),
@@ -1505,8 +1401,6 @@ class _BridgeHomeState extends State<BridgeHome> {
                     ),
             ),
         ],
-        if (discoveredTargets.isNotEmpty || (discoverAttempted && !busy))
-          _discoveredSection(),
         if (revokedPeers.isNotEmpty) ...[
           const SizedBox(height: 24),
           const Divider(),

@@ -968,17 +968,41 @@ func run() error {
 	case "acl-group":
 		return aclGroupCommand(s, a)
 	case "ssh-probe":
-		if len(a) < 2 || len(a) > 3 {
+		var pos []string
+		probeTransport := ""
+		remoteApproved := false
+		for i := 1; i < len(a); i++ {
+			switch a[i] {
+			case "--transport":
+				if i+1 >= len(a) {
+					return errors.New("missing value for --transport")
+				}
+				i++
+				probeTransport = a[i]
+			case "--remote-approved":
+				remoteApproved = true
+			default:
+				pos = append(pos, a[i])
+			}
+		}
+		if len(pos) < 1 || len(pos) > 2 {
 			return errors.New("ssh-probe HOST [PORT]")
 		}
 		port := 22
-		if len(a) == 3 {
-			_, _ = fmt.Sscan(a[2], &port)
+		if len(pos) == 2 {
+			_, _ = fmt.Sscan(pos[1], &port)
 		}
-		probe, pe := bootstrap.InspectHostWithOptions(context.Background(), a[1], port, bootstrap.TailnetOptions{
-			StateDir:      *state,
-			ControlSocket: *controlSocket,
-			Mode:          *tailnetMode,
+		if probeTransport != "" && probeTransport != "auto" {
+			if pe := validateSSHTransportPolicy(context.Background(), s, probeTransport, remoteApproved); pe != nil {
+				return pe
+			}
+		}
+		probe, pe := bootstrap.InspectHostWithOptions(context.Background(), pos[0], port, bootstrap.TailnetOptions{
+			SSHTransport:   probeTransport,
+			RemoteApproved: remoteApproved,
+			StateDir:       *state,
+			ControlSocket:  *controlSocket,
+			Mode:           *tailnetMode,
 		})
 		if pe != nil {
 			return pe
@@ -996,12 +1020,22 @@ func run() error {
 		if re = json.Unmarshal(rawReq, &req); re != nil {
 			return re
 		}
+		if req.Transport != "" && req.Transport != "auto" {
+			if pe := validateSSHTransportPolicy(context.Background(), s, req.Transport, req.RemoteApproved); pe != nil {
+				return pe
+			}
+		}
+		if req.PreferredRoute == "" && req.Transport == "tailnet" {
+			req.PreferredRoute = "tailnet"
+		}
 		req.LocalIface = *iface
 		req.LocalCIDR = *cidr
 		req.Tailnet = bootstrap.TailnetOptions{
-			StateDir:      *state,
-			ControlSocket: *controlSocket,
-			Mode:          *tailnetMode,
+			SSHTransport:   req.Transport,
+			RemoteApproved: req.RemoteApproved,
+			StateDir:       *state,
+			ControlSocket:  *controlSocket,
+			Mode:           *tailnetMode,
 		}
 		res, be := bootstrap.Bootstrap(context.Background(), s, id, req)
 		if be != nil {

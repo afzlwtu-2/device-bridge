@@ -7,6 +7,7 @@ import 'guest_files.dart';
 import 'guest_terminal.dart';
 import 'ssh_bootstrap.dart';
 import 'ssh_key_picker.dart';
+import 'ssh_transport_picker.dart';
 import 'network_rules.dart';
 
 /// Saved SSH identity and account; secrets live only for this screen/session.
@@ -292,50 +293,20 @@ class _SshHostScreenState extends State<SshHostScreen> {
               'Use the device’s LAN address or hostname and verify its SSH host key. Adding it here requires no DeviceBridge agent.',
             ),
             const SizedBox(height: 16),
-            DropdownButtonFormField<String>(
-              initialValue: _transport,
-              decoration: const InputDecoration(labelText: 'Transport'),
-              items: [
-                if (_transport == 'auto')
-                  const DropdownMenuItem(
-                    value: 'auto',
-                    child: Text('Automatic'),
-                  ),
-                for (final choice in [
-                  if (_rules.allows('direct') || _transport == 'direct')
-                    ('direct', 'Direct TCP'),
-                  if (_rules.allows('tailnet') || _transport == 'tailnet')
-                    ('tailnet', 'Tailscale — sign-in required'),
-                  if (_rules.allows('wireguard') || _transport == 'wireguard')
-                    ('wireguard', 'WireGuard — configuration required'),
-                  if (_rules.allows('adb') &&
-                      (_runtime['usb'] as Map?)?['usb_adb_connected'] == true)
-                    ('adb', 'ADB — loopback port mapping'),
-                ])
-                  DropdownMenuItem(value: choice.$1, child: Text(choice.$2)),
-              ],
-              onChanged: _busy
-                  ? null
-                  : (value) => setState(() {
-                      _transport = value!;
-                      _pin.clear();
-                    }),
+            SshTransportSelector(
+              transport: _transport,
+              remoteApproved: _remoteApproved,
+              rules: _rules,
+              runtime: _runtime,
+              allowAuto: _transport == 'auto',
+              enabled: !_busy,
+              onTransportChanged: (value) => setState(() {
+                _transport = value;
+                _pin.clear();
+              }),
+              onRemoteApprovedChanged: (value) =>
+                  setState(() => _remoteApproved = value),
             ),
-            if (_transport == 'tailnet' || _transport == 'wireguard')
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text(
-                  'Allow this SSH connection to use the selected overlay',
-                ),
-                subtitle: const Text(
-                  'The route may use internet or cellular data. This does not approve bulk file transfers.',
-                ),
-                value: _remoteApproved,
-                onChanged: _busy
-                    ? null
-                    : (value) =>
-                          setState(() => _remoteApproved = value == true),
-              ),
             const SizedBox(height: 12),
             _field(_name, 'Device name'),
             _field(_host, 'SSH host'),

@@ -5,7 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../core/bridge.dart';
+import 'network_rules.dart';
 import 'ssh_key_picker.dart';
+import 'ssh_transport_picker.dart';
 
 /// Connects via SSH (user-supplied credentials, held in memory only for setup),
 /// inspects host key fingerprint, starts/schedules precompiled bridge-agent in systemd,
@@ -52,6 +54,10 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
   bool allowSyncControl = false;
   bool allowTermuxFiles = false;
   bool allowSyncRemote = false;
+  String _transport = 'auto';
+  bool _remoteApproved = false;
+  NetworkRules _rules = const NetworkRules();
+  Map<String, dynamic> _runtime = {};
   bool busy = false;
   String? hostFingerprint;
   String? hostKeyType;
@@ -77,10 +83,15 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
       installSystemd = false;
       openFirewall = false;
     }
+    if (widget.tailscaleSsh) {
+      _transport = 'tailnet';
+      _remoteApproved = true;
+    }
     hostCtrl = TextEditingController(text: widget.initialHost ?? '');
     portCtrl = TextEditingController(text: '${widget.initialPort ?? 22}');
     hostCtrl.addListener(_invalidateProbe);
     portCtrl.addListener(_invalidateProbe);
+    _loadProviders();
     if (uninstall) {
       _loadSavedHostSsh(hostCtrl.text.trim(), peerId: widget.uninstallPeerId);
     } else {
@@ -93,6 +104,19 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
         }
       });
     }
+  }
+
+  Future<void> _loadProviders() async {
+    try {
+      final rules = await NetworkRules.load(widget.core);
+      final runtime = await widget.core.runtimeStatus();
+      if (mounted) {
+        setState(() {
+          _rules = rules;
+          _runtime = runtime;
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _loadSavedHostSsh(String host, {String? peerId}) async {
@@ -195,7 +219,13 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
       viaTailnet = false;
     });
     try {
-      final res = await widget.core.run(['ssh-probe', host, port]) as Map;
+      final res = await widget.core.run([
+        'ssh-probe',
+        host,
+        port,
+        if (_transport != 'auto') ...['--transport', _transport],
+        if (_remoteApproved) '--remote-approved',
+      ]) as Map;
       if (mounted) {
         setState(() {
           hostFingerprint = res['host_key_sha256'] as String?;
@@ -357,6 +387,8 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
           'private_key_pem': keyCtrl.text.trim(),
         'expected_host_key': hostFingerprint,
         if (sudoCtrl.text.isNotEmpty) 'sudo_password': sudoCtrl.text,
+        if (_transport != 'auto') 'transport': _transport,
+        if (_remoteApproved) 'remote_approved': true,
         'open_firewall': openFirewall,
         'install_systemd': installSystemd,
         'install_system_service': installSystemd && installSystemService,
@@ -504,6 +536,24 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
               'Connects over SSH to install bridge-agent as a root systemd service (zero Polkit/sudo prompts for Wi-Fi Direct, Hotspot & 5 GHz regdom), open TCP 8731, and auto-pair with full storage access. Passwords remain memory-only.',
               style: TextStyle(fontSize: 12),
             ),
+            if (!uninstall && !widget.termuxCompanion) ...[
+              const SizedBox(height: 12),
+              SshTransportSelector(
+                transport: _transport,
+                remoteApproved: _remoteApproved,
+                rules: _rules,
+                runtime: _runtime,
+                allowAuto: true,
+                enabled: !busy,
+                approvalTitle: 'Allow SSH agent setup to use the selected overlay',
+                onTransportChanged: (value) {
+                  setState(() => _transport = value);
+                  _invalidateProbe();
+                },
+                onRemoteApprovedChanged: (value) =>
+                    setState(() => _remoteApproved = value),
+              ),
+            ],
             const SizedBox(height: 12),
             Row(
               children: [

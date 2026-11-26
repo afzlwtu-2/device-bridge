@@ -1007,38 +1007,41 @@ void main() {
   });
 
   testWidgets(
-    'Discover lists LAN and tsnet SSH targets without manual links, imports .ssh keys, and runs Tailscale setup without password or key',
+    'Add Device opens pairing, SSH-only, and SSH agent deployment over available transports with .ssh import and Tailscale setup',
     (tester) async {
       final core = FakeCore();
       await tester.pumpWidget(DeviceBridgeApp(core: core));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Devices').last);
       await tester.pumpAndSettle();
-      expect(find.text('Discover'), findsOneWidget);
+      expect(find.text('Discover'), findsNothing);
       expect(find.text('Discover on LAN'), findsNothing);
-      expect(find.text('Pair device'), findsOneWidget);
+      expect(find.text('Pair device'), findsNothing);
       expect(find.text('Create invitation'), findsNothing);
-      expect(find.text('Add SSH device'), findsOneWidget);
+      expect(find.text('Add SSH device'), findsNothing);
+      expect(find.byKey(const ValueKey('devices-add-device-button')), findsOneWidget);
+      expect(find.text('Add Device'), findsOneWidget);
 
-      await tester.tap(find.text('Discover'));
+      await tester.tap(find.byKey(const ValueKey('devices-add-device-button')));
       await tester.pumpAndSettle();
-      expect(find.text('Discovered SSH hosts'), findsOneWidget);
-      expect(find.text('Wi-Fi / LAN (1)'), findsOneWidget);
-      expect(find.text('Hotspot (1)'), findsNothing);
-      expect(find.text('Tailscale (1)'), findsOneWidget);
-      expect(find.textContaining('ADB ('), findsNothing);
-      expect(find.textContaining('arch-box (192.168.50.10)'), findsOneWidget);
-      expect(find.textContaining('192.168.43.88'), findsNothing);
+      expect(find.byKey(const ValueKey('add-device-sheet')), findsOneWidget);
+      expect(find.text('Scan or enter invitation'), findsOneWidget);
+      expect(find.text('Show my invitation'), findsOneWidget);
+      expect(find.text('Add SSH Device only (no agent)'), findsOneWidget);
+      expect(find.text('Add agent via SSH'), findsOneWidget);
 
-      await tester.tap(find.text('Tailscale (1)'));
+      await tester.tap(find.text('Add agent via SSH'));
       await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(find.text('probook'), 200);
-      expect(find.text('probook'), findsOneWidget);
+      expect(find.text('Setup & auto-pair via SSH'), findsOneWidget);
+      expect(find.byKey(const ValueKey('ssh-transport-dropdown')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('ssh-transport-dropdown')));
+      await tester.pumpAndSettle();
+      expect(find.text('Direct TCP').last, findsOneWidget);
+      expect(find.text('Tailscale — sign-in required').last, findsOneWidget);
+      expect(find.text('WireGuard — configuration required').last, findsOneWidget);
+      await tester.tap(find.text('Cancel').last);
+      await tester.pumpAndSettle();
 
-      await tester.tap(find.text('probook'));
-      await tester.pumpAndSettle();
-      expect(find.text('Add SSH device'), findsOneWidget);
-      expect(find.text('Install DeviceBridge agent'), findsNothing);
       await tester.pumpWidget(
         MaterialApp(
           home: SshBootstrapDialog(
@@ -1173,11 +1176,12 @@ void main() {
 
     await tester.tap(find.text('Devices').last);
     await tester.pumpAndSettle();
-    expect(find.text('Discover'), findsOneWidget);
+    expect(find.text('Discover'), findsNothing);
     expect(find.text('Setup via SSH'), findsNothing);
-    expect(find.text('Pair device'), findsOneWidget);
+    expect(find.text('Pair device'), findsNothing);
     expect(find.text('Create invitation'), findsNothing);
-    expect(find.text('Add SSH device'), findsOneWidget);
+    expect(find.text('Add SSH device'), findsNothing);
+    expect(find.text('Add Device'), findsOneWidget);
     await tester.ensureVisible(find.text('Laptop'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Laptop'));
@@ -1255,7 +1259,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Devices').last);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Pair device'));
+      await tester.tap(find.text('Add Device'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Scan or enter invitation'));
       await tester.pumpAndSettle();
@@ -1287,15 +1291,14 @@ void main() {
   );
 
   testWidgets(
-    'Discover lists nearby DeviceBridge peers and invites show QR and JSON copy',
+    'Devices lists nearby DeviceBridge peers automatically and invites show QR and JSON copy',
     (tester) async {
       final core = _NearbyPairingCore();
       await tester.pumpWidget(DeviceBridgeApp(core: core));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Devices').last);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Discover'));
-      await tester.pumpAndSettle();
+      expect(find.text('Discover'), findsNothing);
       expect(find.text('Nearby DeviceBridge devices'), findsOneWidget);
       expect(find.text('Nearby phone'), findsOneWidget);
       expect(find.text('192.168.50.5:42231 · Unpaired'), findsOneWidget);
@@ -1307,7 +1310,7 @@ void main() {
       );
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Pair device'));
+      await tester.tap(find.text('Add Device'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Show my invitation'));
       await tester.pumpAndSettle();
@@ -5338,7 +5341,9 @@ void registerNetworkRefactorTests() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Devices').last);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Add SSH device'));
+      await tester.tap(find.text('Add Device'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Add SSH Device only (no agent)'));
       await tester.pumpAndSettle();
       expect(find.text('Install DeviceBridge agent'), findsNothing);
       await tester.enterText(

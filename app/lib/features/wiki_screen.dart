@@ -575,8 +575,8 @@ class _WikiScreenState extends State<WikiScreen> {
                         'Home shows bytes and recent connected destinations from in-memory counters for the current proxy listener. Root shell diagnostics can identify active local TCP clients by Android UID when the kernel exposes their sockets. Shared UIDs may represent more than one package. Standard and Shizuku use the same proxy and byte counters.',
                       ),
                       (
-                        'Pairing a new installation',
-                        'Keep DeviceBridge open on both devices. In Devices, Discover lists nearby unpaired DeviceBridge installations on local Wi-Fi. On one device, create an invitation. On the other, open Pair device and scan its QR on Android or paste the invitation code. Verify the fingerprint and approve the request on the inviting device. The requesting device completes pairing automatically while the app is open. New invitations include the current LAN address so they work when the router filters multicast.',
+                        'Pairing & adding devices',
+                        'Keep DeviceBridge open on both devices. Devices automatically lists nearby unpaired DeviceBridge installations on local Wi-Fi under Nearby DeviceBridge devices. Use Add Device to pair via QR/code (Scan or enter invitation / Show my invitation), add an SSH-only host (no agent) over available transports, or deploy and auto-pair bridge-agent via SSH (root systemd service) over available transports. Verify the fingerprint before approving.',
                       ),
                       (
                         'Pairing permissions and efficiency',

@@ -63,6 +63,8 @@ type Request struct {
 	BridgePort           int            `json:"bridge_port,omitempty"`
 	LocalArtifacts       string         `json:"local_artifacts,omitempty"`
 	PreferredRoute       string         `json:"preferred_route,omitempty"` // "lan" | "tailnet"
+	Transport            string         `json:"transport,omitempty"`       // "auto" | "direct" | "tailnet" | "wireguard" | "adb"
+	RemoteApproved       bool           `json:"remote_approved,omitempty"`
 	LocalIface           string         `json:"local_iface,omitempty"`
 	LocalCIDR            string         `json:"local_cidr,omitempty"`
 	Tailnet              TailnetOptions `json:"-"`
@@ -1159,16 +1161,51 @@ fi`, req.BridgePort, req.BridgePort)
 				})
 			}
 		}
-		preferTailnet := req.PreferredRoute == "tailnet" || (req.PreferredRoute == "" && viaTailnet)
-		if preferTailnet {
-			addTailnet()
+		addWireGuard := func() {
+			wgIP := res.WireGuardIP
+			if wgIP == "" && req.Transport == "wireguard" {
+				if resolvedHost != "" {
+					wgIP = resolvedHost
+				} else {
+					wgIP = req.Host
+				}
+			}
+			if wgIP == "" {
+				return
+			}
+			wp := &wireguard.Provider{
+				StateDir:       req.Tailnet.StateDir,
+				Control:        tailnetipc.Client{Socket: filepath.Join(req.Tailnet.StateDir, "wireguard", "control.sock")},
+				RemoteApproved: req.RemoteApproved || viaTailnet,
+			}
+			targets = append(targets, pairTarget{
+				route:    "wireguard",
+				endpoint: net.JoinHostPort(wgIP, strconv.Itoa(req.BridgePort)),
+				provider: wp,
+				direct:   false,
+			})
+		}
+		switch req.Transport {
+		case "direct", "adb":
 			addLAN()
-		} else {
-			addLAN()
+		case "tailnet":
 			addTailnet()
+		case "wireguard":
+			addWireGuard()
+		default:
+			preferTailnet := req.PreferredRoute == "tailnet" || (req.PreferredRoute == "" && viaTailnet)
+			if preferTailnet {
+				addTailnet()
+				addWireGuard()
+				addLAN()
+			} else {
+				addLAN()
+				addWireGuard()
+				addTailnet()
+			}
 		}
 		if len(targets) == 0 {
-			return res, errors.New("cannot determine reachable DeviceBridge endpoint (LAN or Tailscale) for auto-pairing")
+			return res, errors.New("cannot determine reachable DeviceBridge endpoint (LAN, Tailscale, or WireGuard) for auto-pairing")
 		}
 		var inv protocol.Invitation
 		if !existing {

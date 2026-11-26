@@ -542,3 +542,18 @@ func TestSSHAuthMethodsNormalizesCRLFAndPassphrase(t *testing.T) {
 		t.Fatalf("unexpected SystemdSystemUnit:\n%s", sysUnit)
 	}
 }
+
+func TestDialTargetTCPHonorsSelectedTransports(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	if _, _, _, err := dialTargetTCP(ctx, TailnetOptions{SSHTransport: "wireguard", RemoteApproved: false}, "10.99.0.2", 22); err == nil || !strings.Contains(err.Error(), "WireGuard SSH requires route approval") {
+		t.Fatalf("expected WireGuard approval error, got %v", err)
+	}
+	if _, _, _, err := dialTargetTCP(ctx, TailnetOptions{SSHTransport: "adb"}, "192.168.1.50", 22); err == nil || !strings.Contains(err.Error(), "loopback mapping") {
+		t.Fatalf("expected ADB loopback enforcement error, got %v", err)
+	}
+	if _, _, _, err := dialTargetTCP(ctx, TailnetOptions{SSHTransport: "tailnet", RemoteApproved: true}, "192.168.1.50", 22); err == nil || !strings.Contains(err.Error(), "tailnet address") {
+		t.Fatalf("expected tailnet IP check error, got %v", err)
+	}
+}

@@ -97,6 +97,24 @@ func classifySSHInterfaceKind(iface string, addr netip.Addr) string {
 	}
 }
 
+func validateSSHTransportPolicy(ctx context.Context, s *storage.Store, transportName string, remoteApproved bool) error {
+	policy, err := s.NetworkPolicy(ctx, nil)
+	if err != nil {
+		return err
+	}
+	policyID := transportName
+	if policyID == "direct" || policyID == "" || policyID == "auto" {
+		policyID = "direct"
+	}
+	if allowed, known := policy["network_"+policyID]; known && !allowed {
+		return errors.New("SSH transport disabled in Network settings")
+	}
+	if (transportName == "wireguard" || transportName == "tailnet") && !remoteApproved {
+		return errors.New("remote SSH transport approval required")
+	}
+	return nil
+}
+
 func sshHostsCommand(s *storage.Store, opts bootstrap.TailnetOptions, a []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -150,19 +168,8 @@ func sshHostsCommand(s *storage.Store, opts bootstrap.TailnetOptions, a []string
 	}
 	opts.SSHTransport = req.Transport
 	opts.RemoteApproved = req.RemoteApproved
-	policy, err := s.NetworkPolicy(ctx, nil)
-	if err != nil {
+	if err := validateSSHTransportPolicy(ctx, s, req.Transport, req.RemoteApproved); err != nil {
 		return err
-	}
-	policyID := req.Transport
-	if policyID == "direct" || policyID == "" || policyID == "auto" {
-		policyID = "direct"
-	}
-	if allowed, known := policy["network_"+policyID]; known && !allowed {
-		return errors.New("SSH transport disabled in Network settings")
-	}
-	if (req.Transport == "wireguard" || req.Transport == "tailnet") && !req.RemoteApproved {
-		return errors.New("remote SSH transport approval required")
 	}
 	if a[1] == "probe" {
 		probe, err := bootstrap.InspectHostWithOptions(ctx, req.Host, req.Port, opts)
