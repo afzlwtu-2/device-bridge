@@ -52,15 +52,27 @@ func Open(cols, rows int) (master *os.File, slave *os.File, err error) {
 	return ptmx, pts, nil
 }
 
-// SetSize updates the window dimensions on an open PTY master fd.
+// SetSize updates the window dimensions on an open PTY master fd safely across concurrent closes.
 func SetSize(master *os.File, cols, rows int) error {
+	if master == nil {
+		return os.ErrClosed
+	}
+	raw, err := master.SyscallConn()
+	if err != nil {
+		return err
+	}
 	c, r := ClampSize(cols, rows)
 	ws := winsize{
 		Row: uint16(r),
 		Col: uint16(c),
 	}
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, master.Fd(), syscall.TIOCSWINSZ, uintptr(unsafe.Pointer(&ws))); errno != 0 {
-		return errno
+	var ioctlErr error
+	if cerr := raw.Control(func(fd uintptr) {
+		if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCSWINSZ, uintptr(unsafe.Pointer(&ws))); errno != 0 {
+			ioctlErr = errno
+		}
+	}); cerr != nil {
+		return cerr
 	}
-	return nil
+	return ioctlErr
 }

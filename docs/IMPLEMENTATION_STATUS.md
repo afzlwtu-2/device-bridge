@@ -1,5 +1,9 @@
 # Implementation status
 
+**2026-11-26 — Race-safe PTY resize & round-trip test drain (`v1.0.4`).**
+- **Fix (`internal/pty/pty.go`, `internal/bootstrap/local_terminal_test.go`):** Switched `pty.SetSize` from `master.Fd()` to `master.SyscallConn().Control(...)` so concurrent `TIOCSWINSZ` resizes never race with `os.(*File).Close()`, and drained trailing PTY frames in `TestRunLocalTerminalRoundTrip` so unbuffered `io.Pipe` output cannot block `readDone` on fast arm64 exits (resolving the `checks / Go (arm64)` failure from `v1.0.3` run `45854359530`).
+- **Verification:** `go test -race -count=10 ./internal/bootstrap/... ./internal/pty/...` passed (`39.093s`) and `bash scripts/check.sh` passed.
+
 **2026-11-26 — Two-tab Devices screen (Direct / SSH), on-demand Tailscale SSH picker, and SSH-to-Agent upgrade.**
 - **Devices UI (`app/lib/main.dart`, `ssh_hosts.dart`, `ssh_bootstrap.dart`, `wiki_screen.dart`):** Separated **Devices** into two tabs (`Direct` and `SSH`) via `devices-section-tabs`. `Direct` shows paired `DeviceBridge devices`, `Nearby DeviceBridge devices`, and `Revoked devices`; `SSH` shows saved standalone `SSH devices` plus an explicit `Add from Tailscale SSH` action (`tailscale-ssh-picker-dialog`, also in `Add Device`) so Tailscale SSH peers are never dumped automatically into the list.
 - **SSH upgrade to Agent / Direct (`ssh_hosts.dart`, `ssh_bootstrap.dart`, `main.dart`):** Added an `Upgrade` button on saved SSH device cards (`ssh-device-upgrade-<id>`) and `Upgrade to Agent / Direct device` (`ssh-host-upgrade-agent`) in `SshHostScreen`, pre-filling `SshBootstrapDialog` with the host's saved `host`, `port`, `user`, `expected_host_key`, `transport`, `remote_approved`, and session credentials, and calling `ssh-hosts associate` automatically upon pairing before returning to the `Direct` tab.

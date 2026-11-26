@@ -67,6 +67,17 @@ func TestRunLocalTerminalRoundTrip(t *testing.T) {
 		}
 	}
 	_ = inWriter.Close()
+	// Drain remaining terminal frames so outWriter (unbuffered io.Pipe) cannot block readDone on exit.
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		for scanner.Scan() {
+		}
+	}()
+	defer func() {
+		_ = outReader.Close()
+		<-drainDone
+	}()
 	if !strings.Contains(output.String(), "LOCAL_PTY_OK_42") {
 		t.Fatalf("expected LOCAL_PTY_OK_42 in output, got %q", output.String())
 	}
