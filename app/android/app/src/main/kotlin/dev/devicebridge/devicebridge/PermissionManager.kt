@@ -17,7 +17,6 @@ import java.util.concurrent.TimeUnit
 internal class PermissionManager(
     private val activity: Activity,
     private val deviceSettings: DeviceSettings,
-    private val isTermuxInstalled: () -> Boolean,
 ) {
     companion object {
         const val REQUEST_PERMISSIONS = 410
@@ -54,9 +53,6 @@ internal class PermissionManager(
     private fun hasInstallPackagesPermission(): Boolean =
         activity.packageManager.canRequestPackageInstalls()
 
-    private fun hasTermuxRunPermission(): Boolean =
-        activity.checkSelfPermission(TermuxControl.PERMISSION) == PackageManager.PERMISSION_GRANTED
-
     fun status(autoGrantIfPrivileged: Boolean = false): Map<String, Any?> {
         deviceSettings.autoEnableShizukuIfAlreadyGranted()
         val rootOn = deviceSettings.verifyRootEnabled(forceRefresh = false)
@@ -75,13 +71,11 @@ internal class PermissionManager(
             autoGrantPrivilegedPermissions(mode)
         }
 
-        val termuxInstalled = isTermuxInstalled()
         val storageOk = hasStoragePermission()
         val wifiOk = hasWifiNearbyPermissions()
         val notifOk = hasNotificationPermission()
         val cameraOk = hasCameraPermission()
         val installOk = hasInstallPackagesPermission()
-        val termuxOk = !termuxInstalled || hasTermuxRunPermission()
 
         val items = mutableListOf(
             mapOf(
@@ -133,19 +127,6 @@ internal class PermissionManager(
                 "kind" to "special",
             ),
         )
-        if (termuxInstalled) {
-            items.add(
-                mapOf(
-                    "id" to "termux_run",
-                    "title" to "External Termux commands",
-                    "description" to "Allow running commands in the standalone Termux app when installed.",
-                    "granted" to termuxOk,
-                    "required" to false,
-                    "kind" to "runtime",
-                ),
-            )
-        }
-
         val allEssential = items.all { (it["required"] != true) || (it["granted"] == true) }
         val allGranted = items.all { it["granted"] == true }
         val missingRuntime = missingRuntimePermissions()
@@ -190,11 +171,6 @@ internal class PermissionManager(
         }
         if (activity.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             missing.add(Manifest.permission.CAMERA)
-        }
-        if (isTermuxInstalled() &&
-            activity.checkSelfPermission(TermuxControl.PERMISSION) != PackageManager.PERMISSION_GRANTED
-        ) {
-            missing.add(TermuxControl.PERMISSION)
         }
         return missing.distinct()
     }
@@ -286,13 +262,6 @@ internal class PermissionManager(
             "install_packages" -> {
                 if (!hasInstallPackagesPermission()) openInstallPackagesSettings()
                 reply.success(status())
-            }
-            "termux_run" -> {
-                if (!isTermuxInstalled()) {
-                    reply.success(status())
-                    return
-                }
-                requestRuntimeList(listOf(TermuxControl.PERMISSION), reply, ::openAppDetailsSettings)
             }
             "runtime_batch" -> {
                 val missing = missingRuntimePermissions()

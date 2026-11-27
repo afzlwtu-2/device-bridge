@@ -303,7 +303,11 @@ func (s *Server) device(w http.ResponseWriter, r *http.Request) {
 		available = append(available, "quick-share-file-v1", transfer.SharedFolderFeature)
 	}
 	if s.agentSSHEnabled(r.Context()) {
-		available = append(available, AgentSSHFeature)
+		if s.agentSSHShellReady() {
+			available = append(available, AgentSSHFeature)
+		} else {
+			available = append(available, agentSSHSetupFeature)
+		}
 	}
 	send(w, 200, protocol.Device{Version: 1, ID: s.Identity.ID, Name: s.Identity.Name,
 		Features: available, Capabilities: caps})

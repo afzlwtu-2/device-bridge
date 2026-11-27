@@ -4023,6 +4023,8 @@ This setup has a two-minute restore deadline. No SSH key or password is needed f
     final supportedSsh = (peerCaps?['features'] as List? ?? const []).contains(
       'agent-ssh-v1',
     );
+    final needsTerminalSetup = (peerCaps?['features'] as List? ?? const [])
+        .contains('agent-ssh-terminal-setup-v1');
     final hasSsh =
         supportedSsh && route != null ||
         _sshHosts.any((host) => host['agent_peer_id'] == widget.peer['id']);
@@ -4251,6 +4253,8 @@ This setup has a two-minute restore deadline. No SSH key or password is needed f
                   icon: const Icon(Icons.folder_open),
                   label: const Text('Files'),
                 ),
+                if (needsTerminalSetup && !hasSsh)
+                  Text('On $_deviceName, open Networks → SSH to set up Terminal.'),
               ],
             ),
           ),
@@ -4567,7 +4571,14 @@ This setup has a two-minute restore deadline. No SSH key or password is needed f
     }
 
     if (_sshMethod.startsWith('ssh:')) {
-      final host = _sshHosts.firstWhere((h) => 'ssh:${h['id']}' == _sshMethod);
+      final host = _sshHosts.where((h) =>
+          'ssh:${h['id']}' == _sshMethod &&
+          h['agent_peer_id'] == widget.peer['id']).firstOrNull;
+      if (host == null) {
+        setState(() => _sshMethod = 'auto');
+        await _openSelectedSsh(endpoint, transport);
+        return;
+      }
       await Navigator.push<void>(
         context,
         MaterialPageRoute(

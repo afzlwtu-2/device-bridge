@@ -166,6 +166,16 @@ func (c *command) reconnectPull(ctx context.Context, options pullRoutes, peer, r
 	if !same && !saved.FallbackApproved {
 		return nil, "", errors.New("alternate route not approved")
 	}
+	if !same && saved.FallbackTransports != nil && !slices.Contains(saved.FallbackTransports, route) {
+		return nil, "", errors.New("alternate route excluded by this device's fallback settings")
+	}
+	policy, err := c.state.NetworkPolicy(ctx, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	if !networkAllowsTransport(policy, route) {
+		return nil, "", errors.New("transport disabled in Network settings")
+	}
 
 	next := &command{state: c.state, identity: c.identity, ctx: ctx, selectedTransport: route}
 	switch route {

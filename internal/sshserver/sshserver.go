@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"devicebridge/internal/platform"
 	"devicebridge/internal/pty"
 	"encoding/binary"
 	"encoding/pem"
@@ -187,6 +188,12 @@ func ServeSessionChannel(
 	termEnv := "xterm-256color"
 	extraEnv := []string{}
 	started := false
+	var homeGuard *os.File
+	defer func() {
+		if homeGuard != nil {
+			_ = homeGuard.Close()
+		}
+	}()
 
 	startSession := func(origCmd string) bool {
 		if started {
@@ -194,8 +201,16 @@ func ServeSessionChannel(
 		}
 		started = true
 		if shellPath == "" {
-			_, _ = io.WriteString(ch.Stderr(), "Termux is not initialized on this device. Open Termux in DeviceBridge first.\r\n")
+			_, _ = io.WriteString(ch.Stderr(), "On this device, open Networks → SSH and choose Set up Terminal.\r\n")
 			return false
+		}
+		if runtime.GOOS == "android" {
+			var err error
+			homeGuard, err = platform.LockTermuxHome(homeDir, false)
+			if err != nil {
+				_, _ = io.WriteString(ch.Stderr(), "Terminal Home is busy. Try again after restore.\r\n")
+				return false
+			}
 		}
 		cmd := buildCommand(ctx, shellPath, origCmd)
 		cmd.Dir = homeDir

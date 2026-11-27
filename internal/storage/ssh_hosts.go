@@ -71,7 +71,8 @@ func (s *Store) SaveSSHHost(ctx context.Context, h SSHHost) (SSHHost, error) {
 	if h.Version != 1 || h.Host == "" || len(h.Host) > 253 || h.User == "" || len(h.User) > 128 || h.Port < 1 || h.Port > 65535 || !strings.HasPrefix(h.Fingerprint, "SHA256:") || len(h.Name) > 256 {
 		return h, errors.New("invalid SSH host")
 	}
-	if h.ID == "" {
+	newAccount := h.ID == ""
+	if newAccount {
 		var b [16]byte
 		if _, err := rand.Read(b[:]); err != nil {
 			return h, err
@@ -80,12 +81,42 @@ func (s *Store) SaveSSHHost(ctx context.Context, h SSHHost) (SSHHost, error) {
 	} else if !validSSHHostID(h.ID) {
 		return h, ErrDenied
 	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return h, err
+	}
+	defer tx.Rollback()
+	key := "ssh-host-v1:" + h.ID
+	if !newAccount {
+		var raw string
+		if err := tx.QueryRowContext(ctx, "SELECT value FROM preferences WHERE key=?", key).Scan(&raw); err != nil {
+			return h, err
+		}
+		var existing SSHHost
+		if err := json.Unmarshal([]byte(raw), &existing); err != nil {
+			return h, err
+		}
+		h.AgentPeerID = ""
+		if h.Host == existing.Host && h.Port == existing.Port && h.User == existing.User &&
+			h.Fingerprint == existing.Fingerprint {
+			h.AgentPeerID = existing.AgentPeerID
+		} else if _, err := tx.ExecContext(ctx, "DELETE FROM preferences WHERE key GLOB 'ssh-method-v1:*' AND value=?", "ssh:"+h.ID); err != nil {
+			return h, err
+		}
+	} else if h.AgentPeerID != "" {
+		var status string
+		if err := tx.QueryRowContext(ctx, "SELECT status FROM peers WHERE id=?", h.AgentPeerID).Scan(&status); err != nil || status != "paired" {
+			return h, ErrDenied
+		}
+	}
 	raw, err := json.Marshal(h)
 	if err != nil {
 		return h, err
 	}
-	_, err = s.DB.ExecContext(ctx, "INSERT INTO preferences(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", "ssh-host-v1:"+h.ID, string(raw))
-	return h, err
+	if _, err := tx.ExecContext(ctx, "INSERT INTO preferences(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, string(raw)); err != nil {
+		return h, err
+	}
+	return h, tx.Commit()
 }
 func (s *Store) RemoveSSHHost(ctx context.Context, id string) error {
 	if !validSSHHostID(id) {
@@ -106,18 +137,52 @@ func (s *Store) RemoveSSHHost(ctx context.Context, id string) error {
 }
 
 func (s *Store) AssociateSSHHost(ctx context.Context, id, peer string) (SSHHost, error) {
-	h, err := s.SSHHost(ctx, id)
+	return s.associateSSHHost(ctx, id, peer, nil)
+}
+
+func (s *Store) AssociateUpgradedSSHHost(ctx context.Context, verified SSHHost, peer string) (SSHHost, error) {
+	return s.associateSSHHost(ctx, verified.ID, peer, &verified)
+}
+
+func (s *Store) associateSSHHost(ctx context.Context, id, peer string, verified *SSHHost) (SSHHost, error) {
+	var h SSHHost
+	if !validSSHHostID(id) {
+		return h, ErrDenied
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return h, err
 	}
+	defer tx.Rollback()
+	var raw string
+	key := "ssh-host-v1:" + id
+	if err := tx.QueryRowContext(ctx, "SELECT value FROM preferences WHERE key=?", key).Scan(&raw); err != nil {
+		return h, err
+	}
+	if err := json.Unmarshal([]byte(raw), &h); err != nil {
+		return h, err
+	}
+	if verified != nil && h != *verified {
+		return h, errors.New("the saved SSH account changed during setup")
+	}
 	if peer != "" {
-		p, err := s.Peer(peer)
-		if err != nil || p.Status != "paired" {
+		var status string
+		if err := tx.QueryRowContext(ctx, "SELECT status FROM peers WHERE id=?", peer).Scan(&status); err != nil || status != "paired" {
 			return h, ErrDenied
 		}
 	}
 	h.AgentPeerID = peer
-	return s.SaveSSHHost(ctx, h)
+	data, err := json.Marshal(h)
+	if err != nil {
+		return h, err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE preferences SET value=? WHERE key=?", string(data), key); err != nil {
+		return h, err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM preferences WHERE key GLOB 'ssh-method-v1:*' AND value=? AND key<>?", "ssh:"+id, "ssh-method-v1:"+peer); err != nil {
+		return h, err
+	}
+	return h, tx.Commit()
 }
 
 // PeerSSHMethod is an explicit account association; never infer it from an address.
@@ -147,6 +212,15 @@ func (s *Store) PeerSSHMethod(ctx context.Context, peer string, update *string) 
 	err = s.DB.QueryRowContext(ctx, "SELECT value FROM preferences WHERE key=?", key).Scan(&method)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "auto", nil
+	}
+	if err == nil && strings.HasPrefix(method, "ssh:") {
+		host, hostErr := s.SSHHost(ctx, strings.TrimPrefix(method, "ssh:"))
+		if errors.Is(hostErr, sql.ErrNoRows) || (hostErr == nil && host.AgentPeerID != peer) {
+			return "auto", nil
+		}
+		if hostErr != nil {
+			return "", hostErr
+		}
 	}
 	return method, err
 }

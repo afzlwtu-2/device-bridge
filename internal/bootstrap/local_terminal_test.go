@@ -7,12 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -139,13 +137,8 @@ func TestConfigureTermuxPrefixUpgradesSSHConfigAndTsnetWrapper(t *testing.T) {
 	if !strings.Contains(sshCfg, "DEVICEBRIDGE_TSNET_SSH_V4") || !strings.Contains(sshCfg, "agent-ssh-proxy") || !strings.Contains(sshCfg, "agent-ssh-match") || !strings.Contains(sshCfg, "*,!*.*,!*:*,!localhost") || !strings.Contains(sshCfg, "match-host %h") || !strings.Contains(sshCfg, "Host custombox") {
 		t.Fatalf("unexpected ssh config upgrade: %s", sshCfg)
 	}
-	sshdCfgRaw, err := os.ReadFile(filepath.Join(prefix, "etc", "ssh", "sshd_config"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sshdCfg := string(sshdCfgRaw)
-	if !strings.Contains(sshdCfg, "DEVICEBRIDGE_SSHD_V5") || !strings.Contains(sshdCfg, "Port 8022") || !strings.Contains(sshdCfg, "PasswordAuthentication no") || !strings.Contains(sshdCfg, "PubkeyAuthentication yes") || !strings.Contains(sshdCfg, "StrictModes no") || !strings.Contains(sshdCfg, "ForceCommand") || strings.Contains(sshdCfg, "ListenAddress 127.0.0.1") {
-		t.Fatalf("unexpected sshd config: %s", sshdCfg)
+	if _, err := os.Stat(filepath.Join(prefix, "etc", "ssh", "sshd_config")); !os.IsNotExist(err) {
+		t.Fatalf("shell setup should leave ordinary OpenSSH configuration alone: %v", err)
 	}
 	if isOpenSSHEnabled(stateDir) {
 		t.Fatal("expected OpenSSH disabled by default when tsnet-config.json is absent")
@@ -375,18 +368,20 @@ func TestPrepareLocalTerminalEnvironmentConfiguresLinuxSSH(t *testing.T) {
 	}
 }
 
-func TestFilterTermuxSSHDAddrsExcludesLoopbackAndTailscale(t *testing.T) {
-	got := filterTermuxSSHDAddrs([]sshdIfaceAddrs{
-		{name: "lo", up: true, loopback: true, addrs: []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("::1")}},
-		{name: "tailscale0", up: true, addrs: []netip.Addr{netip.MustParseAddr("100.88.1.2"), netip.MustParseAddr("192.168.99.9")}},
-		{name: "tun0", up: true, addrs: []netip.Addr{netip.MustParseAddr("100.100.10.2"), netip.MustParseAddr("fd7a:115c:a1e0::1234")}},
-		{name: "eth0", up: true, addrs: []netip.Addr{netip.MustParseAddr("192.168.233.11"), netip.MustParseAddr("fe80::1")}},
-		{name: "wlan0", up: true, addrs: []netip.Addr{netip.MustParseAddr("192.168.1.10")}},
-		{name: "down0", up: false, addrs: []netip.Addr{netip.MustParseAddr("10.0.0.2")}},
-	})
-	want := []string{"192.168.1.10", "192.168.233.11"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("filterTermuxSSHDAddrs = %v, want %v", got, want)
+func TestTermuxSSHDUsesSelectedLANAddress(t *testing.T) {
+	address, err := termuxSSHListenAddress("wlan0", "192.168.1.10/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := termuxSSHDConfig("/prefix", "/home", address)
+	if !strings.Contains(config, "ListenAddress 192.168.1.10\n") ||
+		strings.Count(config, "ListenAddress ") != 1 {
+		t.Fatal(config)
+	}
+	for _, name := range []string{"rmnet0", "tun0", "wg0", "tailscale0"} {
+		if _, err := termuxSSHListenAddress(name, "192.168.1.10/24"); err == nil {
+			t.Errorf("accepted non-LAN interface %s", name)
+		}
 	}
 }
 

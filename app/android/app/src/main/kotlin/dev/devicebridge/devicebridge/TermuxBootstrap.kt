@@ -9,7 +9,9 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Ensures the app-private Termux environment has a verified base bootstrap,
@@ -32,98 +34,99 @@ internal object TermuxBootstrap {
         }
     }
 
-    fun isReady(context: Context): Boolean {
-        val usr = File(context.filesDir, "terminal/files/usr/bin")
-        val bash = File(usr, "bash")
-        val fish = File(usr, "fish")
-        val starship = File(usr, "starship")
-        if (!(bash.canExecute() && fish.canExecute() && starship.canExecute())) return false
-        val fastfetchCfg = File(context.filesDir, "terminal/files/home/.config/fastfetch/config.jsonc")
-        if (fastfetchCfg.isFile) {
-            val head = runCatching {
-                fastfetchCfg.inputStream().bufferedReader().use {
-                    val buf = CharArray(40)
-                    val n = it.read(buf)
-                    if (n > 0) String(buf, 0, n) else ""
-                }
-            }.getOrDefault("")
-            if (head.startsWith("// DEVICEBRIDGE_FASTFETCH_V1")) return false
-        }
-        return true
-    }
+    private fun prefix(context: Context) = File(context.filesDir, "terminal/files/usr")
+
+    private fun hasBase(context: Context) = File(prefix(context), "bin/bash").canExecute() &&
+        File(prefix(context), "bin/apt-get").canExecute()
+
+    fun isReady(context: Context) = hasBase(context) &&
+        File(prefix(context), "bin/db-ssh-shell").canExecute() &&
+        File(prefix(context), ".devicebridge-configured-v4").isFile
+
+    fun hasOpenSsh(context: Context) = isReady(context) &&
+        File(prefix(context), "bin/sshd").canExecute() &&
+        File(prefix(context), "etc/ssh/ssh_host_ed25519_key").isFile
 
     fun ensureReady(
         context: Context,
         emitLine: (String) -> Unit,
         onProgress: (phase: String, message: String, bytes: Long?, total: Long?) -> Unit = { _, _, _, _ -> },
+        mode: String = "base",
+        active: () -> Boolean = { true },
     ) {
-        if (isReady(context)) return
+        if (mode == "base" && isReady(context)) return
         synchronized(setupLock) {
-            if (isReady(context)) return
-            val termRoot = File(context.filesDir, "terminal")
-            val usrBin = File(termRoot, "files/usr/bin")
-            val cacheDir = File(termRoot, "cache").apply { mkdirs() }
+            if (mode == "base" && isReady(context)) return
+            val deadline = android.os.SystemClock.elapsedRealtime() + TimeUnit.MINUTES.toMillis(10)
+            fun inTime() = active() && android.os.SystemClock.elapsedRealtime() < deadline
+            fun checkActive() = check(inTime()) { if (active()) "Terminal setup timed out." else "Terminal setup cancelled." }
+            checkActive()
+            val cacheDir = File(context.cacheDir, "termux-bootstrap").apply { mkdirs() }
             val arch = termuxArch()
-            val bash = File(usrBin, "bash")
-            val staged = File(cacheDir, "bootstrap-$arch.zip")
-            val preStaged = File("/data/local/tmp/db-bootstrap-$arch.zip")
-
-            onProgress("prepare", "Preparing Termux environment...", null, null)
-            var downloadedPath: String? = null
-            if (!bash.canExecute()) {
-                if (preStaged.isFile && preStaged.length() > 0) {
-                    downloadedPath = preStaged.absolutePath
-                } else if (!staged.isFile || staged.length() == 0L) {
-                    emitLine("First-time Terminal setup: downloading Termux bootstrap ($arch)...")
-                    downloadedPath = downloadVerifiedBootstrap(arch, staged, emitLine, onProgress).absolutePath
-                } else {
-                    downloadedPath = staged.absolutePath
-                }
+            onProgress("prepare", "Preparing Terminal environment...", null, null)
+            val archive = if (hasBase(context)) null else {
+                downloadVerifiedBootstrap(arch, cacheDir, emitLine, onProgress, ::checkActive)
             }
 
-            onProgress("configure", "Setting up shells and tools...", null, null)
-            val executable = GoBinaryManager.resolve(context, "cli")
-            val state = File(context.filesDir, "devicebridge").path
-            val pb = ProcessBuilder(executable.path, "--state", state, "termux-setup")
-            pb.environment()["DEVICEBRIDGE_APP_PACKAGE"] = context.packageName
-            pb.environment()["DEVICEBRIDGE_NATIVE_LIB_DIR"] = context.applicationInfo.nativeLibraryDir
-            if (downloadedPath != null) {
-                pb.environment()["DEVICEBRIDGE_BOOTSTRAP_ZIP"] = downloadedPath
-            }
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
             try {
-                proc.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line ->
-                        if (line.isNotBlank()) {
-                            emitLine(line)
-                            val trimmed = line.trim()
-                            val phase = when {
-                                trimmed.startsWith("Extracting ") -> "extract"
-                                trimmed.startsWith("Updating ") -> "apt_update"
-                                trimmed.startsWith("Installing ") -> "apt_install"
-                                trimmed.startsWith("Generating ") -> "ssh_keys"
-                                trimmed.startsWith("Termux environment ready") -> "ready"
-                                else -> "setup"
+                checkActive()
+                onProgress("configure", "Configuring Terminal...", null, null)
+                val executable = GoBinaryManager.resolve(context, "cli")
+                val state = File(context.filesDir, "devicebridge").path
+                val command = mutableListOf(executable.path, "--state", state, "termux-setup", "--mode", mode)
+                if (archive != null) {
+                    command.addAll(listOf("--archive", archive.file.path, "--release-sha256", archive.digest))
+                }
+                val pb = ProcessBuilder(command).redirectErrorStream(true)
+                pb.environment()["DEVICEBRIDGE_APP_PACKAGE"] = context.packageName
+                pb.environment()["DEVICEBRIDGE_NATIVE_LIB_DIR"] = context.applicationInfo.nativeLibraryDir
+                val proc = pb.start()
+                val watchdog = Executors.newSingleThreadScheduledExecutor()
+                val stopped = AtomicBoolean(false)
+                watchdog.scheduleAtFixedRate({
+                    if (!inTime() && proc.isAlive) {
+                        if (stopped.getAndSet(true)) proc.destroyForcibly() else proc.destroy()
+                    }
+                }, 250L, 250L, TimeUnit.MILLISECONDS)
+                try {
+                    proc.inputStream.bufferedReader().useLines { lines ->
+                        lines.filter { it.isNotBlank() }.forEach { line ->
+                            if (inTime()) {
+                                emitLine(line)
+                                val phase = when {
+                                    line.startsWith("Extracting ") -> "extract"
+                                    line.startsWith("Updating ") -> "apt_update"
+                                    line.startsWith("Installing ") -> "apt_install"
+                                    else -> "setup"
+                                }
+                                onProgress(phase, line.trim(), null, null)
                             }
-                            onProgress(phase, trimmed, null, null)
                         }
                     }
+                    check(proc.waitFor(5, TimeUnit.SECONDS)) { "Terminal setup did not exit." }
+                    checkActive()
+                    check(proc.exitValue() == 0) { "Terminal setup exited with code ${proc.exitValue()}." }
+                    check(isReady(context)) { "Terminal base setup is incomplete." }
+                    if (mode == "openssh") check(hasOpenSsh(context)) { "OpenSSH setup is incomplete." }
+                } finally {
+                    if (proc.isAlive) proc.destroyForcibly()
+                    watchdog.shutdownNow()
                 }
-                check(proc.waitFor(10, TimeUnit.MINUTES)) { "Termux setup timed out." }
-                check(proc.exitValue() == 0) { "Termux package setup exited with code ${proc.exitValue()}." }
             } finally {
-                if (proc.isAlive) proc.destroyForcibly()
+                archive?.file?.delete()
             }
         }
     }
 
+    private data class VerifiedBootstrap(val file: File, val digest: String)
+
     private fun downloadVerifiedBootstrap(
         arch: String,
-        destination: File,
+        cacheDir: File,
         emitLine: (String) -> Unit,
         onProgress: (phase: String, message: String, bytes: Long?, total: Long?) -> Unit,
-    ): File {
+        checkActive: () -> Unit,
+    ): VerifiedBootstrap {
         onProgress("resolve", "Resolving latest Termux release...", null, null)
         emitLine("Resolving latest Termux bootstrap release...")
         val tag = resolveLatestTag()
@@ -134,8 +137,7 @@ internal object TermuxBootstrap {
         val encodedTag = tag.replace("+", "%2B")
         val assetUrl = URI("https://github.com/termux/termux-packages/releases/download/$encodedTag/$assetName")
 
-        val part = File(destination.parentFile, "${destination.name}.part")
-        part.delete()
+        val part = File.createTempFile("bootstrap-$arch-", ".zip", cacheDir)
         try {
             val digest = MessageDigest.getInstance("SHA-256")
             var lastReportedMb = -1L
@@ -153,6 +155,7 @@ internal object TermuxBootstrap {
                         val buf = ByteArray(64 * 1024)
                         var copied = 0L
                         while (true) {
+                            checkActive()
                             val n = input.read(buf)
                             if (n < 0) break
                             copied += n
@@ -188,9 +191,7 @@ internal object TermuxBootstrap {
             check(actualSha.equals(expectedSha, ignoreCase = true)) {
                 "Termux bootstrap SHA-256 mismatch."
             }
-            destination.delete()
-            check(part.renameTo(destination)) { "Could not finalize downloaded bootstrap archive." }
-            return destination
+            return VerifiedBootstrap(part, expectedSha)
         } catch (e: Exception) {
             part.delete()
             throw e
@@ -207,9 +208,12 @@ internal object TermuxBootstrap {
             val code = conn.responseCode
             val loc = conn.getHeaderField("Location") ?: ""
             val uri = if (code in 300..399 && loc.isNotBlank()) latest.resolve(loc) else null
-            val match = TAG_PATTERN.find(uri?.toString().orEmpty())
+            check(uri?.scheme == "https" && uri.host == "github.com") { "Unexpected Termux release source." }
+            val match = TAG_PATTERN.matchEntire(uri.path)
                 ?: error("Could not resolve latest Termux bootstrap release.")
-            return match.groupValues[1]
+            val tag = match.groupValues[1]
+            check(tag.matches(Regex("[A-Za-z0-9._+-]+"))) { "Unexpected Termux release tag." }
+            return tag
         } finally {
             conn.disconnect()
         }

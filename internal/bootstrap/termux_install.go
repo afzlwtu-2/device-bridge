@@ -1,8 +1,11 @@
 package bootstrap
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +14,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -302,17 +308,69 @@ esac
 	return nil
 }
 
-func termuxBootstrapArch() string {
-	switch runtime.GOARCH {
-	case "amd64":
-		return "x86_64"
-	case "arm":
-		return "arm"
-	case "386":
-		return "i686"
-	default:
-		return "aarch64"
+func termuxBasePresent(prefix string) bool {
+	return isExecutableFile(filepath.Join(prefix, "bin", "bash")) &&
+		isExecutableFile(filepath.Join(prefix, "bin", "apt-get"))
+}
+
+func installTermuxBase(ctx context.Context, archivePath, expectedDigest, prefix string) error {
+	expected, err := hex.DecodeString(expectedDigest)
+	if err != nil || len(expected) != sha256.Size || archivePath == "" {
+		return errors.New("a verified Termux release archive is required")
 	}
+	archive, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+	info, err := archive.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > 128<<20 {
+		return errors.New("invalid Termux release archive")
+	}
+	digest := sha256.New()
+	if _, err := io.Copy(digest, io.LimitReader(archive, (128<<20)+1)); err != nil {
+		return err
+	}
+	if hex.EncodeToString(digest.Sum(nil)) != strings.ToLower(expectedDigest) {
+		return errors.New("Termux release archive checksum mismatch")
+	}
+	zr, err := zip.NewReader(archive, info.Size())
+	if err != nil {
+		return err
+	}
+	stage, err := os.MkdirTemp(filepath.Dir(prefix), ".devicebridge-bootstrap-")
+	if err != nil {
+		return err
+	}
+	keepPrevious := false
+	defer func() {
+		if !keepPrevious {
+			_ = os.RemoveAll(stage)
+		}
+	}()
+	if err := extractTermuxBootstrap(ctx, zr, stage, prefix); err != nil {
+		return fmt.Errorf("extract Termux bootstrap: %w", err)
+	}
+	if !termuxBasePresent(stage) {
+		return errors.New("Termux release archive is missing base executables")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err = unix.Renameat2(unix.AT_FDCWD, stage, unix.AT_FDCWD, prefix, unix.RENAME_NOREPLACE)
+	if errors.Is(err, os.ErrExist) {
+		if st, err := os.Lstat(prefix); err != nil || !st.IsDir() {
+			return errors.New("existing Termux prefix is not a directory")
+		}
+		err = unix.Renameat2(unix.AT_FDCWD, stage, unix.AT_FDCWD, prefix, unix.RENAME_EXCHANGE)
+		if err == nil {
+			keepPrevious = true
+		}
+	}
+	return err
 }
 
 func isExecutableFile(path string) bool {
@@ -323,7 +381,7 @@ func isExecutableFile(path string) bool {
 // SetupTermuxEnvironment extracts a staged Termux bootstrap archive if needed,
 // installs missing default terminal tools (fish, tmux, openssh, starship, fastfetch, zoxide),
 // adapts paths to the app package, and writes fish/starship/fastfetch/bash configs.
-func SetupTermuxEnvironment(ctx context.Context, stateDir, cliBin string, progress func(string)) error {
+func SetupTermuxEnvironment(ctx context.Context, stateDir, cliBin, mode, archivePath, archiveDigest string, progress func(string)) error {
 	if runtime.GOOS != "android" {
 		return nil
 	}
@@ -339,40 +397,28 @@ func SetupTermuxEnvironment(ctx context.Context, stateDir, cliBin string, progre
 	tmpDir := filepath.Join(prefix, "tmp")
 	cacheDir := filepath.Join(termRoot, "cache")
 
-	for _, d := range []string{prefix, home, tmpDir, cacheDir} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+	if mode != "base" && mode != "tools" && mode != "openssh" {
+		return errors.New("unsupported Termux setup mode")
+	}
+	for _, d := range []string{home, cacheDir} {
+		if err := os.MkdirAll(d, 0700); err != nil {
 			return err
 		}
 	}
+	guard, err := lockTermuxBackup(filepath.Dir(home))
+	if err != nil {
+		return err
+	}
+	defer guard.Close()
 
-	bashBin := filepath.Join(prefix, "bin", "bash")
-	if !isExecutableFile(bashBin) {
-		zipArch := termuxBootstrapArch()
-		candidates := []string{
-			strings.TrimSpace(os.Getenv("DEVICEBRIDGE_BOOTSTRAP_ZIP")),
-			filepath.Join(cacheDir, "bootstrap-"+zipArch+".zip"),
-			"/data/local/tmp/db-bootstrap-" + zipArch + ".zip",
-		}
-		var stagedZip string
-		for _, cand := range candidates {
-			if cand != "" {
-				if st, err := os.Stat(cand); err == nil && !st.IsDir() && st.Size() > 0 {
-					stagedZip = cand
-					break
-				}
-			}
-		}
-		if stagedZip == "" {
-			return errors.New("Termux bootstrap archive not found; download bootstrap-" + zipArch + ".zip first")
-		}
+	if !termuxBasePresent(prefix) {
 		emit("Extracting Termux base environment...")
-		if err := extractBootstrapZipIfPresent(stagedZip, prefix); err != nil {
-			return fmt.Errorf("extract Termux bootstrap: %w", err)
+		if err := installTermuxBase(ctx, archivePath, archiveDigest, prefix); err != nil {
+			return err
 		}
-		if strings.HasPrefix(stagedZip, cacheDir+string(filepath.Separator)) {
-			_ = os.Remove(stagedZip)
-		}
-		_ = os.Remove(filepath.Join(prefix, ".devicebridge-configured-v4"))
+	}
+	if err := os.MkdirAll(tmpDir, 0700); err != nil {
+		return err
 	}
 
 	if err := configureTermuxPrefix(stateDir, cliBin, termRoot, prefix, home, cacheDir); err != nil {
@@ -390,6 +436,13 @@ func SetupTermuxEnvironment(ctx context.Context, stateDir, cliBin string, progre
 		{filepath.Join(prefix, "bin", "starship"), "starship"},
 		{filepath.Join(prefix, "bin", "fastfetch"), "fastfetch"},
 		{filepath.Join(prefix, "bin", "zoxide"), "zoxide"},
+	}
+	if mode == "base" {
+		requiredBins = nil
+	}
+	if mode == "openssh" {
+		requiredBins = requiredBins[2:3]
+		requiredBins[0].bin = filepath.Join(prefix, "bin", "sshd")
 	}
 	var missingPkgs []string
 	for _, item := range requiredBins {
@@ -428,6 +481,8 @@ func SetupTermuxEnvironment(ctx context.Context, stateDir, cliBin string, progre
 		runAPT := func(desc string, args ...string) error {
 			emit(desc)
 			cmd := exec.CommandContext(ctx, aptGet, args...)
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 			cmd.Dir = home
 			cmd.Env = aptEnv
 			pr, pw, err := os.Pipe()
@@ -442,6 +497,8 @@ func SetupTermuxEnvironment(ctx context.Context, stateDir, cliBin string, progre
 				return err
 			}
 			_ = pw.Close()
+			stopRead := context.AfterFunc(ctx, func() { _ = pr.Close() })
+			defer stopRead()
 			scanner := bufio.NewScanner(pr)
 			var tail []string
 			for scanner.Scan() {
@@ -478,7 +535,7 @@ func SetupTermuxEnvironment(ctx context.Context, stateDir, cliBin string, progre
 
 	sshKeygen := filepath.Join(prefix, "bin", "ssh-keygen")
 	hostKey := filepath.Join(prefix, "etc", "ssh", "ssh_host_ed25519_key")
-	if isExecutableFile(sshKeygen) {
+	if mode != "base" && isExecutableFile(sshKeygen) {
 		if _, err := os.Stat(hostKey); os.IsNotExist(err) {
 			emit("Generating OpenSSH host keys...")
 			adaptCtx := resolveTermuxAdaptContext(stateDir, cliBin, termRoot, prefix, home, cacheDir)
@@ -493,7 +550,9 @@ func SetupTermuxEnvironment(ctx context.Context, stateDir, cliBin string, progre
 			if adaptCtx.AdaptSo != "" {
 				kg.Env = append(kg.Env, "LD_PRELOAD="+adaptCtx.AdaptSo, "DB_TERMUX_ADAPT_SO="+adaptCtx.AdaptSo)
 			}
-			_ = kg.Run()
+			if err := kg.Run(); err != nil {
+				return fmt.Errorf("generate OpenSSH host keys: %w", err)
+			}
 		}
 	}
 
@@ -502,6 +561,11 @@ func SetupTermuxEnvironment(ctx context.Context, stateDir, cliBin string, progre
 	}
 	if err := configureTermuxPrefix(stateDir, cliBin, termRoot, prefix, home, cacheDir); err != nil {
 		return fmt.Errorf("finalize Termux config: %w", err)
+	}
+	for _, item := range requiredBins {
+		if !isExecutableFile(item.bin) {
+			return fmt.Errorf("Termux package %s did not install its executable", item.pkg)
+		}
 	}
 	emit("Termux environment ready.")
 	return nil

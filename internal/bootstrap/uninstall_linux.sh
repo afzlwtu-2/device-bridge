@@ -46,10 +46,18 @@ if command -v ufw >/dev/null; then
     rules=$(ufw show added)
 fi
 rule="ufw allow $port/tcp comment 'DeviceBridge agent'"
+lan_rule="^ufw allow in on ([[:alnum:]_.:-]+) from ([0-9a-fA-F:.]+/[0-9]{1,3}) to any port $port proto tcp comment 'DeviceBridge (agent|LAN)'$"
+tailnet_rule="ufw allow in on tailscale0 to any port $port proto tcp comment 'DeviceBridge Tailscale'"
+managed_rules=()
+while IFS= read -r line; do
+    if [[ "$line" == "$rule" || "$line" == "$tailnet_rule" || "$line" =~ $lan_rule ]]; then
+        managed_rules+=("$line")
+    fi
+done <<<"$rules"
 if [[ "$presence" == absent ]]; then
     [[ ! -e "$state" && ! -L "$state" && ! -e "$system_unit" && ! -e "$user_unit" &&
        ! -e "$sudoers" && ! -e "$polkit" ]] &&
-        ! grep -Fxq -- "$rule" <<<"$rules" || fail "Installation identity is missing and managed files or rules remain."
+        [[ "${#managed_rules[@]}" -eq 0 ]] || fail "Installation identity is missing and managed files or rules remain."
     exit 0
 fi
 
@@ -79,9 +87,15 @@ for exe in /proc/[0-9]*/exe; do
         fail "A DeviceBridge agent is still running outside the managed service."
 done
 
-if grep -Fxq -- "$rule" <<<"$rules"; then
-    ufw --force delete allow "$port/tcp" comment 'DeviceBridge agent'
-fi
+for line in "${managed_rules[@]}"; do
+    if [[ "$line" == "$rule" ]]; then
+        ufw --force delete allow "$port/tcp" comment 'DeviceBridge agent'
+    elif [[ "$line" == "$tailnet_rule" ]]; then
+        ufw --force delete allow in on tailscale0 to any port "$port" proto tcp
+    elif [[ "$line" =~ $lan_rule ]]; then
+        ufw --force delete allow in on "${BASH_REMATCH[1]}" from "${BASH_REMATCH[2]}" to any port "$port" proto tcp
+    fi
+done
 if command -v nmcli >/dev/null &&
    nmcli --get-values connection.id connection show id DeviceBridge-Direct 2>/dev/null | grep -Fxq DeviceBridge-Direct; then
     nmcli --wait 8 connection delete id DeviceBridge-Direct

@@ -90,3 +90,53 @@ func TestSSHHostPersistenceIsNotAgentPairing(t *testing.T) {
 		t.Fatal("host removal failed")
 	}
 }
+
+func TestSSHAccountEditAndDetachClearOnlyInvalidSelections(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	peer := strings.Repeat("a", 64)
+	if err := s.TrustOutbound(peer, "laptop", "paired"); err != nil {
+		t.Fatal(err)
+	}
+	host, err := s.SaveSSHHost(ctx, SSHHost{
+		Version: 1, Name: "laptop", Host: "127.0.0.1", Port: 22,
+		User: "owner", Fingerprint: "SHA256:fixture",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AssociateSSHHost(ctx, host.ID, peer); err != nil {
+		t.Fatal(err)
+	}
+	method := "ssh:" + host.ID
+	if _, err := s.PeerSSHMethod(ctx, peer, &method); err != nil {
+		t.Fatal(err)
+	}
+	host.Name = "alias"
+	if saved, err := s.SaveSSHHost(ctx, host); err != nil || saved.AgentPeerID != peer {
+		t.Fatalf("renaming broke the association: %v, %v", saved, err)
+	}
+	if _, err := s.AssociateSSHHost(ctx, host.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.PeerSSHMethod(ctx, peer, nil); err != nil || got != "auto" {
+		t.Fatalf("detached account still selected: %s, %v", got, err)
+	}
+	if _, err := s.AssociateSSHHost(ctx, host.ID, peer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PeerSSHMethod(ctx, peer, &method); err != nil {
+		t.Fatal(err)
+	}
+	host.Port = 8022
+	if saved, err := s.SaveSSHHost(ctx, host); err != nil || saved.AgentPeerID != "" {
+		t.Fatalf("editing the endpoint retained its association: %v, %v", saved, err)
+	}
+	if got, err := s.PeerSSHMethod(ctx, peer, nil); err != nil || got != "auto" {
+		t.Fatalf("changed account still selected: %s, %v", got, err)
+	}
+}

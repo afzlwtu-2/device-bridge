@@ -355,7 +355,7 @@ func TestInspectHostAndRunCommandOverTsnetSocket(t *testing.T) {
 		}
 	}()
 
-	opts := TailnetOptions{StateDir: stateDir, Mode: "app"}
+	opts := TailnetOptions{StateDir: stateDir, Mode: "app", RemoteApproved: true}
 	for _, hostQuery := range []string{"probook", "probook-450-g9", "probook-450-g9.tailnet.ts.net", "100.100.78.84"} {
 		probe, err := InspectHostWithOptions(context.Background(), hostQuery, sshPort, opts)
 		if err != nil {
@@ -533,19 +533,22 @@ func TestSSHAuthMethodsNormalizesCRLFAndPassphrase(t *testing.T) {
 	if !strings.Contains(autoUnit, "--lan-cidr auto") {
 		t.Fatalf("expected --lan-cidr auto in systemd unit:\n%s", autoUnit)
 	}
-	sysUnit := SystemdSystemUnit("/bin/bridge-agent", "/home/afzl/.local/share/devicebridge", "afzl", "/home/afzl", "wlan0", "auto", 8731, true)
-	if !strings.Contains(sysUnit, "User=root") ||
-		!strings.Contains(sysUnit, "Environment=HOME=/home/afzl") ||
-		!strings.Contains(sysUnit, "Environment=ANDROID_USER_HOME=/home/afzl/.android") ||
-		strings.Contains(sysUnit, "CapabilityBoundingSet=") ||
-		!strings.Contains(sysUnit, "WantedBy=multi-user.target") {
-		t.Fatalf("unexpected SystemdSystemUnit:\n%s", sysUnit)
-	}
+
 }
 
 func TestDialTargetTCPHonorsSelectedTransports(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
+	for _, options := range []TailnetOptions{
+		{SSHTransport: "auto"},
+		{SSHTransport: "auto", RemoteApproved: true, NetworkPolicy: map[string]bool{"network_tailnet": false}},
+		{SSHTransport: "direct"},
+	} {
+		if _, _, _, err := dialTargetTCP(ctx, options, "100.64.1.2", 22); err == nil ||
+			!strings.Contains(err.Error(), "approve Tailscale") {
+			t.Fatalf("Tailscale address escaped the selected policy: %v", err)
+		}
+	}
 
 	if _, _, _, err := dialTargetTCP(ctx, TailnetOptions{SSHTransport: "wireguard", RemoteApproved: false}, "10.99.0.2", 22); err == nil || !strings.Contains(err.Error(), "WireGuard SSH requires route approval") {
 		t.Fatalf("expected WireGuard approval error, got %v", err)

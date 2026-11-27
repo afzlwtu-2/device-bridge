@@ -171,6 +171,29 @@ class _SettingsScreenState extends State<SettingsScreen>
     }
   });
 
+  Future<void> installTerminalTools() async {
+    setState(() {
+      saving = true;
+      _backupNotice = 'Installing Terminal tools…';
+      _backupFailed = false;
+    });
+    try {
+      await widget.core.openConnectionSetup('terminal-tools');
+      if (mounted) setState(() => _backupNotice = 'Terminal tools installed.');
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _backupFailed = true;
+          _backupNotice = error is PlatformException
+              ? error.message ?? error.code
+              : '$error';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
   Future<void> termuxBackup({required bool restore}) async {
     if (saving || _backupBusy) return;
     Map<String, dynamic>? backupSpec;
@@ -852,8 +875,8 @@ class _SettingsScreenState extends State<SettingsScreen>
                 if (android)
                   section(
                     'Termux backup',
-                    'Choose folders & files to back up, exclude generated folders '
-                        '(.cache, node_modules, etc.), and always preserve .env* files.',
+                    'Back up hidden files and .env files. Generated caches, dependencies, '
+                        'and build outputs are excluded by default.',
                     Icons.inventory_2_outlined,
                     [
                       if (_backupBusy || _backupNotice != null)
@@ -869,6 +892,14 @@ class _SettingsScreenState extends State<SettingsScreen>
                         title: const Text('Restore Termux backup'),
                         enabled: !saving && !_backupBusy,
                         onTap: () => termuxBackup(restore: true),
+                      ),
+                      ListTile(
+                        title: const Text('Install optional Terminal tools'),
+                        subtitle: const Text(
+                          'Fish, tmux, OpenSSH, Starship, Fastfetch, and zoxide',
+                        ),
+                        enabled: !saving && !_backupBusy,
+                        onTap: installTerminalTools,
                       ),
                       ListTile(
                         title: const Text('Copy package install command'),

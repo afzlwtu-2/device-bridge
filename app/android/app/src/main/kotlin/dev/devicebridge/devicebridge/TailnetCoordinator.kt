@@ -300,20 +300,6 @@ class TailnetCoordinator(private val context: Context, private val networkChange
                     remove("TS_AUTHKEY"); remove("TS_CLIENT_SECRET")
                 }
                 val process = builder.start(); child = process
-                worker.execute {
-                    try {
-                        val cli = GoBinaryManager.resolve(context, "cli")
-                        if (cli.canExecute()) {
-                            val stateDir = File(context.filesDir, "devicebridge").path
-                            val openSsh = tsnetPrefs["openssh_enabled"] == true
-                            val pb = ProcessBuilder(cli.path, "--state", stateDir, "ensure-termux-ssh", "--openssh=$openSsh")
-                            pb.environment()["DEVICEBRIDGE_APP_PACKAGE"] = context.packageName
-                            pb.environment()["DEVICEBRIDGE_NATIVE_LIB_DIR"] = context.applicationInfo.nativeLibraryDir
-                            val sshProc = pb.start()
-                            sshProc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-                        }
-                    } catch (_: Exception) {}
-                }
                 Thread {
                     try {
                         process.inputStream.bufferedReader().use { reader ->

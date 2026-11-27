@@ -30,17 +30,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
 
 type TailnetOptions struct {
-	SSHTransport   string `json:"-"`
-	RemoteApproved bool   `json:"-"`
-	StateDir       string `json:"-"`
-	ControlSocket  string `json:"-"`
-	Mode           string `json:"-"` // "auto" | "app" | "system"
+	SSHTransport   string          `json:"-"`
+	RemoteApproved bool            `json:"-"`
+	StateDir       string          `json:"-"`
+	ControlSocket  string          `json:"-"`
+	Mode           string          `json:"-"` // "auto" | "app" | "system"
+	NetworkPolicy  map[string]bool `json:"-"`
 }
 
 type Request struct {
@@ -49,6 +51,8 @@ type Request struct {
 	User                 string         `json:"user"`
 	Password             string         `json:"password,omitempty"`
 	PrivateKeyPEM        string         `json:"private_key_pem,omitempty"`
+	KeyPassphrase        string         `json:"key_passphrase,omitempty"`
+	SSHHostID            string         `json:"ssh_host_id,omitempty"`
 	ExpectedHostKey      string         `json:"expected_host_key,omitempty"`
 	SudoPassword         string         `json:"sudo_password,omitempty"`
 	OpenFirewall         bool           `json:"open_firewall"`
@@ -80,23 +84,25 @@ type HostProbe struct {
 }
 
 type Result struct {
-	Host           string   `json:"host"`
-	HostKeySHA256  string   `json:"host_key_sha256"`
-	RemoteHostname string   `json:"remote_hostname"`
-	ResolvedHost   string   `json:"resolved_host,omitempty"`
-	ViaTailnet     bool     `json:"via_tailnet,omitempty"`
-	LanIface       string   `json:"lan_iface,omitempty"`
-	LanCIDR        string   `json:"lan_cidr,omitempty"`
-	LanIP          string   `json:"lan_ip,omitempty"`
-	TailscaleIP    string   `json:"tailscale_ip,omitempty"`
-	WireGuardIP    string   `json:"wireguard_ip,omitempty"`
-	SystemdStatus  string   `json:"systemd_status"`
-	FirewallStatus string   `json:"firewall_status"`
-	PairedPeerID   string   `json:"paired_peer_id,omitempty"`
-	PairedRoute    string   `json:"paired_route,omitempty"`
-	PairedEndpoint string   `json:"paired_endpoint,omitempty"`
-	AgentInstalled bool     `json:"agent_installed"`
-	Steps          []string `json:"steps"`
+	Host             string   `json:"host"`
+	HostKeySHA256    string   `json:"host_key_sha256"`
+	RemoteHostname   string   `json:"remote_hostname"`
+	ResolvedHost     string   `json:"resolved_host,omitempty"`
+	ViaTailnet       bool     `json:"via_tailnet,omitempty"`
+	LanIface         string   `json:"lan_iface,omitempty"`
+	LanCIDR          string   `json:"lan_cidr,omitempty"`
+	LanIP            string   `json:"lan_ip,omitempty"`
+	TailscaleIP      string   `json:"tailscale_ip,omitempty"`
+	WireGuardIP      string   `json:"wireguard_ip,omitempty"`
+	SystemdStatus    string   `json:"systemd_status"`
+	FirewallStatus   string   `json:"firewall_status"`
+	PairedPeerID     string   `json:"paired_peer_id,omitempty"`
+	PairedRoute      string   `json:"paired_route,omitempty"`
+	PairedEndpoint   string   `json:"paired_endpoint,omitempty"`
+	AgentInstalled   bool     `json:"agent_installed"`
+	AssociationError string   `json:"association_error,omitempty"`
+	SetupError       string   `json:"setup_error,omitempty"`
+	Steps            []string `json:"steps"`
 }
 
 func hostKeyFingerprint(k ssh.PublicKey) string {
@@ -314,24 +320,61 @@ func matchTailnetPeer(query string, peers []tailnetipc.Peer) (peerIP string, pee
 	return "", "", false, nil
 }
 
-func dialTargetTCP(ctx context.Context, opts TailnetOptions, host string, port int) (net.Conn, bool, string, error) {
-	if opts.SSHTransport == "direct" || opts.SSHTransport == "adb" {
-		if opts.SSHTransport == "adb" {
-			ip := net.ParseIP(host)
-			if ip == nil || !ip.IsLoopback() {
-				return nil, false, "", errors.New("ADB SSH endpoint must be an owned loopback mapping")
+func (opts TailnetOptions) allows(transport string) bool {
+	allowed, set := opts.NetworkPolicy["network_"+transport]
+	return !set || allowed
+}
+
+func dialDirectSSH(ctx context.Context, host string, port int) (net.Conn, error) {
+	dialer := &net.Dialer{
+		Timeout: 8 * time.Second,
+		ControlContext: func(_ context.Context, _, address string, _ syscall.RawConn) error {
+			ip, err := netip.ParseAddrPort(address)
+			if err != nil {
+				return err
 			}
+			if isTailnetIP(ip.Addr().Unmap()) {
+				return errors.New("select and approve Tailscale for this SSH address")
+			}
+			return nil
+		},
+	}
+	return dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+}
+
+func dialTargetTCP(ctx context.Context, opts TailnetOptions, host string, port int) (net.Conn, bool, string, error) {
+	if opts.SSHTransport == "adb" {
+		if !opts.allows("adb") || !opts.allows("usb") {
+			return nil, false, "", errors.New("ADB SSH disabled in Network settings")
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return nil, false, "", errors.New("ADB SSH endpoint must be an owned loopback mapping")
 		}
 		conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 		return conn, false, host, err
 	}
+	direct := func(host string) (net.Conn, bool, string, error) {
+		if !opts.allows("direct") {
+			return nil, false, host, errors.New("direct SSH disabled in Network settings")
+		}
+		conn, err := dialDirectSSH(ctx, host, port)
+		return conn, false, host, err
+	}
+	if opts.SSHTransport == "direct" {
+		return direct(host)
+	}
 	if opts.SSHTransport == "wireguard" {
-		if !opts.RemoteApproved {
-			return nil, false, "", errors.New("WireGuard SSH requires route approval")
+		if !opts.RemoteApproved || !opts.allows("wireguard") {
+			return nil, false, "", errors.New("WireGuard SSH requires route approval and an enabled transport")
 		}
 		p := &wireguard.Provider{StateDir: opts.StateDir, Control: tailnetipc.Client{Socket: filepath.Join(opts.StateDir, "wireguard", "control.sock")}, RemoteApproved: true, TunnelOnly: true}
 		conn, err := p.Dial(ctx, transport.Candidate{Endpoint: net.JoinHostPort(host, strconv.Itoa(port))})
 		return conn, false, host, err
+	}
+	canUseTailnet := opts.RemoteApproved && opts.allows("tailnet")
+	if opts.SSHTransport == "tailnet" && !canUseTailnet {
+		return nil, false, "", errors.New("Tailscale SSH requires route approval and an enabled transport")
 	}
 	cleanHost := strings.TrimSpace(host)
 	if cleanHost == "" {
@@ -342,7 +385,10 @@ func dialTargetTCP(ctx context.Context, opts TailnetOptions, host string, port i
 			return nil, false, "", errors.New("selected Tailscale transport requires a tailnet address")
 		}
 		addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
-		if isTailnetIP(ip) {
+		if isTailnetIP(ip.Unmap()) {
+			if !canUseTailnet {
+				return nil, false, "", errors.New("select and approve Tailscale for this SSH address")
+			}
 			st, systemDaemon, sock, ok, note := queryTailnetStatus(ctx, opts)
 			if ok && !systemDaemon && sock != "" {
 				_ = st
@@ -363,10 +409,12 @@ func dialTargetTCP(ctx context.Context, opts TailnetOptions, host string, port i
 			}
 			return conn, true, ip.String(), dialErr
 		}
-		conn, dialErr := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", addr)
-		return conn, false, ip.String(), dialErr
+		return direct(ip.String())
 	}
 
+	if !canUseTailnet {
+		return direct(cleanHost)
+	}
 	st, systemDaemon, sock, ok, note := queryTailnetStatus(ctx, opts)
 	if ok {
 		peerIP, peerName, matched, matchErr := matchTailnetPeer(cleanHost, st.Peers)
@@ -398,8 +446,7 @@ func dialTargetTCP(ctx context.Context, opts TailnetOptions, host string, port i
 	if opts.SSHTransport == "tailnet" {
 		return nil, false, "", errors.New("target is not reachable through the selected tailnet")
 	}
-	d := net.Dialer{Timeout: 8 * time.Second}
-	raw, err := d.DialContext(ctx, "tcp", net.JoinHostPort(cleanHost, strconv.Itoa(port)))
+	raw, _, _, err := direct(cleanHost)
 	if err != nil && !ok && strings.Contains(err.Error(), "no such host") && (opts.StateDir != "" || opts.ControlSocket != "") {
 		return nil, false, cleanHost, fmt.Errorf("%w (app-only Tailscale/tsnet state: %s — enable and log in to Tailscale in Connections to resolve Tailscale hostnames)", err, note)
 	}
@@ -509,7 +556,7 @@ func dialSSHParams(ctx context.Context, opts TailnetOptions, host string, port i
 }
 
 func dialSSH(ctx context.Context, req Request) (*ssh.Client, string, bool, string, error) {
-	return dialSSHParams(ctx, req.Tailnet, req.Host, req.Port, req.User, req.Password, req.PrivateKeyPEM, "", req.ExpectedHostKey)
+	return dialSSHParams(ctx, req.Tailnet, req.Host, req.Port, req.User, req.Password, req.PrivateKeyPEM, req.KeyPassphrase, req.ExpectedHostKey)
 }
 
 // RunCommand executes one explicit user-authorized shell command over verified SSH.
@@ -711,45 +758,6 @@ WantedBy=default.target
 `, execArgs)
 }
 
-// SystemdSystemUnit returns a system-level systemd unit (/etc/systemd/system)
-// running bridge-agent as root so 5 GHz regulatory switching (iw reg set US)
-// and NetworkManager Wi-Fi Direct / Hotspot joins never trigger PolicyKit or sudo prompts.
-func SystemdSystemUnit(binPath, stateDir, runUser, runHome, iface, cidr string, port int, withSystemTailnet bool) string {
-	if strings.TrimSpace(runUser) == "" {
-		runUser = "root"
-	}
-	if strings.TrimSpace(runHome) == "" {
-		runHome = "/root"
-	}
-	if strings.TrimSpace(iface) == "" {
-		iface = "auto"
-	}
-	if strings.TrimSpace(cidr) == "" {
-		cidr = "auto"
-	}
-	execArgs := fmt.Sprintf("%s --state %s --interface %s --lan-cidr %s --port %d", binPath, stateDir, iface, cidr, port)
-	if withSystemTailnet {
-		execArgs += " --system-tailnet"
-	}
-	return fmt.Sprintf(`[Unit]
-Description=DeviceBridge peer agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-Environment=HOME=%s
-Environment=ANDROID_USER_HOME=%s/.android
-ExecStart=%s
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-`, runHome, runHome, execArgs)
-}
-
 func runRemoteRoot(cl *ssh.Client, sshUser, sudoPass, script string) (string, string, error) {
 	if strings.TrimSpace(sshUser) == "root" {
 		return runSSH(cl, "bash -c "+shellQuote(script), "")
@@ -763,6 +771,9 @@ func runRemoteRoot(cl *ssh.Client, sshUser, sudoPass, script string) (string, st
 func Bootstrap(ctx context.Context, s *storage.Store, id *auth.Identity, req Request) (Result, error) {
 	var res Result
 	res.Host = req.Host
+	if req.InstallSystemService {
+		return res, errors.New("root system service setup has been removed; use the systemd user service")
+	}
 	if req.BridgePort <= 0 {
 		req.BridgePort = 8731
 	}
@@ -805,6 +816,10 @@ case "$(uname -o 2>/dev/null || true)" in
   *Android*) OS_NAME="Android" ;;
 esac
 echo "TARGET_PLATFORM=${OS_NAME}/$(uname -m 2>/dev/null || echo x86_64)"
+if [ "$OS_NAME" = Linux ] && [ -e /etc/systemd/system/devicebridge-agent.service ] &&
+   (systemctl is-active --quiet devicebridge-agent.service || systemctl is-enabled --quiet devicebridge-agent.service); then
+  echo 'LEGACY_SYSTEM_AGENT=1'
+fi
 AGENT_BIN="$HOME/.local/share/devicebridge/bin/bridge-agent"
 if [ ! -x "$AGENT_BIN" ]; then AGENT_BIN="$(command -v bridge-agent 2>/dev/null || true)"; fi
 CLI_BIN="$HOME/.local/share/devicebridge/bin/bridge-cli"
@@ -828,13 +843,15 @@ fi
 	remoteUser := strings.TrimSpace(req.User)
 	remoteHome := ""
 	targetPlatform, sshLocal, androidModel := "", "", ""
-	var sshUID int
+	sshUID := -1
 	agentBin, cliBin := "", ""
 	hasAgent, hasCLI := false, false
-	var companionAgent, companionCLI, companionEngine bool
+	var companionAgent, companionCLI, companionEngine, legacySystemAgent bool
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
+		case line == "LEGACY_SYSTEM_AGENT=1":
+			legacySystemAgent = true
 		case strings.HasPrefix(line, "HOST="):
 			res.RemoteHostname = strings.TrimPrefix(line, "HOST=")
 		case strings.HasPrefix(line, "USER="):
@@ -860,7 +877,9 @@ fi
 		case strings.HasPrefix(line, "HAS_CLI="):
 			hasCLI = strings.TrimPrefix(line, "HAS_CLI=") == "1"
 		case strings.HasPrefix(line, "SSH_UID="):
-			sshUID, _ = strconv.Atoi(strings.TrimPrefix(line, "SSH_UID="))
+			if uid, err := strconv.Atoi(strings.TrimPrefix(line, "SSH_UID=")); err == nil {
+				sshUID = uid
+			}
 		case strings.HasPrefix(line, "ANDROID_MODEL="):
 			androidModel = strings.TrimSpace(strings.TrimPrefix(line, "ANDROID_MODEL="))
 		case line == "COMPANION_AGENT=1":
@@ -898,6 +917,9 @@ fi
 	}
 	remoteState := remoteHome + "/.local/share/devicebridge"
 	isTermux := strings.EqualFold(targetPlatform, "android/aarch64")
+	if legacySystemAgent {
+		return res, errors.New("the host already has a DeviceBridge system service; migrate that service to the SSH user's account before deploying")
+	}
 	if req.TermuxCompanion && !isTermux {
 		return res, errors.New("the SSH target is not a supported arm64 Termux installation")
 	}
@@ -922,6 +944,9 @@ fi
 		res.RemoteHostname = "Termux · " + res.RemoteHostname
 		hasAgent, hasCLI = companionAgent, companionCLI
 		agentBin, cliBin = "", ""
+	}
+	if !isTermux && (sshUID == 0 || remoteUser == "root") {
+		return res, errors.New("sign in as the unprivileged account that will run DeviceBridge")
 	}
 	remoteBinDir := remoteState + "/bin"
 	remoteAgent := remoteBinDir + "/bridge-agent"
@@ -1014,69 +1039,38 @@ fi
 	}
 
 	if req.InstallSystemd && !isTermux {
-		if !strings.HasPrefix(strings.ToLower(targetPlatform), "android/") {
-			sysInstalled := false
-			trySystem := req.InstallSystemService || remoteUser == "root" || req.SudoPassword != ""
-			if trySystem {
-				sysUnit := SystemdSystemUnit(remoteAgent, remoteState, remoteUser, remoteHome, res.LanIface, "auto", req.BridgePort, true)
-				unitB64 := base64.StdEncoding.EncodeToString([]byte(sysUnit))
-				sudoersLine := ""
-				if remoteUser != "" && remoteUser != "root" {
-					polkitRule := fmt.Sprintf("polkit.addRule(function(action, subject) { if (action.id.indexOf(\"org.freedesktop.NetworkManager.\") == 0 && subject.user == %q) { return polkit.Result.YES; } });\n", remoteUser)
-					polkitB64 := base64.StdEncoding.EncodeToString([]byte(polkitRule))
-					sudoersLine = fmt.Sprintf("IW_BIN=$(command -v iw || echo /usr/bin/iw); NM_BIN=$(command -v nmcli || echo /usr/bin/nmcli); printf '%%s ALL=(root) NOPASSWD: %%s reg set *, %%s *\\n' %s \"$IW_BIN\" \"$NM_BIN\" > /etc/sudoers.d/devicebridge-net && chmod 440 /etc/sudoers.d/devicebridge-net && (command -v visudo >/dev/null 2>&1 && visudo -cf /etc/sudoers.d/devicebridge-net >/dev/null || rm -f /etc/sudoers.d/devicebridge-net); if [ -d /etc/polkit-1/rules.d ]; then printf '%%s' %s | base64 -d > /etc/polkit-1/rules.d/49-devicebridge-nm.rules && chmod 644 /etc/polkit-1/rules.d/49-devicebridge-nm.rules; fi;", shellQuote(remoteUser), shellQuote(polkitB64))
-				}
-				sysCmd := fmt.Sprintf(
-					`set -e; printf '%%s' %s | base64 -d > /etc/systemd/system/devicebridge-agent.service; chmod 644 /etc/systemd/system/devicebridge-agent.service; %s systemctl daemon-reload && systemctl enable devicebridge-agent.service && systemctl restart devicebridge-agent.service && systemctl is-active devicebridge-agent.service`,
-					shellQuote(unitB64),
-					sudoersLine,
-				)
-				if remoteUser != "root" {
-					// Stop old user-level unit first to free TCP/8731 before starting system unit.
-					_, _, _ = runSSH(cl, `systemctl --user disable --now devicebridge-agent.service >/dev/null 2>&1 || true`, "")
-				}
-				sOut, sErr, sRunErr := runRemoteRoot(cl, remoteUser, req.SudoPassword, sysCmd)
-				if sRunErr == nil {
-					sysInstalled = true
-					res.SystemdStatus = "system active (" + sOut + ", root)"
-					res.Steps = append(res.Steps, "Enabled & started root system service devicebridge-agent")
-				} else if remoteUser == "root" {
-					res.SystemdStatus = "systemd system unavailable (" + sErr + ")"
-				}
-			}
-			if !sysInstalled && remoteUser != "root" {
-				unit := SystemdUnit(remoteAgent, remoteState, res.LanIface, "auto", req.BridgePort, true)
-				unitCmd := `mkdir -p "$HOME/.config/systemd/user" && cat > "$HOME/.config/systemd/user/devicebridge-agent.service" && systemctl --user daemon-reload && systemctl --user enable devicebridge-agent.service && systemctl --user restart devicebridge-agent.service && systemctl --user is-active devicebridge-agent.service`
-				stOut, stErr, stRunErr := runSSH(cl, "bash -c "+shellQuote(unitCmd), unit)
-				if stRunErr != nil {
-					res.SystemdStatus = "systemd user unavailable (" + stErr + ")"
-				} else {
-					res.SystemdStatus = "active (" + stOut + ")"
-					res.Steps = append(res.Steps, "Enabled & started systemd user service devicebridge-agent")
-				}
-			}
+		unit := SystemdUnit(remoteAgent, remoteState, res.LanIface, "auto", req.BridgePort, true)
+		unitCmd := `mkdir -p "$HOME/.config/systemd/user" && cat > "$HOME/.config/systemd/user/devicebridge-agent.service" && systemctl --user daemon-reload && systemctl --user enable devicebridge-agent.service && systemctl --user restart devicebridge-agent.service && systemctl --user is-active devicebridge-agent.service`
+		stOut, stErr, stRunErr := runSSH(cl, "bash -c "+shellQuote(unitCmd), unit)
+		if stRunErr != nil {
+			res.SystemdStatus = "systemd user unavailable (" + stErr + ")"
+		} else {
+			res.SystemdStatus = "active (" + stOut + ")"
+			res.Steps = append(res.Steps, "Enabled & started systemd user service devicebridge-agent")
 		}
 	} else if !isTermux {
 		res.SystemdStatus = "skipped"
 	}
 
 	if req.OpenFirewall && !isTermux {
-		fwScript := fmt.Sprintf(`set -e
+		subnet, subnetErr := netip.ParsePrefix(res.LanCIDR)
+		switch {
+		case subnetErr == nil && !subnet.Addr().IsLoopback() && subnet.Bits() > 0:
+			fwScript := fmt.Sprintf(`set -e
 export LC_ALL=C
 if ! command -v ufw >/dev/null; then echo 'no_ufw'; exit; fi
 if ! ufw status | grep -q 'Status: active'; then echo 'ufw_inactive'; exit; fi
-rules=$(ufw show added)
-if grep -Eq '^ufw allow %d/tcp( |$)' <<<"$rules"; then
-    echo 'port already allowed'
-else
-    ufw allow %d/tcp comment 'DeviceBridge agent'
-fi`, req.BridgePort, req.BridgePort)
-		fwOut, fwErr, fwE := runRemoteRoot(cl, remoteUser, req.SudoPassword, fwScript)
-		if fwE != nil {
-			res.FirewallStatus = "sudo ufw failed: " + fwErr
-		} else {
-			res.FirewallStatus = fwOut
-			res.Steps = append(res.Steps, "Configured UFW TCP/"+strconv.Itoa(req.BridgePort))
+ufw allow in on %s from %s to any port %d proto tcp comment 'DeviceBridge agent'
+`, shellQuote(res.LanIface), shellQuote(subnet.Masked().String()), req.BridgePort)
+			fwOut, fwErr, fwE := runRemoteRoot(cl, remoteUser, req.SudoPassword, fwScript)
+			if fwE != nil {
+				res.FirewallStatus = "sudo ufw failed: " + fwErr
+			} else {
+				res.FirewallStatus = fwOut
+				res.Steps = append(res.Steps, "Checked interface-scoped LAN firewall access")
+			}
+		default:
+			res.FirewallStatus = "skipped: no LAN subnet detected"
 		}
 	} else {
 		res.FirewallStatus = "skipped"
@@ -1117,7 +1111,7 @@ fi`, req.BridgePort, req.BridgePort)
 			tsEp = net.JoinHostPort(res.TailscaleIP, strconv.Itoa(req.BridgePort))
 		}
 		addLAN := func() {
-			if lanEp == "" {
+			if lanEp == "" || !req.Tailnet.allows("direct") {
 				return
 			}
 			iface := req.LocalIface
@@ -1139,7 +1133,7 @@ fi`, req.BridgePort, req.BridgePort)
 			}
 		}
 		addTailnet := func() {
-			if tsEp == "" {
+			if tsEp == "" || !req.RemoteApproved || !req.Tailnet.allows("tailnet") {
 				return
 			}
 			_, sys, sock, ok, _ := queryTailnetStatus(ctx, req.Tailnet)
@@ -1162,6 +1156,9 @@ fi`, req.BridgePort, req.BridgePort)
 			}
 		}
 		addWireGuard := func() {
+			if !req.RemoteApproved || !req.Tailnet.allows("wireguard") {
+				return
+			}
 			wgIP := res.WireGuardIP
 			if wgIP == "" && req.Transport == "wireguard" {
 				if resolvedHost != "" {

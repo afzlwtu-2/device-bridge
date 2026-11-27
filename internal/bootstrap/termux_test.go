@@ -1,12 +1,68 @@
 package bootstrap
 
 import (
+	"archive/zip"
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestTermuxBootstrapVerifiesAndPublishesCompletePrefix(t *testing.T) {
+	root := t.TempDir()
+	prefix := filepath.Join(root, "usr")
+	if err := os.Mkdir(prefix, 0700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(prefix, "previous")
+	if err := os.WriteFile(marker, []byte("keep until publish"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var contents bytes.Buffer
+	archive := zip.NewWriter(&contents)
+	for name, data := range map[string]string{
+		"bin/bash": "bash", "bin/apt-get": "apt", "SYMLINKS.txt": "bash←bin/sh\n",
+	} {
+		out, err := archive.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := out.Write([]byte(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(root, "bootstrap.zip")
+	if err := os.WriteFile(file, contents.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installTermuxBase(t.Context(), file, strings.Repeat("0", 64), prefix); err == nil {
+		t.Fatal("accepted a bootstrap that failed verification")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(contents.Bytes()))
+	if err := installTermuxBase(t.Context(), file, digest, prefix); err != nil {
+		t.Fatal(err)
+	}
+	if !termuxBasePresent(prefix) {
+		t.Fatal("published prefix is incomplete")
+	}
+	if link, err := os.Readlink(filepath.Join(prefix, "bin", "sh")); err != nil || link != "bash" {
+		t.Fatalf("bootstrap link = %q, %v", link, err)
+	}
+	saved, err := filepath.Glob(filepath.Join(root, ".devicebridge-bootstrap-*", "previous"))
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("previous prefix should be retained: %v, %v", saved, err)
+	}
+}
 
 func TestTermuxCompanionUsesApprovedLANAndPrivateState(t *testing.T) {
 	state, err := termuxCompanionState("/data/data/com.termux/files/home")

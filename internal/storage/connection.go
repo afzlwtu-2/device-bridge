@@ -19,7 +19,7 @@ type Connection struct {
 	Endpoint           string   `json:"endpoint,omitempty"`
 	RemoteApproved     bool     `json:"remote_approved"`
 	FallbackApproved   bool     `json:"fallback_approved"`
-	FallbackTransports []string `json:"fallback_transports,omitempty"`
+	FallbackTransports []string `json:"fallback_transports"`
 	LanEndpoint        string   `json:"lan_endpoint,omitempty"`
 	TailnetEndpoint    string   `json:"tailnet_endpoint,omitempty"`
 	AdbEndpoint        string   `json:"adb_endpoint,omitempty"`
@@ -205,7 +205,10 @@ func (s *Store) Connection(peer string, update *Connection) (Connection, error) 
 		if tailnetEp == "" && update.Transport == "tailnet" {
 			tailnetEp = update.Endpoint
 		}
-		cleanedFallback := []string{}
+		var cleanedFallback []string
+		if update.FallbackTransports != nil {
+			cleanedFallback = []string{}
+		}
 		for _, t := range update.FallbackTransports {
 			t = strings.TrimSpace(t)
 			switch t {
@@ -368,20 +371,12 @@ func (s *Store) sshProfileByPrefKey(prefKey string, update *PeerSSHProfile) (Pee
 			port = 22
 		}
 		isTailnet := update.ViaTailnet || strings.HasPrefix(cleanHost, "100.") || strings.HasSuffix(cleanHost, ".ts.net")
-		pem := ""
-		if !isTailnet {
-			normalized := strings.ReplaceAll(strings.TrimSpace(update.PrivateKeyPEM), "\r\n", "\n")
-			if normalized != "" {
-				pem = normalized + "\n"
-			}
-		}
 		stored := PeerSSHProfile{
 			Host:            cleanHost,
 			Port:            port,
 			User:            strings.TrimSpace(update.User),
 			ExpectedHostKey: strings.TrimSpace(update.ExpectedHostKey),
 			ViaTailnet:      isTailnet,
-			PrivateKeyPEM:   pem,
 		}
 		b, err := json.Marshal(stored)
 		if err != nil {
@@ -404,9 +399,7 @@ func (s *Store) sshProfileByPrefKey(prefKey string, update *PeerSSHProfile) (Pee
 	if err = json.Unmarshal([]byte(raw), &out); err != nil {
 		return PeerSSHProfile{}, err
 	}
-	if out.ViaTailnet {
-		out.PrivateKeyPEM = ""
-	}
+	out.PrivateKeyPEM = ""
 	return out, nil
 }
 

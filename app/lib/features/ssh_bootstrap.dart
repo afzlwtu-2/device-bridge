@@ -24,6 +24,7 @@ class SshBootstrapDialog extends StatefulWidget {
     this.initialRemoteApproved,
     this.initialPassword,
     this.initialPrivateKeyPem,
+    this.initialKeyPassphrase,
     this.associateSshHostId,
     this.autoProbe = false,
     this.termuxCompanion = false,
@@ -41,6 +42,7 @@ class SshBootstrapDialog extends StatefulWidget {
   final bool? initialRemoteApproved;
   final String? initialPassword;
   final String? initialPrivateKeyPem;
+  final String? initialKeyPassphrase;
   final String? associateSshHostId;
   final bool autoProbe;
   final bool termuxCompanion;
@@ -61,8 +63,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
   final keyPassphraseCtrl = TextEditingController();
 
   bool installSystemd = true;
-  bool installSystemService = true;
-  bool openFirewall = true;
+  bool openFirewall = false;
   bool autoPair = true;
   bool updateBinaries = true;
   bool allowSyncControl = false;
@@ -80,6 +81,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
   String? error;
   Map<String, dynamic>? result;
   bool get uninstall => widget.uninstallPeerId != null;
+  bool get upgrade => widget.associateSshHostId != null;
 
   String _friendlyError(Object e) {
     final s = e.toString();
@@ -97,7 +99,8 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
       installSystemd = false;
       openFirewall = false;
     }
-    if (widget.initialTransport != null && widget.initialTransport!.isNotEmpty) {
+    if (widget.initialTransport != null &&
+        widget.initialTransport!.isNotEmpty) {
       _transport = widget.initialTransport!;
       _remoteApproved =
           widget.initialRemoteApproved ??
@@ -117,6 +120,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
     if ((widget.initialPrivateKeyPem ?? '').trim().isNotEmpty) {
       keyCtrl.text = widget.initialPrivateKeyPem!.trim();
     }
+    keyPassphraseCtrl.text = widget.initialKeyPassphrase ?? '';
     hostCtrl = TextEditingController(text: widget.initialHost ?? '');
     portCtrl = TextEditingController(text: '${widget.initialPort ?? 22}');
     if ((widget.initialExpectedHostKey ?? '').trim().isNotEmpty) {
@@ -128,7 +132,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
     _loadProviders();
     if (uninstall) {
       _loadSavedHostSsh(hostCtrl.text.trim(), peerId: widget.uninstallPeerId);
-    } else {
+    } else if (!upgrade) {
       _loadSavedHostSsh(hostCtrl.text.trim());
     }
     if (widget.autoProbe && (widget.initialHost ?? '').trim().isNotEmpty) {
@@ -156,61 +160,49 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
   Future<void> _loadSavedHostSsh(String host, {String? peerId}) async {
     if (host.isEmpty && peerId == null) return;
     try {
-      final raw = await widget.core.run(
+      Object? raw;
+      if (peerId != null) {
+        final accounts = await widget.core.run(['ssh-hosts']);
+        if (accounts is List) {
+          final associated = accounts
+              .whereType<Map>()
+              .where((account) => account['agent_peer_id'] == peerId)
+              .toList();
+          if (associated.length == 1) raw = associated.single;
+        }
+      }
+      raw ??= await widget.core.run(
         peerId == null ? ['host-ssh', host] : ['peer-ssh', peerId],
       );
       if (!mounted || raw is! Map || raw.isEmpty) return;
       final m = Map<String, dynamic>.from(raw);
-      final isTail = m['via_tailnet'] == true;
+      if (hostCtrl.text.trim() != host) return;
+      final savedHost = '${m['host'] ?? ''}'.trim();
+      final savedPort = (m['port'] as num?)?.toInt() ?? 0;
       setState(() {
-        final savedHost = '${m['host'] ?? ''}'.trim();
-        if (peerId != null && savedHost.isNotEmpty) hostCtrl.text = savedHost;
+        if (peerId != null && savedHost.isNotEmpty) {
+          hostCtrl.text = savedHost;
+          if (savedPort > 0) portCtrl.text = '$savedPort';
+          final transport = m['transport'] as String?;
+          _transport =
+              transport ?? (m['via_tailnet'] == true ? 'tailnet' : 'auto');
+          _remoteApproved = m['remote_approved'] == true;
+          viaTailnet = _transport == 'tailnet';
+        }
+        if (hostCtrl.text.trim() != savedHost ||
+            int.tryParse(portCtrl.text.trim()) != savedPort) {
+          return;
+        }
         final u = '${m['user'] ?? ''}'.trim();
         if (userCtrl.text.trim().isEmpty && u.isNotEmpty) {
           userCtrl.text = u;
-        }
-        final p = (m['port'] as num?)?.toInt() ?? 0;
-        if (p > 0) portCtrl.text = '$p';
-        if (!isTail) {
-          final pem = '${m['private_key_pem'] ?? ''}'.trim();
-          if (keyCtrl.text.trim().isEmpty && pem.isNotEmpty) {
-            keyCtrl.text = pem;
-          }
         }
         final fk = '${m['expected_host_key'] ?? ''}'.trim();
         if ((hostFingerprint ?? '').isEmpty && fk.isNotEmpty) {
           hostFingerprint = fk;
         }
-        if (isTail) viaTailnet = true;
       });
     } catch (_) {}
-  }
-
-  Future<void> _saveHostAndPeerSsh({
-    required String host,
-    required int port,
-    required String user,
-    required String hostKey,
-    required bool isTailnet,
-    required String pem,
-    String? peerId,
-  }) async {
-    final payload = jsonEncode({
-      'host': host,
-      'port': port,
-      'user': user,
-      'expected_host_key': hostKey,
-      'via_tailnet': isTailnet,
-      if (!isTailnet && pem.isNotEmpty) 'private_key_pem': pem,
-    });
-    try {
-      await widget.core.run(['host-ssh', host, '-'], input: payload);
-    } catch (_) {}
-    if (peerId != null && peerId.isNotEmpty) {
-      try {
-        await widget.core.run(['peer-ssh', peerId, '-'], input: payload);
-      } catch (_) {}
-    }
   }
 
   void _invalidateProbe() {
@@ -267,7 +259,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
           resolvedHost = res['resolved_host'] as String?;
           viaTailnet = res['via_tailnet'] == true;
         });
-        if (!uninstall) await _loadSavedHostSsh(host);
+        if (!uninstall && !upgrade) await _loadSavedHostSsh(host);
       }
     } catch (e) {
       if (mounted) {
@@ -281,7 +273,9 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
   }
 
   Future<String> _prepareBundledArtifacts() async {
-    final baseDir = Directory('${File(widget.core.downloads).parent.path}/bundled-bin');
+    final baseDir = Directory(
+      '${File(widget.core.downloads).parent.path}/bundled-bin',
+    );
     const targets = ['linux-x86_64', 'linux-aarch64', 'android-aarch64'];
     const binaries = ['bridge-agent', 'bridge-cli', 'bridge-sync'];
     final nativeArm64Paths = <String, String>{};
@@ -403,9 +397,13 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
             'user': user,
             'expected_host_key': hostFingerprint,
             if (passCtrl.text.isNotEmpty) 'password': passCtrl.text,
-            if (keyCtrl.text.trim().isNotEmpty) 'private_key_pem': keyCtrl.text.trim(),
-            if (keyPassphraseCtrl.text.isNotEmpty) 'key_passphrase': keyPassphraseCtrl.text,
+            if (keyCtrl.text.trim().isNotEmpty)
+              'private_key_pem': keyCtrl.text.trim(),
+            if (keyPassphraseCtrl.text.isNotEmpty)
+              'key_passphrase': keyPassphraseCtrl.text,
             if (sudoCtrl.text.isNotEmpty) 'sudo_password': sudoCtrl.text,
+            if (_transport != 'auto') 'transport': _transport,
+            if (_remoteApproved) 'remote_approved': true,
           }),
         );
         if (mounted) Navigator.pop(context, true);
@@ -420,51 +418,39 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
         if (keyCtrl.text.trim().isNotEmpty)
           'private_key_pem': keyCtrl.text.trim(),
         'expected_host_key': hostFingerprint,
+        if (keyPassphraseCtrl.text.isNotEmpty)
+          'key_passphrase': keyPassphraseCtrl.text,
+        if (upgrade) 'ssh_host_id': widget.associateSshHostId,
         if (sudoCtrl.text.isNotEmpty) 'sudo_password': sudoCtrl.text,
         if (_transport != 'auto') 'transport': _transport,
         if (_remoteApproved) 'remote_approved': true,
         'open_firewall': openFirewall,
         'install_systemd': installSystemd,
-        'install_system_service': installSystemd && installSystemService,
         'auto_pair': autoPair,
         if (widget.termuxCompanion) 'termux_companion': true,
-        if (widget.termuxCompanion) 'allow_termux_files': autoPair && allowTermuxFiles,
+        if (widget.termuxCompanion)
+          'allow_termux_files': autoPair && allowTermuxFiles,
         'update_binaries': updateBinaries,
         'allow_sync_control': autoPair && allowSyncControl,
         'allow_sync_remote': autoPair && allowSyncControl && allowSyncRemote,
         'bridge_port': 8731,
         if (localArtifacts.isNotEmpty) 'local_artifacts': localArtifacts,
       };
-      final res = await widget.core.run(
-        ['ssh-bootstrap', '-'],
-        input: jsonEncode(payload),
-      );
+      final res = await widget.core.run([
+        'ssh-bootstrap',
+        '-',
+      ], input: jsonEncode(payload));
       final parsed = Map<String, dynamic>.from(res as Map);
-      final pairedPeerId = parsed['paired_peer_id'] as String?;
-      await _saveHostAndPeerSsh(
-        host: host,
-        port: port,
-        user: user,
-        hostKey: hostFingerprint ?? '',
-        isTailnet: viaTailnet || parsed['via_tailnet'] == true,
-        pem: keyCtrl.text.trim(),
-        peerId: pairedPeerId,
-      );
-      if (widget.associateSshHostId != null &&
-          widget.associateSshHostId!.isNotEmpty &&
-          pairedPeerId != null &&
-          pairedPeerId.isNotEmpty) {
-        try {
-          await widget.core.run([
-            'ssh-hosts',
-            'associate',
-            widget.associateSshHostId!,
-            pairedPeerId,
-          ]);
-        } catch (_) {}
-      }
       if (mounted) {
-        setState(() => result = parsed);
+        setState(() {
+          result = parsed;
+          if (parsed['setup_error'] case final String message) {
+            error =
+                'Agent binaries are present. Setup could not finish. $message';
+          } else if (parsed['association_error'] case final String message) {
+            error = 'Agent paired. Could not link the SSH account. $message';
+          }
+        });
       }
     } catch (e) {
       if (mounted) {
@@ -556,253 +542,277 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
   Widget build(BuildContext context) {
     final isTailnet = viaTailnet || widget.tailscaleSsh;
     final dialog = AlertDialog(
-    title: Text(
-      uninstall
-          ? 'Remove ${widget.deviceName ?? 'laptop'}?'
-          : widget.termuxCompanion
-          ? 'Set up Termux folder sync'
-          : 'Setup & auto-pair via SSH',
-    ),
-    content: SizedBox(
-      width: 480,
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (busy) const LinearProgressIndicator(),
-            if (uninstall)
-              const Text(
-                'Remove this pairing from this device only (for offline, wiped, or uninstalled devices), or verify SSH below to also stop and uninstall the DeviceBridge daemon, binaries, and configuration on the remote device.',
-              )
-            else if (widget.termuxCompanion)
-              const Text(
-                'Installs and starts the companion and its bundled Syncthing engine over SSH. The companion runs as the Termux app user. Pair this phone to browse and sync Termux Home.',
-                style: TextStyle(fontSize: 12),
-              )
-            else const Text(
-              'Connects over SSH to install bridge-agent as a root systemd service (zero Polkit/sudo prompts for Wi-Fi Direct, Hotspot & 5 GHz regdom), open TCP 8731, and auto-pair with full storage access. Passwords remain memory-only.',
-              style: TextStyle(fontSize: 12),
-            ),
-            if (!uninstall && !widget.termuxCompanion) ...[
-              const SizedBox(height: 12),
-              SshTransportSelector(
-                transport: _transport,
-                remoteApproved: _remoteApproved,
-                rules: _rules,
-                runtime: _runtime,
-                allowAuto: true,
-                enabled: !busy,
-                approvalTitle: 'Allow SSH agent setup to use the selected overlay',
-                onTransportChanged: (value) {
-                  setState(() => _transport = value);
-                  _invalidateProbe();
-                },
-                onRemoteApprovedChanged: (value) =>
-                    setState(() => _remoteApproved = value),
-              ),
-            ],
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  flex: 3,
-                  child: TextField(
-                    controller: hostCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Host / Tailscale hostname / IP',
-                      hintText: 'probook or 10.100.102.69',
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: portCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Port'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: userCtrl,
-              decoration: const InputDecoration(
-                labelText: 'SSH username',
-                hintText: 'afzl',
-              ),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: passCtrl,
-              obscureText: true,
-              decoration: InputDecoration(
-                labelText: isTailnet
-                    ? 'SSH password (optional for Tailscale SSH)'
-                    : 'SSH password (optional if using key)',
-              ),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: keyCtrl,
-              maxLines: 3,
-              decoration: InputDecoration(
-                labelText: isTailnet
-                    ? 'Private key PEM (optional for Tailscale SSH)'
-                    : 'Private key PEM (optional)',
-              ),
-            ),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: busy ? null : _importFromSshDir,
-                  icon: const Icon(Icons.vpn_key_outlined, size: 18),
-                  label: const Text('Import from .ssh'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: busy ? null : _browseKeyFile,
-                  icon: const Icon(Icons.folder_open, size: 18),
-                  label: const Text('Browse key file'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            if (!uninstall && !widget.termuxCompanion) ...[
-            CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              value: installSystemd,
-              onChanged: (v) => setState(() => installSystemd = v ?? true),
-              title: const Text('Schedule bridge-agent via systemd'),
-            ),
-            if (installSystemd)
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                value: installSystemService,
-                onChanged: (v) =>
-                    setState(() => installSystemService = v ?? true),
-                title: const Text(
-                  'Root system service (recommended, no Polkit prompts)',
-                ),
-                subtitle: const Text(
-                  'Runs as root with full 5 GHz regdom & Wi-Fi Direct/Hotspot join permissions; falls back to user service if sudo unavailable',
+      title: Text(
+        uninstall
+            ? 'Remove ${widget.deviceName ?? 'laptop'}?'
+            : widget.termuxCompanion
+            ? 'Set up Termux folder sync'
+            : 'Setup & auto-pair via SSH',
+      ),
+      content: SizedBox(
+        width: 480,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (busy) const LinearProgressIndicator(),
+              if (uninstall)
+                const Text(
+                  'Remove this pairing from this device only (for offline, wiped, or uninstalled devices), or verify SSH below to also stop and uninstall the DeviceBridge daemon, binaries, and configuration on the remote device.',
+                )
+              else if (widget.termuxCompanion)
+                const Text(
+                  'Installs and starts the companion and its bundled Syncthing engine over SSH. The companion runs as the Termux app user. Pair this phone to browse and sync Termux Home.',
+                  style: TextStyle(fontSize: 12),
+                )
+              else
+                const Text(
+                  'Installs bridge-agent for the SSH account and can schedule it as a systemd user service. Credentials are held for this setup session.',
                   style: TextStyle(fontSize: 12),
                 ),
+              if (!widget.termuxCompanion) ...[
+                const SizedBox(height: 12),
+                SshTransportSelector(
+                  transport: _transport,
+                  remoteApproved: _remoteApproved,
+                  rules: _rules,
+                  runtime: _runtime,
+                  allowAuto: true,
+                  enabled: !busy,
+                  approvalTitle:
+                      'Allow SSH agent setup to use the selected overlay',
+                  onTransportChanged: (value) {
+                    setState(() => _transport = value);
+                    if (!upgrade) _invalidateProbe();
+                  },
+                  onRemoteApprovedChanged: (value) =>
+                      setState(() => _remoteApproved = value),
+                ),
+              ],
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    flex: 3,
+                    child: TextField(
+                      controller: hostCtrl,
+                      readOnly: upgrade,
+                      decoration: const InputDecoration(
+                        labelText: 'Host / Tailscale hostname / IP',
+                        hintText: 'probook or 10.100.102.69',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: portCtrl,
+                      readOnly: upgrade,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Port'),
+                    ),
+                  ),
+                ],
               ),
-            CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              value: openFirewall,
-              onChanged: (v) => setState(() => openFirewall = v ?? true),
-              title: const Text('Open TCP 8731 on UFW firewall'),
-            ),
-            ],
-            if (uninstall)
+              const SizedBox(height: 8),
+              TextField(
+                controller: userCtrl,
+                readOnly: upgrade,
+                decoration: const InputDecoration(
+                  labelText: 'SSH username',
+                  hintText: 'afzl',
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: passCtrl,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: isTailnet
+                      ? 'SSH password (optional for Tailscale SSH)'
+                      : 'SSH password (optional if using key)',
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: keyCtrl,
+                maxLines: 3,
+                decoration: InputDecoration(
+                  labelText: isTailnet
+                      ? 'Private key PEM (optional for Tailscale SSH)'
+                      : 'Private key PEM (optional)',
+                ),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: busy ? null : _importFromSshDir,
+                    icon: const Icon(Icons.vpn_key_outlined, size: 18),
+                    label: const Text('Import from .ssh'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: busy ? null : _browseKeyFile,
+                    icon: const Icon(Icons.folder_open, size: 18),
+                    label: const Text('Browse key file'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (!uninstall && !widget.termuxCompanion) ...[
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: installSystemd,
+                  onChanged: (v) => setState(() => installSystemd = v ?? true),
+                  title: const Text('Schedule bridge-agent via systemd'),
+                ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: openFirewall,
+                  onChanged: (v) => setState(() => openFirewall = v ?? true),
+                  title: const Text(
+                    'Allow TCP 8731 from the detected LAN in UFW',
+                  ),
+                ),
+              ],
               TextField(
                 controller: keyPassphraseCtrl,
                 obscureText: true,
-                decoration: const InputDecoration(labelText: 'SSH key passphrase (if required)'),
-              ),
-            if (uninstall || openFirewall || (installSystemd && installSystemService))
-              TextField(
-                controller: sudoCtrl,
-                obscureText: true,
                 decoration: const InputDecoration(
-                  labelText: 'Sudo password for root service / UFW (if required)',
+                  labelText: 'SSH key passphrase (if required)',
                 ),
               ),
-            if (!uninstall) CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              value: autoPair,
-              onChanged: (v) => setState(() => autoPair = v ?? true),
-              title: Text(widget.termuxCompanion ? 'Pair and grant Termux Home access' : 'Auto-pair with full storage access'),
-            ),
-            if (!uninstall) CheckboxListTile(
-              contentPadding: EdgeInsets.zero, value: updateBinaries,
-              onChanged: (v) => setState(() => updateBinaries = v ?? true),
-              title: const Text('Install or update DeviceBridge binaries'),
-              subtitle: const Text('Includes the folder sync engine on supported machines, in DeviceBridge-owned storage.'),
-            ),
-            if (widget.termuxCompanion && autoPair)
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                value: allowTermuxFiles,
-                onChanged: (value) => setState(() => allowTermuxFiles = value ?? false),
-                title: const Text('Allow copying and moving Termux files'),
-                subtitle: const Text('This phone can create files and remove verified move sources within the granted Home.'),
-              ),
-            if (!uninstall && autoPair) CheckboxListTile(
-              contentPadding: EdgeInsets.zero, value: allowSyncControl,
-              onChanged: (v) => setState(() => allowSyncControl = v ?? false),
-              title: const Text('Allow this device to manage folder sync'),
-              subtitle: const Text('Includes updating selected destination folders within granted storage. Transfers go directly between the selected endpoints.'),
-            ),
-            if (!uninstall && autoPair && allowSyncControl) CheckboxListTile(
-              contentPadding: EdgeInsets.zero, value: allowSyncRemote,
-              onChanged: (v) => setState(() => allowSyncRemote = v ?? false),
-              title: const Text('Allow approved remote sync routes'),
-              subtitle: const Text('Permit explicit Tailscale or routed sessions, including approved internet or relay data.'),
-            ),
-            if (hostFingerprint != null) ...[
-              const SizedBox(height: 8),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(10),
-                  child: SelectableText(
-                    'SSH Host Key${hostKeyType == null ? '' : ' ($hostKeyType)'}'
-                    '${viaTailnet ? ' · via Tailscale${resolvedHost == null ? '' : ' ($resolvedHost)'}' : ''}:\n'
-                    '$hostFingerprint',
-                    style: const TextStyle(fontSize: 12),
+              if (uninstall || openFirewall)
+                TextField(
+                  controller: sudoCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Sudo password for this operation (if required)',
                   ),
                 ),
-              ),
-            ],
-            if (result != null) ...[
-              const SizedBox(height: 8),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(10),
-                  child: SelectableText(
-                    'Target: ${result!['remote_hostname']}\n'
-                    'Service: ${result!['systemd_status']}\n'
-                    'Firewall: ${result!['firewall_status']}\n'
-                    'Paired: ${result!['paired_route'] ?? '—'} (${result!['paired_endpoint'] ?? '—'})',
-                    style: const TextStyle(fontSize: 12),
+              if (!uninstall)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: autoPair,
+                  onChanged: upgrade
+                      ? null
+                      : (v) => setState(() => autoPair = v ?? true),
+                  title: Text(
+                    widget.termuxCompanion
+                        ? 'Pair and grant Termux Home access'
+                        : 'Auto-pair with full storage access',
                   ),
                 ),
-              ),
+              if (!uninstall)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: updateBinaries,
+                  onChanged: (v) => setState(() => updateBinaries = v ?? true),
+                  title: const Text('Install or update DeviceBridge binaries'),
+                  subtitle: const Text(
+                    'Includes the folder sync engine on supported machines, in DeviceBridge-owned storage.',
+                  ),
+                ),
+              if (widget.termuxCompanion && autoPair)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: allowTermuxFiles,
+                  onChanged: (value) =>
+                      setState(() => allowTermuxFiles = value ?? false),
+                  title: const Text('Allow copying and moving Termux files'),
+                  subtitle: const Text(
+                    'This phone can create files and remove verified move sources within the granted Home.',
+                  ),
+                ),
+              if (!uninstall && autoPair)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: allowSyncControl,
+                  onChanged: (v) =>
+                      setState(() => allowSyncControl = v ?? false),
+                  title: const Text('Allow this device to manage folder sync'),
+                  subtitle: const Text(
+                    'Includes updating selected destination folders within granted storage. Transfers go directly between the selected endpoints.',
+                  ),
+                ),
+              if (!uninstall && autoPair && allowSyncControl)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: allowSyncRemote,
+                  onChanged: (v) =>
+                      setState(() => allowSyncRemote = v ?? false),
+                  title: const Text('Allow approved remote sync routes'),
+                  subtitle: const Text(
+                    'Permit explicit Tailscale or routed sessions, including approved internet or relay data.',
+                  ),
+                ),
+              if (hostFingerprint != null) ...[
+                const SizedBox(height: 8),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: SelectableText(
+                      'SSH Host Key${hostKeyType == null ? '' : ' ($hostKeyType)'}'
+                      '${viaTailnet ? ' · via Tailscale${resolvedHost == null ? '' : ' ($resolvedHost)'}' : ''}:\n'
+                      '$hostFingerprint',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ),
+              ],
+              if (result != null) ...[
+                const SizedBox(height: 8),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: SelectableText(
+                      'Target: ${result!['remote_hostname']}\n'
+                      'Service: ${result!['systemd_status']}\n'
+                      'Firewall: ${result!['firewall_status']}\n'
+                      'Paired: ${result!['paired_route'] ?? '—'} (${result!['paired_endpoint'] ?? '—'})',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ),
+              ],
+              if (error != null) ...[
+                const SizedBox(height: 8),
+                SelectableText(error!, style: const TextStyle(fontSize: 12)),
+              ],
             ],
-            if (error != null) ...[
-              const SizedBox(height: 8),
-              SelectableText(error!, style: const TextStyle(fontSize: 12)),
-            ],
-          ],
+          ),
         ),
       ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: busy ? null : () => Navigator.pop(context, result != null),
-        child: Text(result != null ? 'Done' : 'Cancel'),
-      ),
-      if (uninstall && result == null)
-        OutlinedButton(
-          onPressed: busy ? null : removeLocallyOnly,
-          child: const Text('Remove locally only'),
+      actions: [
+        TextButton(
+          onPressed: busy
+              ? null
+              : () => Navigator.pop(
+                  context,
+                  result != null &&
+                      (!upgrade || result!['paired_peer_id'] != null),
+                ),
+          child: Text(result != null ? 'Done' : 'Cancel'),
         ),
-      if (hostFingerprint == null)
-        FilledButton(
-          onPressed: busy ? null : probeHostKey,
-          child: const Text('Verify Host Key'),
-        )
-      else if (result == null)
-        FilledButton(
-          onPressed: busy ? null : runBootstrap,
-          child: Text(uninstall ? 'Remove and uninstall' : 'Run Setup'),
-        ),
-    ],
+        if (uninstall && result == null)
+          OutlinedButton(
+            onPressed: busy ? null : removeLocallyOnly,
+            child: const Text('Remove locally only'),
+          ),
+        if (hostFingerprint == null)
+          FilledButton(
+            onPressed: busy ? null : probeHostKey,
+            child: const Text('Verify Host Key'),
+          )
+        else if (result == null)
+          FilledButton(
+            onPressed: busy ? null : runBootstrap,
+            child: Text(uninstall ? 'Remove and uninstall' : 'Run Setup'),
+          ),
+      ],
     );
     return PopScope(canPop: !busy, child: dialog);
   }

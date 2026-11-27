@@ -266,8 +266,7 @@ class _HomeDashboardState extends State<HomeDashboard>
         _HomeAlert(
           level: TrafficLightLevel.amber,
           title: 'Permissions needed',
-          detail:
-              'Grant storage or Wi-Fi permissions for File manager and Direct links.',
+          detail: 'Grant storage or Wi-Fi permissions for File manager and Direct links.',
           actionLabel: 'Review',
           onAction: widget.onOpenPermissions!,
         ),
@@ -482,6 +481,7 @@ class _HomeDashboardState extends State<HomeDashboard>
                           label: 'Agent SSH',
                           enabled: _map('agent')['agent_ssh_enabled'] == true,
                           listening:
+                              ssh['terminal_ready'] != false &&
                               _map('agent')['agent_ssh_enabled'] == true &&
                               (_map('agent')['running'] == true ||
                                   _map('agent')['file_running'] == true),
@@ -510,7 +510,10 @@ class _HomeDashboardState extends State<HomeDashboard>
                           key: const ValueKey('home-ssh-tailnet'),
                           label: 'Tailscale SSH · :22',
                           enabled: tailnetSshEnabled,
-                          listening: tailnetRunning && tailnetSshEnabled,
+                          listening:
+                              tailnetRunning &&
+                              tailnetSshEnabled &&
+                              ssh['terminal_ready'] != false,
                           connections:
                               ((tailnet['active_ssh_conns'] ??
                                           ssh['active_ssh_conns'])

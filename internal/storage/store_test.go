@@ -263,7 +263,7 @@ func TestPeerAndHostSSHPersistenceRules(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Non-Tailscale host saves both username and PEM private key.
+	// The LAN profile preserves trust metadata and discards the PEM.
 	lanSaved, err := s.PeerSSH(id, &PeerSSHProfile{
 		Host:            "192.168.1.50",
 		Port:            22,
@@ -275,8 +275,8 @@ func TestPeerAndHostSSHPersistenceRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lanSaved.User != "afzl" || !strings.Contains(lanSaved.PrivateKeyPEM, "TESTKEY") {
-		t.Fatalf("expected non-Tailscale profile to preserve key, got %+v", lanSaved)
+	if lanSaved.User != "afzl" || lanSaved.PrivateKeyPEM != "" {
+		t.Fatalf("expected LAN metadata without the key, got %+v", lanSaved)
 	}
 
 	// Tailscale target strips PrivateKeyPEM and saves username/host/host-key only.

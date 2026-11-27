@@ -7,12 +7,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
 )
 
 const AgentSSHFeature = "agent-ssh-v1"
+const agentSSHSetupFeature = "agent-ssh-terminal-setup-v1"
 
 type hijackedSSHConn struct {
 	net.Conn
@@ -38,11 +41,19 @@ func (c *hijackedSSHConn) Write(p []byte) (int, error) {
 }
 
 func (s *Server) agentSSHEnabled(ctx context.Context) bool {
-	if s.DisableAgentSSH {
+	if s.DisableAgentSSH || (runtime.GOOS == "linux" && os.Geteuid() == 0) {
 		return false
 	}
 	policy, err := s.Store.NetworkPolicy(ctx, nil)
 	return err == nil && policy["network_agent_ssh"]
+}
+
+func (s *Server) agentSSHShellReady() bool {
+	if runtime.GOOS != "android" {
+		return true
+	}
+	shell, _ := sshserver.ResolveShell(s.StateDir)
+	return shell != ""
 }
 
 func (s *Server) agentSSH(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +63,10 @@ func (s *Server) agentSSH(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.paired(r) {
 		fail(w, http.StatusForbidden, "unpaired_device")
+		return
+	}
+	if !s.agentSSHShellReady() {
+		fail(w, http.StatusServiceUnavailable, "terminal_setup_required")
 		return
 	}
 	if !strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "devicebridge-ssh") {

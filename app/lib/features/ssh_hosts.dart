@@ -67,7 +67,8 @@ class _SshHostScreenState extends State<SshHostScreen> {
     super.initState();
     _host.text = widget.initialHost ?? '';
     _port.text = '${widget.initialPort}';
-    if (widget.initialTransport != null && widget.initialTransport!.isNotEmpty) {
+    if (widget.initialTransport != null &&
+        widget.initialTransport!.isNotEmpty) {
       _transport = widget.initialTransport!;
     }
     _remoteApproved = widget.initialRemoteApproved;
@@ -470,6 +471,7 @@ class _SshHostScreenState extends State<SshHostScreen> {
                                 saved['remote_approved'] == true,
                             initialPassword: _password.text,
                             initialPrivateKeyPem: _key,
+                            initialKeyPassphrase: _passphrase.text,
                             associateSshHostId: '${saved['id'] ?? ''}',
                           ),
                         );

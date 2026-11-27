@@ -52,7 +52,8 @@ class MainActivity : FlutterActivity() {
     private var sharePickResult: MethodChannel.Result? = null
     @Volatile private var wifiPermLatch: java.util.concurrent.CountDownLatch? = null
     @Volatile private var wifiPermGranted: Boolean = false
-    private lateinit var termuxControl: TermuxControl
+    private val openSshLock = Any()
+    @Volatile private var openSshError: String? = null
     private lateinit var documentsGateway: DocumentsGateway
     private lateinit var directLink: DirectLinkController
     private lateinit var deviceSettings: DeviceSettings
@@ -610,7 +611,6 @@ class MainActivity : FlutterActivity() {
             wifiPermLatch?.countDown()
             return
         }
-        if (::termuxControl.isInitialized) termuxControl.permissionResult(requestCode)
     }
 
     private fun hasWifiDirectPermissions(): Boolean {
@@ -689,7 +689,6 @@ class MainActivity : FlutterActivity() {
             AndroidTailnet.screenChanged = null
             tailnet.detachScreen()
         }
-        if (::termuxControl.isInitialized) termuxControl.close()
         if (::documentsGateway.isInitialized) documentsGateway.close()
         if (::directLink.isInitialized) directLink.close()
         if (::permissionManager.isInitialized) permissionManager.close()
@@ -761,12 +760,11 @@ class MainActivity : FlutterActivity() {
             applicationContext,
             onPrivilegedAccess = { if (::permissionManager.isInitialized) permissionManager.autoGrantPrivilegedPermissions() },
         ) { action -> runOnUiThread { action() } }
-        permissionManager = PermissionManager(this, deviceSettings, ::isTermuxInstalled)
+        permissionManager = PermissionManager(this, deviceSettings)
         tailnet = AndroidTailnet.coordinator(applicationContext)
         AndroidTailnet.screenChanged = tailnetScreenChanged
         tailnet.syncPrefs(deviceSettings.tsnetConfig())
         wireguard = WireguardCoordinator(applicationContext)
-        termuxControl = TermuxControl(this)
         documentsGateway = DocumentsGateway(this)
         lateinit var lanRef: LanCoordinator
         directLink = DirectLinkController(
@@ -809,20 +807,7 @@ class MainActivity : FlutterActivity() {
             val receiver = value["endpoint"] as? String ?: "127.0.0.1:8731"
             tailnet.network(overlayNet, receiver, extraDirect)
             wireguard.network(overlayNet, receiver)
-            if (deviceSettings.tsnetConfig()["openssh_enabled"] == true) {
-                worker.execute {
-                    try {
-                        val cli = GoBinaryManager.resolve(applicationContext, "cli")
-                        if (cli.canExecute()) {
-                            val stateDir = File(filesDir, "devicebridge").path
-                            val pb = ProcessBuilder(cli.path, "--state", stateDir, "ensure-termux-ssh", "--openssh=true")
-                            pb.environment()["DEVICEBRIDGE_APP_PACKAGE"] = packageName
-                            pb.environment()["DEVICEBRIDGE_NATIVE_LIB_DIR"] = applicationInfo.nativeLibraryDir
-                            pb.start().waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-                        }
-                    } catch (_: Exception) {}
-                }
-            }
+            if (deviceSettings.tsnetConfig()["openssh_enabled"] == true) reconcileTermuxOpenSsh()
         }
         lanRef = lan
         worker.execute {
@@ -832,18 +817,7 @@ class MainActivity : FlutterActivity() {
             try {
                 directLink.resumeOrphanedIfPresent()
             } catch (_: Exception) {}
-            try {
-                val cli = GoBinaryManager.resolve(applicationContext, "cli")
-                if (cli.canExecute()) {
-                    val stateDir = File(filesDir, "devicebridge").path
-                    val openSsh = deviceSettings.tsnetConfig()["openssh_enabled"] == true
-                    val pb = ProcessBuilder(cli.path, "--state", stateDir, "ensure-termux-ssh", "--openssh=$openSsh")
-                    pb.environment()["DEVICEBRIDGE_APP_PACKAGE"] = packageName
-                    pb.environment()["DEVICEBRIDGE_NATIVE_LIB_DIR"] = applicationInfo.nativeLibraryDir
-                    pb.start()
-                        .waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-                }
-            } catch (_: Exception) {}
+            reconcileTermuxOpenSsh()
         }
         EventChannel(engine.dartExecutor.binaryMessenger, "dev.devicebridge/network").setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink) { networkSink = events; networkStatus?.let { events.success(it) } }
@@ -905,7 +879,13 @@ class MainActivity : FlutterActivity() {
                     val spec = call.argument<Map<String, Any?>>("spec")?.let { JSONObject(it).toString() }
                     termuxBackup.pick(false, localTerminal, result, spec)
                 }
-                "restoreTermuxBackup" -> termuxBackup.pick(true, localTerminal, result)
+                "restoreTermuxBackup" -> {
+                    if (deviceSettings.tsnetConfig()["openssh_enabled"] == true || readSshdRuntime()["running"] == true) {
+                        result.error("termux_busy", "Turn off Termux OpenSSH in Networks before restoring Terminal Home.", null)
+                    } else {
+                        termuxBackup.pick(true, localTerminal, result)
+                    }
+                }
                 "savedTermuxPackages" -> result.success(termuxBackup.savedPackages())
                 "localTerminalStart", "localTerminalWrite" -> {
                     val sessionId = call.argument<String>("session_id") ?: "default"
@@ -1024,12 +1004,6 @@ class MainActivity : FlutterActivity() {
                 "localFiles" -> {
                     val operation = call.argument<String>("operation") ?: ""
                     val arguments = call.argument<Map<String, Any?>>("arguments") ?: emptyMap()
-                    if (operation == "termux-status") { result.success(termuxControl.status()); return@setMethodCallHandler }
-                    if (operation == "termux-permission") { termuxControl.permission(result); return@setMethodCallHandler }
-                    if (operation == "termux-run") {
-                        termuxControl.run(arguments["program"] as? String ?: "", (arguments["arguments"] as? List<*>)?.map { it as String } ?: emptyList(), result)
-                        return@setMethodCallHandler
-                    }
                     worker.execute {
                         try {
                             val value = LocalFiles(this, ::checksum).execute(operation, arguments)
@@ -1046,6 +1020,10 @@ class MainActivity : FlutterActivity() {
                 }
                 "updateAppSettings" -> {
                     val args = call.arguments as? Map<String, Any?> ?: emptyMap()
+                    if (termuxBackup.restoring && args["tsnet_openssh_enabled"] == true) {
+                        result.error("termux_busy", "Terminal Home is being restored.", null)
+                        return@setMethodCallHandler
+                    }
                     deviceSettings.update(args, result)
                     if (args["root_enabled"] == false || args["root_feature_keep_terminal"] == false) {
                         localTerminal.stopDetached()
@@ -1059,22 +1037,7 @@ class MainActivity : FlutterActivity() {
                             AndroidTailnet.syncProxy(this, tailnet, config)
                         }
                     }
-                    if (args.containsKey("tsnet_openssh_enabled")) {
-                        val openSsh = deviceSettings.tsnetConfig()["openssh_enabled"] == true
-                        worker.execute {
-                            try {
-                                val cli = GoBinaryManager.resolve(applicationContext, "cli")
-                                if (cli.canExecute()) {
-                                    val stateDir = File(filesDir, "devicebridge").path
-                                    val pb = ProcessBuilder(cli.path, "--state", stateDir, "ensure-termux-ssh", "--openssh=$openSsh")
-                                    pb.environment()["DEVICEBRIDGE_APP_PACKAGE"] = packageName
-                                    pb.environment()["DEVICEBRIDGE_NATIVE_LIB_DIR"] = applicationInfo.nativeLibraryDir
-                                    pb.start()
-                                        .waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-                                }
-                            } catch (_: Exception) {}
-                        }
-                    }
+                    if (args.containsKey("tsnet_openssh_enabled")) reconcileTermuxOpenSsh()
                 }
                 "goBinariesStatus" -> {
                     worker.execute {
@@ -1354,9 +1317,30 @@ class MainActivity : FlutterActivity() {
                 }
                 "connectionSetup" -> {
                     val kind = call.argument<String>("kind")
-                    if (kind == "shizuku" || kind == "termux") {
-                        val intent = packageManager.getLaunchIntentForPackage(if (kind == "termux") "com.termux" else "moe.shizuku.privileged.api")
-                        if (intent == null) result.error("unavailable", "${if (kind == "termux") "Termux" else "Shizuku"} is not installed", null)
+                    if (kind in setOf("terminal-setup", "terminal-tools", "terminal-openssh")) {
+                        if (termuxBackup.restoring) {
+                            result.error("termux_busy", "Terminal Home is being restored.", null)
+                            return@setMethodCallHandler
+                        }
+                        val mode = when (kind) {
+                            "terminal-tools" -> "tools"
+                            "terminal-openssh" -> "openssh"
+                            else -> "base"
+                        }
+                        worker.execute {
+                            try {
+                                TermuxBootstrap.ensureReady(applicationContext, {}, mode = mode, active = { !isDestroyed })
+                                reconcileTermuxOpenSsh()
+                                runOnUiThread { result.success(null) }
+                            } catch (error: Exception) {
+                                runOnUiThread { result.error("terminal_setup_failed", error.message, null) }
+                            }
+                        }
+                        return@setMethodCallHandler
+                    }
+                    if (kind == "shizuku") {
+                        val intent = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+                        if (intent == null) result.error("unavailable", "Shizuku is not installed", null)
                         else { startActivity(intent); result.success(null) }
                         return@setMethodCallHandler
                     }
@@ -1768,6 +1752,45 @@ class MainActivity : FlutterActivity() {
 
     private fun countEstablishedTcpOnPort(port: Int): Int = countTcpSocketsOnPort(port, "01")
 
+    private fun selectedOpenSshLan(): Pair<String, String>? {
+        if (!::lan.isInitialized) return null
+        val selected = lan.statusSnapshot()["network"] as? Map<*, *> ?: return null
+        val iface = selected["interface"] as? String ?: return null
+        val cidr = selected["cidr"] as? String ?: return null
+        val current = lan.networks().firstOrNull { it["interface"] == iface && it["cidr"] == cidr }
+            ?: return null
+        if (current["kind"] !in setOf("wifi", "wifi_direct", "hotspot", "usb_net")) return null
+        return iface to cidr
+    }
+
+    private fun reconcileTermuxOpenSsh() {
+        worker.execute {
+            synchronized(openSshLock) {
+                val enabled = deviceSettings.tsnetConfig()["openssh_enabled"] == true
+                val link = if (enabled) selectedOpenSshLan() else null
+                openSshError = try {
+                    val cli = GoBinaryManager.resolve(applicationContext, "cli")
+                    val state = File(filesDir, "devicebridge").path
+                    val cmd = ProcessBuilder(cli.path, "--state", state, "--interface", link?.first.orEmpty(),
+                        "--lan-cidr", link?.second.orEmpty(), "ensure-termux-ssh", "--openssh=$enabled")
+                    cmd.environment()["DEVICEBRIDGE_APP_PACKAGE"] = packageName
+                    cmd.environment()["DEVICEBRIDGE_NATIVE_LIB_DIR"] = applicationInfo.nativeLibraryDir
+                    val process = cmd.redirectErrorStream(true).start()
+                    try {
+                        check(process.waitFor(6, java.util.concurrent.TimeUnit.SECONDS)) { "OpenSSH setup timed out." }
+                        val details = process.inputStream.bufferedReader().use { it.readText().trim() }
+                        check(process.exitValue() == 0) { details.ifEmpty { "OpenSSH listener failed to start." } }
+                    } finally {
+                        if (process.isAlive) process.destroyForcibly()
+                    }
+                    null
+                } catch (error: Exception) {
+                    error.message ?: "OpenSSH listener setup failed."
+                }
+            }
+        }
+    }
+
     private fun readSshdRuntime(): Map<String, Any?> {
         val pidFile = File(filesDir, "terminal/files/usr/var/run/sshd.pid")
         var pid = 0
@@ -1776,12 +1799,19 @@ class MainActivity : FlutterActivity() {
             if (pidFile.exists()) {
                 pid = pidFile.readText().trim().toIntOrNull() ?: 0
                 if (pid > 0) {
-                    alive = File("/proc/$pid").exists()
+                    val command = File("/proc/$pid/cmdline").readText()
+                    alive = command.contains(File(filesDir, "terminal/files/usr/bin/sshd").path)
                 }
             }
         } catch (_: Exception) {}
         val conns = if (alive) countEstablishedTcpOnPort(8022) else 0
+        val address = if (alive) runCatching {
+            File(filesDir, "terminal/files/usr/etc/ssh/devicebridge_sshd_config").useLines { lines ->
+                lines.firstOrNull { it.startsWith("ListenAddress ") }?.substringAfter(' ')
+            }
+        }.getOrNull() else null
         return mapOf(
+            "address" to address,
             "running" to alive,
             "pid" to pid,
             "port" to 8022,
@@ -1882,6 +1912,10 @@ class MainActivity : FlutterActivity() {
             "agent" to (lanSnap + agentFile),
             "ssh" to mapOf(
                 "tailscale_ssh_enabled" to (tsnetCfg["tailscale_ssh_enabled"] == true),
+                "terminal_ready" to TermuxBootstrap.isReady(applicationContext),
+                "openssh_ready" to TermuxBootstrap.hasOpenSsh(applicationContext),
+                "openssh_address" to sshd["address"],
+                "openssh_error" to openSshError,
                 "openssh_enabled" to (tsnetCfg["openssh_enabled"] == true),
                 "openssh_running" to (sshd["running"] == true),
                 "openssh_port" to (sshd["port"] ?: 8022),

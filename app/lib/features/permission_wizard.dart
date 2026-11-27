@@ -161,7 +161,6 @@ class _PermissionWizardDialogState extends State<PermissionWizardDialog>
     'notifications' => Icons.notifications_outlined,
     'camera' => Icons.qr_code_scanner_outlined,
     'install_packages' => Icons.system_update_outlined,
-    'termux_run' => Icons.terminal_outlined,
     _ => Icons.verified_user_outlined,
   };
 

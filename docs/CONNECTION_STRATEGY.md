@@ -2,7 +2,7 @@
 
 ## Setup and verification
 
-1. Discover finds SSH targets on ordinary Wi-Fi/LAN and on the signed-in tailnet. SSH Setup verifies the host key, installs the agent and pairs with its DeviceBridge identity. The SSH route is an initial route candidate.
+1. Discover finds SSH targets on ordinary Wi-Fi/LAN and on the signed-in tailnet. SSH Setup uses the verified SSH account to install the agent and pair with its DeviceBridge identity. Linux scheduling uses the account's systemd user service. The optional UFW rule allows the detected LAN subnet on its interface.
 2. Device Detail checks ordinary LAN, configured Tailscale and configured WireGuard in parallel. It uses saved addresses, on-link discovery and endpoints advertised by the authenticated paired agent. A route is eligible only after the target answers over that transport with the pinned DeviceBridge key.
 3. Eligibility for normal connections is automatic for paired devices. A tunnel login, a matching hostname or an IP address alone never adds a row. Selecting a route leaves file grants as they were. A per-device setting controls bulk traffic over internet, relay and cellular routes.
 
@@ -23,6 +23,7 @@
 - USB discovery lists wired transports and existing forwards. Starting a USB connection can create a forward and must authenticate the selected paired peer through it. A failed attempt removes only the forward it created.
 - Foreground device and connectivity events refresh the route list. Local Wi-Fi changes update LAN rows without disturbing a healthy user preference. A pending Tailscale startup gets bounded retries. Signs of logout or unsupported/unreachable peers remove the route from the list.
 - Automatically resumed bulk transfers use the same LAN → Tailscale → WireGuard ordering. Internet, relay and cellular bulk routes require the paired device's explicit approval. The transfer engine still verifies the same peer and manifest before it resumes.
+- Recovery also checks the current Networks settings and the peer's saved fallback list when present. SSH Automatic uses Tailscale only with overlay approval and an enabled Tailscale transport.
 - An interrupted remote download keeps its staging and progress. The CLI retries the selected route and eligible alternatives with bounded backoff for up to two minutes without progress. Android supplies the currently approved Wi-Fi binding when it changes. A recovered connection authenticates the original peer and continues by file offset using the original manifest and final XXH64 checks. Interrupted tar downloads continue via file streams. The same destination can be resumed manually after the wait expires.
 - Android remote downloads require separate approval for a metered Tailscale uplink, including cellular. The download pauses before starting file data on that uplink and offers **Use data for this download** or **Choose another connection**. The latter offers verified links and opens Wi-Fi Direct or hotspot setup when needed. The temporary approval expires when the download operation ends. Ordinary Wi-Fi recovery can continue automatically. Tailscale stream setup checks that the running app node is bound to the network Android reported.
 

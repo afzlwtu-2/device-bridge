@@ -156,7 +156,14 @@ func (s *Store) migrate() error {
 		return errors.New("database schema is newer than this app")
 	}
 	if version == 3 {
-		return nil
+		const oldSSHKeys = `key GLOB 'ssh.*' AND
+			CASE WHEN json_valid(value) THEN json_type(value, '$.private_key_pem') IS NOT NULL ELSE 0 END`
+		var hasKeys bool
+		if err := s.DB.QueryRow("SELECT EXISTS (SELECT 1 FROM preferences WHERE " + oldSSHKeys + ")").Scan(&hasKeys); err != nil || !hasKeys {
+			return err
+		}
+		_, err := s.DB.Exec("UPDATE preferences SET value=json_remove(value, '$.private_key_pem') WHERE " + oldSSHKeys)
+		return err
 	}
 	if version == 2 {
 		tx, err := s.DB.Begin()
@@ -481,7 +488,11 @@ func (s *Store) RemovePeer(id string) error {
 	if err = removePeerACLMetadataTx(tx, id); err != nil {
 		return err
 	}
-	if _, err = tx.Exec("DELETE FROM preferences WHERE key IN (?,?,?,?,?,?)", "connection."+id, "rate."+id, "actions."+id, "ssh."+id, "handshake."+id, peerAliasPrefix+id); err != nil {
+	if _, err = tx.Exec("DELETE FROM preferences WHERE key IN (?,?,?,?,?,?,?)", "connection."+id, "rate."+id, "actions."+id, "ssh."+id, "handshake."+id, peerAliasPrefix+id, "ssh-method-v1:"+id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE preferences SET value=json_remove(value, '$.agent_peer_id')
+		WHERE key GLOB 'ssh-host-v1:*' AND json_extract(value, '$.agent_peer_id')=?`, id); err != nil {
 		return err
 	}
 	if _, err = tx.Exec("DELETE FROM preferences WHERE key IN (?,?,?)", syncPermissionPrefix+id, syncRemotePermissionPrefix+id, termuxFilesPermissionPrefix+id); err != nil {

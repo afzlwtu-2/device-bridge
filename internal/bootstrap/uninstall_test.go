@@ -36,7 +36,9 @@ func TestUninstallManagedLinuxFiles(t *testing.T) {
 	write(sudoers, owner+" ALL=(root) NOPASSWD: /usr/bin/iw reg set *, /usr/bin/nmcli *\n")
 	write(polkit, `org.freedesktop.NetworkManager. subject.user == "owner"`)
 	const unrelatedRule = "ufw allow 22/tcp comment 'SSH'"
-	write(rules, "ufw allow 8731/tcp comment 'DeviceBridge agent'\n"+unrelatedRule+"\n")
+	write(rules, "ufw allow 8731/tcp comment 'DeviceBridge agent'\n"+
+		"ufw allow in on wlan0 from 192.168.1.0/24 to any port 8731 proto tcp comment 'DeviceBridge LAN'\n"+
+		"ufw allow in on tailscale0 to any port 8731 proto tcp comment 'DeviceBridge Tailscale'\n"+unrelatedRule+"\n")
 	write(filepath.Join(bin, "systemctl"), "#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$TEST_LOG\"\n")
 	write(filepath.Join(bin, "nmcli"), "#!/bin/bash\nexit 1\n")
 	write(filepath.Join(bin, "ufw"), `#!/bin/bash
@@ -46,6 +48,12 @@ elif [[ "$*" == '--force delete allow 8731/tcp comment DeviceBridge agent' ]]; t
     grep -v 'DeviceBridge agent' "$TEST_RULES" > "$TEST_RULES.next"
     mv "$TEST_RULES.next" "$TEST_RULES"
     printf '%s\n' "$*" >> "$TEST_LOG"
+elif [[ "$*" == '--force delete allow in on wlan0 from 192.168.1.0/24 to any port 8731 proto tcp' ]]; then
+    grep -v 'DeviceBridge LAN' "$TEST_RULES" > "$TEST_RULES.next"
+    mv "$TEST_RULES.next" "$TEST_RULES"
+elif [[ "$*" == '--force delete allow in on tailscale0 to any port 8731 proto tcp' ]]; then
+    grep -v 'DeviceBridge Tailscale' "$TEST_RULES" > "$TEST_RULES.next"
+    mv "$TEST_RULES.next" "$TEST_RULES"
 else
     exit 2
 fi

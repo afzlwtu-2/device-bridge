@@ -5,19 +5,18 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"devicebridge/internal/platform"
 	"devicebridge/internal/pty"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,25 +42,31 @@ type RemoteTerminalTarget struct {
 	CIDR      string `json:"cidr,omitempty"`
 }
 
-func extractBootstrapZipIfPresent(zipPath, prefix string) error {
-	zr, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return err
-	}
-	defer zr.Close()
-
+func extractTermuxBootstrap(ctx context.Context, zr *zip.Reader, prefix, installedPrefix string) error {
 	if err := os.MkdirAll(prefix, 0o755); err != nil {
 		return err
 	}
 	var symlinksRaw string
+	const maxUnpacked = 512 << 20
+	var unpacked uint64
 	for _, f := range zr.File {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if f.UncompressedSize64 > maxUnpacked-unpacked {
+			return errors.New("Termux bootstrap exceeds unpacked size limit")
+		}
+		unpacked += f.UncompressedSize64
 		if f.Name == "SYMLINKS.txt" {
 			rc, err := f.Open()
 			if err != nil {
 				return err
 			}
-			b, _ := io.ReadAll(rc)
+			b, err := io.ReadAll(io.LimitReader(rc, (1<<20)+1))
 			_ = rc.Close()
+			if err != nil || len(b) > 1<<20 {
+				return errors.New("invalid Termux bootstrap symlink manifest")
+			}
 			symlinksRaw = string(b)
 			continue
 		}
@@ -71,7 +76,9 @@ func extractBootstrapZipIfPresent(zipPath, prefix string) error {
 		}
 		target := filepath.Join(prefix, clean)
 		if f.FileInfo().IsDir() {
-			_ = os.MkdirAll(target, 0o755)
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -88,7 +95,7 @@ func extractBootstrapZipIfPresent(zipPath, prefix string) error {
 		if strings.HasPrefix(clean, "bin/") || strings.HasPrefix(clean, "libexec/") || strings.HasPrefix(clean, "lib/apt/") || strings.HasSuffix(clean, ".so") || strings.Contains(clean, ".so.") {
 			mode = 0o755
 		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_EXCL, mode)
 		if err != nil {
 			_ = rc.Close()
 			return err
@@ -101,7 +108,15 @@ func extractBootstrapZipIfPresent(zipPath, prefix string) error {
 		}
 	}
 
+	root, err := os.OpenRoot(prefix)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	for _, line := range strings.Split(symlinksRaw, "\n") {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -110,15 +125,17 @@ func extractBootstrapZipIfPresent(zipPath, prefix string) error {
 		if len(parts) != 2 {
 			continue
 		}
-		oldname := strings.ReplaceAll(strings.TrimSpace(parts[0]), "/data/data/com.termux/files/usr", prefix)
+		oldname := strings.ReplaceAll(strings.TrimSpace(parts[0]), "/data/data/com.termux/files/usr", installedPrefix)
 		relLink := filepath.Clean(strings.TrimSpace(parts[1]))
 		if oldname == "" || relLink == "." || strings.HasPrefix(relLink, "..") || filepath.IsAbs(relLink) {
 			continue
 		}
-		linkPath := filepath.Join(prefix, relLink)
-		_ = os.MkdirAll(filepath.Dir(linkPath), 0o755)
-		_ = os.Remove(linkPath)
-		_ = os.Symlink(oldname, linkPath)
+		if err := root.MkdirAll(filepath.Dir(relLink), 0o755); err != nil {
+			return err
+		}
+		if err := root.Symlink(oldname, relLink); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -546,13 +563,6 @@ end
 		if err := refreshTermuxFishConfig(fishCfg, existingFish, ctx.AdaptSo); err != nil {
 			return err
 		}
-	}
-
-	// Reconcile shared sshd on 127.0.0.1:8022 (off by default unless enabled in tsnet settings)
-	if isOpenSSHEnabled(stateDir) {
-		startTermuxSSHDIfNeeded(prefix, home, ctx.AdaptSo)
-	} else {
-		stopTermuxSSHDIfRunning(prefix)
 	}
 
 	if err := configureTermuxAPT(stateDir, cliBin, ctx); err != nil {
@@ -1174,40 +1184,6 @@ exec "$SHELL" -l
 	_ = os.WriteFile(dbShellPath, []byte(dbShell), 0o755)
 
 	sshdCfgPath := filepath.Join(prefix, "etc", "ssh", "sshd_config")
-	var keyLines strings.Builder
-	for _, k := range []string{"ssh_host_ed25519_key", "ssh_host_rsa_key", "ssh_host_ecdsa_key"} {
-		kp := filepath.Join(prefix, "etc", "ssh", k)
-		if _, statErr := os.Stat(kp); statErr == nil {
-			_ = os.Chmod(kp, 0o600)
-			fmt.Fprintf(&keyLines, "HostKey %s\n", kp)
-		}
-	}
-	listenAddrs := nonLoopbackNonTailscaleListenAddrs()
-	var listenLines strings.Builder
-	for _, addr := range listenAddrs {
-		fmt.Fprintf(&listenLines, "ListenAddress %s\n", addr)
-	}
-	if len(listenAddrs) == 0 {
-		listenLines.WriteString("# No non-loopback non-Tailscale interface addresses active\n")
-	}
-	sshdCfg := fmt.Sprintf(`# DEVICEBRIDGE_SSHD_V5
-Port 8022
-%sStrictModes no
-%sAuthorizedKeysFile %s/.ssh/authorized_keys
-PasswordAuthentication no
-PubkeyAuthentication yes
-KbdInteractiveAuthentication no
-PidFile %s/var/run/sshd.pid
-Subsystem sftp %s/libexec/sftp-server
-ForceCommand %s
-`, listenLines.String(), keyLines.String(), home, prefix, prefix, dbShellPath)
-	existingSSHD, sshdErr := os.ReadFile(sshdCfgPath)
-	if os.IsNotExist(sshdErr) || forceRewrite || !strings.Contains(string(existingSSHD), "DEVICEBRIDGE_SSHD_V5") || string(existingSSHD) != sshdCfg {
-		if sshdErr == nil {
-			stopTermuxSSHDIfRunning(prefix)
-		}
-		_ = os.WriteFile(sshdCfgPath, []byte(sshdCfg), 0o600)
-	}
 
 	// Ensure `ssh` in $HOME/.local/bin always applies globalSSHConfig even if OpenSSH is upgraded or appRoot is long.
 	localBinDir := filepath.Join(home, ".local", "bin")
@@ -1304,7 +1280,7 @@ func stopTermuxSSHDIfRunning(prefix string) {
 		return
 	}
 	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	if err != nil || !bytes.Contains(cmdline, []byte(prefix)) {
+	if err != nil || !bytes.Contains(cmdline, []byte(filepath.Join(prefix, "bin", "sshd"))) {
 		return
 	}
 	_ = syscall.Kill(pid, syscall.SIGTERM)
@@ -1317,79 +1293,18 @@ func stopTermuxSSHDIfRunning(prefix string) {
 	_ = os.Remove(pidPath)
 }
 
-func isTailscaleAddr(ip netip.Addr) bool {
-	cgnat := netip.MustParsePrefix("100.64.0.0/10")
-	tsULA := netip.MustParsePrefix("fd7a:115c:a1e0::/48")
-	return cgnat.Contains(ip) || tsULA.Contains(ip)
-}
-
-type sshdIfaceAddrs struct {
-	name     string
-	up       bool
-	loopback bool
-	addrs    []netip.Addr
-}
-
-func filterTermuxSSHDAddrs(ifaces []sshdIfaceAddrs) []string {
-	seen := make(map[string]struct{})
-	var v4s, v6s []string
-	for _, n := range ifaces {
-		if !n.up || n.loopback {
-			continue
-		}
-		low := strings.ToLower(strings.TrimSpace(n.name))
-		if strings.HasPrefix(low, "tailscale") {
-			continue
-		}
-		for _, raw := range n.addrs {
-			ip := raw.Unmap()
-			if !ip.IsValid() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || isTailscaleAddr(ip) {
-				continue
-			}
-			s := ip.String()
-			if _, ok := seen[s]; ok {
-				continue
-			}
-			seen[s] = struct{}{}
-			if ip.Is4() {
-				v4s = append(v4s, s)
-			} else {
-				v6s = append(v6s, s)
-			}
-		}
+func termuxSSHListenAddress(iface, cidr string) (netip.Addr, error) {
+	prefix, err := netip.ParsePrefix(cidr)
+	if err != nil || !prefix.Addr().IsPrivate() || isTailnetIP(prefix.Addr()) ||
+		strings.HasPrefix(iface, "rmnet") || strings.HasPrefix(iface, "wwan") ||
+		strings.HasPrefix(iface, "tun") || strings.HasPrefix(iface, "wg") ||
+		strings.HasPrefix(iface, "tailscale") {
+		return netip.Addr{}, errors.New("select an active LAN link for Termux OpenSSH")
 	}
-	sort.Strings(v4s)
-	sort.Strings(v6s)
-	return append(v4s, v6s...)
-}
-
-func nonLoopbackNonTailscaleListenAddrs() []string {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-	items := make([]sshdIfaceAddrs, 0, len(ifaces))
-	for _, n := range ifaces {
-		addrs, aErr := n.Addrs()
-		if aErr != nil {
-			continue
-		}
-		parsed := make([]netip.Addr, 0, len(addrs))
-		for _, a := range addrs {
-			if ipNet, ok := a.(*net.IPNet); ok {
-				if ip, ok2 := netip.AddrFromSlice(ipNet.IP); ok2 {
-					parsed = append(parsed, ip)
-				}
-			}
-		}
-		items = append(items, sshdIfaceAddrs{
-			name:     n.Name,
-			up:       n.Flags&net.FlagUp != 0,
-			loopback: n.Flags&net.FlagLoopback != 0,
-			addrs:    parsed,
-		})
-	}
-	return filterTermuxSSHDAddrs(items)
+	// Android may deny interface enumeration to the app UID on some builds.
+	// Kotlin supplies the selected interface and address from Android's live inventory.
+	// Binding to this exact IP also makes OpenSSH reject a vanished address.
+	return prefix.Addr(), nil
 }
 
 func isTermuxSSHDRunning(prefix string) bool {
@@ -1409,89 +1324,84 @@ func isTermuxSSHDRunning(prefix string) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-func startTermuxSSHDIfNeeded(prefix, home, adaptSo string) {
-	sshdBin := filepath.Join(prefix, "bin", "sshd")
-	sshdCfgPath := filepath.Join(prefix, "etc", "ssh", "sshd_config")
-	if st, err := os.Stat(sshdBin); err != nil || st.IsDir() {
-		return
+func termuxSSHDConfig(prefix, home string, address netip.Addr) string {
+	var keyLines strings.Builder
+	for _, k := range []string{"ssh_host_ed25519_key", "ssh_host_rsa_key", "ssh_host_ecdsa_key"} {
+		kp := filepath.Join(prefix, "etc", "ssh", k)
+		if _, err := os.Stat(kp); err == nil {
+			fmt.Fprintf(&keyLines, "HostKey %s\n", kp)
+		}
 	}
-	listenAddrs := nonLoopbackNonTailscaleListenAddrs()
-	if len(listenAddrs) == 0 {
+	return fmt.Sprintf(`# DeviceBridge managed LAN OpenSSH
+Port 8022
+ListenAddress %s
+StrictModes no
+%sAuthorizedKeysFile %s/.ssh/authorized_keys
+PasswordAuthentication no
+PubkeyAuthentication yes
+KbdInteractiveAuthentication no
+PidFile %s/var/run/sshd.pid
+Subsystem sftp %s/libexec/sftp-server
+ForceCommand %s/bin/db-ssh-shell
+`, address, keyLines.String(), home, prefix, prefix, prefix)
+}
+
+func EnsureTermuxSSHWithMode(stateDir, cliBin string, enableSSHD *bool, iface, cidr string) error {
+	if runtime.GOOS != "android" {
+		return nil
+	}
+	termRoot := filepath.Join(filepath.Dir(filepath.Clean(stateDir)), "terminal")
+	prefix := filepath.Join(termRoot, "files", "usr")
+	home := filepath.Join(termRoot, "files", "home")
+	cacheDir := filepath.Join(termRoot, "cache")
+	wantSSHD := isOpenSSHEnabled(stateDir)
+	if enableSSHD != nil {
+		wantSSHD = *enableSSHD
+	}
+	if !wantSSHD || iface == "" || cidr == "" {
 		stopTermuxSSHDIfRunning(prefix)
-		return
+		return nil
+	}
+	address, err := termuxSSHListenAddress(iface, cidr)
+	if err != nil {
+		stopTermuxSSHDIfRunning(prefix)
+		return err
+	}
+	sshdBin := filepath.Join(prefix, "bin", "sshd")
+	if !termuxBasePresent(prefix) || !isExecutableFile(sshdBin) ||
+		!isExecutableFile(filepath.Join(prefix, "bin", "db-ssh-shell")) {
+		return errors.New("set up OpenSSH in Networks first")
+	}
+	configPath := filepath.Join(prefix, "etc", "ssh", "devicebridge_sshd_config")
+	config := termuxSSHDConfig(prefix, home, address)
+	if existing, err := os.ReadFile(configPath); err != nil || string(existing) != config {
+		stopTermuxSSHDIfRunning(prefix)
+		if err := writeTermuxConfig(configPath, []byte(config), 0600); err != nil {
+			return err
+		}
 	}
 	if isTermuxSSHDRunning(prefix) {
-		return
+		return nil
 	}
-	if c, dialErr := net.DialTimeout("tcp", net.JoinHostPort(listenAddrs[0], "8022"), 80*time.Millisecond); dialErr == nil {
-		_ = c.Close()
-		return
-	}
-	cmd := exec.Command(sshdBin, "-f", sshdCfgPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, sshdBin, "-f", configPath)
+	adapt := resolveTermuxAdaptContext(stateDir, cliBin, termRoot, prefix, home, cacheDir)
 	cmd.Env = []string{
 		"HOME=" + home,
 		"PREFIX=" + prefix,
 		"TMPDIR=" + filepath.Join(prefix, "tmp"),
 		"LD_LIBRARY_PATH=" + termuxLDLibraryPath(prefix),
-		"PATH=" + filepath.Join(home, ".local", "bin") + ":" + filepath.Join(prefix, "bin") + ":/system/bin",
+		"PATH=" + filepath.Join(prefix, "bin") + ":/system/bin",
 	}
-	if adaptSo != "" {
-		cmd.Env = append(cmd.Env, "LD_PRELOAD="+adaptSo, "DB_TERMUX_ADAPT_SO="+adaptSo)
+	if adapt.AdaptSo != "" {
+		cmd.Env = append(cmd.Env, "LD_PRELOAD="+adapt.AdaptSo, "DB_TERMUX_ADAPT_SO="+adapt.AdaptSo)
 	}
-	_ = cmd.Start()
-}
-
-// EnsureTermuxSSH configures and reconciles Termux OpenSSH client/server when the isolated prefix is present.
-func EnsureTermuxSSH(stateDir, cliBin string) error {
-	return EnsureTermuxSSHWithMode(stateDir, cliBin, nil)
-}
-
-// EnsureTermuxSSHWithMode configures Termux OpenSSH and starts or stops sshd according to enableSSHD (or tsnet-config.json when nil).
-func EnsureTermuxSSHWithMode(stateDir, cliBin string, enableSSHD *bool) error {
-	if runtime.GOOS != "android" {
-		return nil
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("start LAN OpenSSH on %s: %w", address, err)
 	}
-	appFilesDir := filepath.Dir(filepath.Clean(stateDir))
-	termRoot := filepath.Join(appFilesDir, "terminal")
-	prefix := filepath.Join(termRoot, "files", "usr")
-	home := filepath.Join(termRoot, "files", "home")
-	cacheDir := filepath.Join(termRoot, "cache")
-	if _, err := os.Stat(filepath.Join(prefix, "bin", "fish")); os.IsNotExist(err) {
-		if _, err := os.Stat(filepath.Join(prefix, "bin", "bash")); os.IsNotExist(err) {
-			return nil
-		}
-	}
-	wantSSHD := isOpenSSHEnabled(stateDir)
-	if enableSSHD != nil {
-		wantSSHD = *enableSSHD
-	}
-	ctx := resolveTermuxAdaptContext(stateDir, cliBin, termRoot, prefix, home, cacheDir)
-	tsnetBin := filepath.Join(prefix, "bin", "tsnet")
-	if _, err := os.Stat(tsnetBin); os.IsNotExist(err) {
-		if err := configureTermuxPrefix(stateDir, cliBin, termRoot, prefix, home, cacheDir); err != nil {
-			return err
-		}
-		if enableSSHD != nil {
-			if wantSSHD {
-				startTermuxSSHDIfNeeded(prefix, home, ctx.AdaptSo)
-			} else {
-				stopTermuxSSHDIfRunning(prefix)
-			}
-		}
-		return nil
-	}
-	prevPrefix, _, _, _, hasSentinel := parseConfiguredSentinel(filepath.Join(prefix, ".devicebridge-configured-v4"))
-	configureTermuxSSH(stateDir, cliBin, termRoot, prefix, home, tsnetBin, !hasSentinel || prevPrefix != prefix)
-	fishCfg := filepath.Join(home, ".config", "fish", "config.fish")
-	if existing, err := os.ReadFile(fishCfg); err == nil {
-		if err := refreshTermuxFishConfig(fishCfg, existing, ctx.AdaptSo); err != nil {
-			return err
-		}
-	}
-	if wantSSHD {
-		startTermuxSSHDIfNeeded(prefix, home, ctx.AdaptSo)
-	} else {
-		stopTermuxSSHDIfRunning(prefix)
+	if !isTermuxSSHDRunning(prefix) {
+		return fmt.Errorf("LAN OpenSSH could not listen on %s", address)
 	}
 	return nil
 }
@@ -1510,23 +1420,8 @@ func PrepareLocalTerminalEnvironment(stateDir, requestedShell string) (shellPath
 		_ = os.MkdirAll(tmpDir, 0o755)
 		_ = os.MkdirAll(cacheDir, 0o755)
 
-		bashBin := filepath.Join(prefix, "bin", "bash")
-		if _, statErr := os.Stat(bashBin); os.IsNotExist(statErr) {
-			zipArch := "aarch64"
-			if runtime.GOARCH == "amd64" {
-				zipArch = "x86_64"
-			}
-			zipPath := "/data/local/tmp/db-bootstrap-" + zipArch + ".zip"
-			if _, zipErr := os.Stat(zipPath); zipErr == nil {
-				if err := extractBootstrapZipIfPresent(zipPath, prefix); err != nil {
-					return "", nil, "", nil, fmt.Errorf("extract Termux bootstrap: %w", err)
-				}
-				// A previous shell-only launch may already have set up this prefix.
-				sentinel := filepath.Join(prefix, ".devicebridge-configured-v4")
-				if err := os.Remove(sentinel); err != nil && !os.IsNotExist(err) {
-					return "", nil, "", nil, err
-				}
-			}
+		if !termuxBasePresent(prefix) {
+			return "/system/bin/sh", nil, home, []string{"HOME=" + home, "PATH=/system/bin", "TERM=xterm-256color"}, nil
 		}
 		cliBin, _ := os.Executable()
 		if cliBin == "" {
@@ -1843,6 +1738,17 @@ func remoteTerminalCommand(ctx context.Context, stateDir, home string, env []str
 func RunLocalTerminal(ctx context.Context, stateDir string, request LocalTerminalRequest, input *bufio.Scanner, output io.Writer) error {
 	if strings.TrimSpace(stateDir) == "" {
 		return errors.New("state directory required")
+	}
+	if runtime.GOOS == "android" {
+		home := termuxBackupHome(stateDir)
+		if err := os.MkdirAll(filepath.Dir(home), 0700); err != nil {
+			return err
+		}
+		lock, err := platform.LockTermuxHome(home, false)
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
 	}
 	shellPath, shellArgs, homeDir, env, err := PrepareLocalTerminalEnvironment(stateDir, request.Shell)
 	if err != nil {

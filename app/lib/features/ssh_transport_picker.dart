@@ -14,7 +14,8 @@ class SshTransportSelector extends StatelessWidget {
     required this.onRemoteApprovedChanged,
     this.enabled = true,
     this.allowAuto = true,
-    this.approvalTitle = 'Allow this SSH connection to use the selected overlay',
+    this.approvalTitle =
+        'Allow this SSH connection to use the selected overlay',
   });
 
   final String transport;
@@ -29,8 +30,7 @@ class SshTransportSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final usbConnected =
-        (runtime['usb'] as Map?)?['usb_adb_connected'] == true;
+    final usbConnected = (runtime['usb'] as Map?)?['usb_adb_connected'] == true;
     final items = <DropdownMenuItem<String>>[
       if (allowAuto || transport == 'auto')
         const DropdownMenuItem(value: 'auto', child: Text('Automatic')),
@@ -69,11 +69,17 @@ class SshTransportSelector extends StatelessWidget {
                   if (value != null) onTransportChanged(value);
                 },
         ),
-        if (current == 'tailnet' || current == 'wireguard')
+        if (current == 'tailnet' ||
+            current == 'wireguard' ||
+            (current == 'auto' && rules.allows('tailnet')))
           CheckboxListTile(
             key: const ValueKey('ssh-transport-remote-approval'),
             contentPadding: EdgeInsets.zero,
-            title: Text(approvalTitle),
+            title: Text(
+              current == 'auto'
+                  ? 'Allow Automatic to use Tailscale for SSH'
+                  : approvalTitle,
+            ),
             subtitle: const Text(
               'The route may use internet or cellular data. This does not approve bulk file transfers.',
             ),

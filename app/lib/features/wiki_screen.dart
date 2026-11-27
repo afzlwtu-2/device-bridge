@@ -308,7 +308,7 @@ class _WikiScreenState extends State<WikiScreen> {
                     rows: const [
                       (
                         'Permissions & auto-grant',
-                        'Superuser grant (Magisk / KernelSU / APatch). On launch or when Root access is enabled, DeviceBridge automatically grants runtime and special app permissions (MANAGE_EXTERNAL_STORAGE, ACCESS_FINE_LOCATION, NEARBY_WIFI_DEVICES, POST_NOTIFICATIONS, CAMERA, REQUEST_INSTALL_PACKAGES, and Termux RUN_COMMAND when installed) via su. Android Nearby/Location prompts are bypassed for shell link control.',
+                        'Superuser grant (Magisk / KernelSU / APatch). On launch or when Root access is enabled, DeviceBridge automatically grants runtime and special app permissions (MANAGE_EXTERNAL_STORAGE, ACCESS_FINE_LOCATION, NEARBY_WIFI_DEVICES, POST_NOTIFICATIONS, CAMERA, REQUEST_INSTALL_PACKAGES) via su. Android Nearby/Location prompts are bypassed for shell link control.',
                       ),
                       (
                         'Connection strategy',
@@ -576,7 +576,7 @@ class _WikiScreenState extends State<WikiScreen> {
                       ),
                       (
                         'Pairing & adding devices',
-                        'Keep DeviceBridge open on both devices. Devices separates Direct (DeviceBridge agent peers, nearby Wi-Fi devices, and revoked devices) from SSH (saved SSH-only hosts). Tailscale SSH peers are browsed on demand through Add from Tailscale SSH so your SSH list stays uncluttered, and any saved SSH host can be upgraded to a paired Agent / Direct device. Use Add Device to pair via QR/code, add an SSH host, or deploy bridge-agent via SSH (root systemd service) over available transports.',
+                        'Keep DeviceBridge open on both devices. Devices separates Direct (DeviceBridge agent peers, nearby Wi-Fi devices, and revoked devices) from SSH (saved SSH-only hosts). Tailscale SSH peers are browsed on demand through Add from Tailscale SSH so your SSH list stays uncluttered, and any saved SSH host can be upgraded to a paired Agent / Direct device. Use Add Device to pair via QR/code, add an SSH host, or deploy bridge-agent via SSH (systemd user service) over available transports.',
                       ),
                       (
                         'Pairing permissions and efficiency',
@@ -644,7 +644,7 @@ class _WikiScreenState extends State<WikiScreen> {
                       ),
                       (
                         'Phone storage, permissions and efficiency',
-                        'Native phone storage with All Files Access and app Downloads use the same app-managed engine in Standard, Shizuku and Root modes. Root and Shizuku add no speed advantage for these accessible folders. If the standalone Termux app is installed, use Networks → Services → Termux tools to set up its companion over SSH, then choose the paired device in Files. The companion uses the bundled Syncthing engine during approved sessions. The native engine runs as the Android app user or the Linux state owner. Linux Files uses the signed-in user’s Home, Downloads and filesystem permissions.',
+                        'Native phone storage with All Files Access and app Downloads use the same app-managed engine in Standard, Shizuku and Root modes. Root and Shizuku add no speed advantage for these accessible folders. The native engine runs as the Android app user or the Linux state owner. Linux Files uses the signed-in user’s Home, Downloads and filesystem permissions.',
                       ),
                       (
                         'Phone as controller',
@@ -905,13 +905,21 @@ class _WikiScreenState extends State<WikiScreen> {
                   ),
                   _infoCard(
                     context,
-                    title: 'Termux RUN_COMMAND Permission',
-                    badges: const [('Optional Command Helper', false)],
-                    summary: 'Allows explicit Termux tool runs. For browsing and sync, choose the paired Termux device and its home root in Files.',
+                    title: 'Terminal setup and backups',
+                    badges: const [('Standard · Shizuku · Root', false)],
+                    summary: 'The built-in Terminal uses DeviceBridge’s app-private Home. It can be set up from Terminal or Networks and does not require the standalone Termux app.',
                     rows: const [
                       (
-                        'Note',
-                        'Requires com.termux allow-external-apps=true in ~/.termux/termux.properties and com.termux.permission.RUN_COMMAND.',
+                        'SSH',
+                        'Set up the shell before using incoming Agent or Tailscale SSH on Android. OpenSSH installs separately and listens on the selected LAN link.',
+                      ),
+                      (
+                        'Backup',
+                        'Hidden files and .env files are included. Flutter, Go, Node, Rust and Python caches and build outputs are excluded by default. Restore keeps the previous Home beside the restored copy.',
+                      ),
+                      (
+                        'Permissions',
+                        'Standard, Shizuku and Root use the same setup, archive and SSH paths with identical speed and battery characteristics. Extra permissions are unnecessary.',
                       ),
                     ],
                   ),

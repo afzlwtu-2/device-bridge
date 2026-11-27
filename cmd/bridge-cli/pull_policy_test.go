@@ -5,9 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"devicebridge/internal/storage"
 	"devicebridge/internal/transfer"
 )
 
@@ -19,6 +21,41 @@ func writePullPolicy(t *testing.T, path, value string) {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPullRecoveryHonorsPeerAndGlobalRouteSettings(t *testing.T) {
+	s, err := storage.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	peer := strings.Repeat("a", 64)
+	if err := s.TrustOutbound(peer, "fixture", "paired"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := storage.Connection{
+		Transport: "lan", FallbackApproved: true, RemoteApproved: true,
+		TailnetEndpoint: "100.64.0.5:8731", FallbackTransports: []string{"lan"},
+	}
+	if _, err := s.Connection(peer, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	c := command{state: s, selectedTransport: "lan"}
+	if _, _, err := c.reconnectPull(t.Context(), pullRoutes{}, peer, "tailnet", ""); err == nil ||
+		!strings.Contains(err.Error(), "excluded") {
+		t.Fatalf("recovery ignored the peer's fallback list: %v", err)
+	}
+	cfg.FallbackTransports = []string{"lan", "tailnet"}
+	if _, err := s.Connection(peer, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.NetworkPolicy(t.Context(), map[string]bool{"network_tailnet": false}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.reconnectPull(t.Context(), pullRoutes{}, peer, "tailnet", ""); err == nil ||
+		!strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("recovery ignored the global transport policy: %v", err)
 	}
 }
 

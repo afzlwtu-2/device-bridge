@@ -381,7 +381,7 @@ func run() error {
 				enableSSHD = &v
 			}
 		}
-		return bootstrap.EnsureTermuxSSHWithMode(*state, exe, enableSSHD)
+		return bootstrap.EnsureTermuxSSHWithMode(*state, exe, enableSSHD, *iface, *cidr)
 	}
 
 	if a[0] == "termux-adapt" {
@@ -390,8 +390,22 @@ func run() error {
 	}
 
 	if a[0] == "termux-setup" {
+		setup := flag.NewFlagSet("termux-setup", flag.ContinueOnError)
+		mode := setup.String("mode", "base", "base, tools, or openssh")
+		archive := setup.String("archive", "", "verified upstream release archive")
+		digest := setup.String("release-sha256", "", "published upstream archive digest")
+		if err := setup.Parse(a[1:]); err != nil {
+			return err
+		}
+		if setup.NArg() != 0 {
+			return errors.New("unexpected Termux setup argument")
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		ctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		defer cancel()
 		exe, _ := os.Executable()
-		return bootstrap.SetupTermuxEnvironment(context.Background(), *state, exe, func(line string) {
+		return bootstrap.SetupTermuxEnvironment(ctx, *state, exe, *mode, *archive, *digest, func(line string) {
 			fmt.Println(line)
 		})
 	}
@@ -821,8 +835,12 @@ func run() error {
 		return localAction(s, a)
 	case "guest-open", "guest-list", "guest-pull", "guest-close", "guest-terminal",
 		"guest-terminal-approve", "guest-terminal-revoke", "local-terminal":
+		policy, pe := s.NetworkPolicy(context.Background(), nil)
+		if pe != nil {
+			return pe
+		}
 		return guestCommand(s, bootstrap.TailnetOptions{
-			StateDir: *state, ControlSocket: *controlSocket, Mode: *tailnetMode,
+			StateDir: *state, ControlSocket: *controlSocket, Mode: *tailnetMode, NetworkPolicy: policy,
 		}, a)
 	case "share-forget-text":
 		if len(a) != 3 {
@@ -1017,18 +1035,17 @@ func run() error {
 		if len(pos) == 2 {
 			_, _ = fmt.Sscan(pos[1], &port)
 		}
-		if probeTransport != "" && probeTransport != "auto" {
-			if pe := validateSSHTransportPolicy(context.Background(), s, probeTransport, remoteApproved); pe != nil {
-				return pe
-			}
-		}
-		probe, pe := bootstrap.InspectHostWithOptions(context.Background(), pos[0], port, bootstrap.TailnetOptions{
+		opts, pe := sshOptions(context.Background(), s, bootstrap.TailnetOptions{
 			SSHTransport:   probeTransport,
 			RemoteApproved: remoteApproved,
 			StateDir:       *state,
 			ControlSocket:  *controlSocket,
 			Mode:           *tailnetMode,
 		})
+		if pe != nil {
+			return pe
+		}
+		probe, pe := bootstrap.InspectHostWithOptions(context.Background(), pos[0], port, opts)
 		if pe != nil {
 			return pe
 		}
@@ -1045,26 +1062,46 @@ func run() error {
 		if re = json.Unmarshal(rawReq, &req); re != nil {
 			return re
 		}
-		if req.Transport != "" && req.Transport != "auto" {
-			if pe := validateSSHTransportPolicy(context.Background(), s, req.Transport, req.RemoteApproved); pe != nil {
-				return pe
+		if req.Port == 0 {
+			req.Port = 22
+		}
+		var upgrade *storage.SSHHost
+		if req.SSHHostID != "" {
+			host, err := s.SSHHost(context.Background(), req.SSHHostID)
+			if err != nil {
+				return err
 			}
+			if !req.AutoPair || req.Host != host.Host || req.User != host.User || req.Port != host.Port || req.ExpectedHostKey != host.Fingerprint {
+				return errors.New("SSH upgrade must pair through the verified saved account")
+			}
+			upgrade = &host
 		}
 		if req.PreferredRoute == "" && req.Transport == "tailnet" {
 			req.PreferredRoute = "tailnet"
 		}
 		req.LocalIface = *iface
 		req.LocalCIDR = *cidr
-		req.Tailnet = bootstrap.TailnetOptions{
+		req.Tailnet, re = sshOptions(context.Background(), s, bootstrap.TailnetOptions{
 			SSHTransport:   req.Transport,
 			RemoteApproved: req.RemoteApproved,
 			StateDir:       *state,
 			ControlSocket:  *controlSocket,
 			Mode:           *tailnetMode,
+		})
+		if re != nil {
+			return re
 		}
 		res, be := bootstrap.Bootstrap(context.Background(), s, id, req)
 		if be != nil {
-			return be
+			if !res.AgentInstalled {
+				return be
+			}
+			res.SetupError = be.Error()
+		}
+		if res.PairedPeerID != "" {
+			if err := recordBootstrapSSHAccount(context.Background(), s, req, res, upgrade); err != nil {
+				res.AssociationError = err.Error()
+			}
 		}
 		return output(res)
 	case "ssh-uninstall":
@@ -1083,10 +1120,15 @@ func run() error {
 		if re = json.Unmarshal(rawReq, &req); re != nil {
 			return re
 		}
-		req.Tailnet = bootstrap.TailnetOptions{
-			StateDir:      *state,
-			ControlSocket: *controlSocket,
-			Mode:          *tailnetMode,
+		req.Tailnet, re = sshOptions(context.Background(), s, bootstrap.TailnetOptions{
+			SSHTransport:   req.Transport,
+			RemoteApproved: req.RemoteApproved,
+			StateDir:       *state,
+			ControlSocket:  *controlSocket,
+			Mode:           *tailnetMode,
+		})
+		if re != nil {
+			return re
 		}
 		uctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 		defer cancel()
@@ -1466,11 +1508,7 @@ func run() error {
 	if policyErr != nil {
 		return policyErr
 	}
-	policyID := *transportID
-	if policyID == "lan" {
-		policyID = "direct"
-	}
-	if allowed, known := policy["network_"+policyID]; known && !allowed {
+	if !networkAllowsTransport(policy, *transportID) {
 		return errors.New("transport disabled in Network settings")
 	}
 	switch *transportID {

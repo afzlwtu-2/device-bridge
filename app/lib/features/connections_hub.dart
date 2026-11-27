@@ -610,6 +610,10 @@ class _ConnectionsHubState extends State<ConnectionsHub>
     final agentSsh = _rules.allows('agent_ssh');
     final tailnetSsh = _settings['tsnet_ssh_enabled'] == true;
     final openssh = _settings['tsnet_openssh_enabled'] == true;
+    final terminalReady = !_android || ssh['terminal_ready'] != false;
+    final openSshReady = ssh['openssh_ready'] != false;
+    final openSshAddress = ssh['openssh_address'] as String?;
+    final openSshError = ssh['openssh_error'] as String?;
     Widget toggle(
       String id,
       String title,
@@ -701,7 +705,9 @@ class _ConnectionsHubState extends State<ConnectionsHub>
               'agent',
               'Agent SSH',
               agentSsh
-                  ? '${running ? 'Available through Agent' : 'Waiting for Agent'} · ${agent['active_ssh'] ?? ssh['agent_ssh_conns'] ?? 0} sessions'
+                  ? !terminalReady
+                        ? 'Terminal setup required'
+                        : '${running ? 'Available through Agent' : 'Waiting for Agent'} · ${agent['active_ssh'] ?? ssh['agent_ssh_conns'] ?? 0} sessions'
                   : 'Off · Agent files and sharing stay available',
               agentSsh,
               (value) => NetworkRules.save(widget.core, 'agent_ssh', value),
@@ -711,7 +717,9 @@ class _ConnectionsHubState extends State<ConnectionsHub>
                 'tailnet',
                 'Tailscale SSH',
                 tailnetSsh
-                    ? '${_tailnetRunning ? 'Tailnet port 22' : 'Sign in to Tailscale first'} · ${_tailnet?['active_ssh_conns'] ?? 0} sessions'
+                    ? !terminalReady
+                          ? 'Terminal setup required'
+                          : '${_tailnetRunning ? 'Tailnet port 22' : 'Sign in to Tailscale first'} · ${_tailnet?['active_ssh_conns'] ?? 0} sessions'
                     : 'Off · Tailscale transport stays available',
                 tailnetSsh,
                 (value) async {
@@ -720,15 +728,30 @@ class _ConnectionsHubState extends State<ConnectionsHub>
                   );
                 },
               ),
+            if (!terminalReady)
+              TextButton(
+                onPressed: _busy
+                    ? null
+                    : () => _perform(
+                        () => widget.core.openConnectionSetup('terminal-setup'),
+                      ),
+                child: const Text('Set up Terminal for incoming SSH'),
+              ),
             if (_android)
               toggle(
                 'openssh',
                 'Termux OpenSSH',
                 openssh
-                    ? '${ssh['openssh_running'] == true ? 'Listening' : 'Waiting for Termux or LAN'} · LAN port 8022 · Key auth only'
-                    : 'Off · Enable to accept ordinary LAN SSH',
+                    ? openSshError ??
+                          (openSshAddress == null
+                              ? 'Waiting for the selected LAN link'
+                              : 'Listening on $openSshAddress:8022 · Key auth only')
+                    : 'Off · Key-based SSH on the selected LAN link',
                 openssh,
                 (value) async {
+                  if (value && !openSshReady) {
+                    await widget.core.openConnectionSetup('terminal-openssh');
+                  }
                   await widget.core.appSettings(
                     update: {'tsnet_openssh_enabled': value},
                   );

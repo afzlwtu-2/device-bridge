@@ -23,6 +23,8 @@ type UninstallRequest struct {
 	KeyPassphrase   string         `json:"key_passphrase,omitempty"`
 	ExpectedHostKey string         `json:"expected_host_key"`
 	SudoPassword    string         `json:"sudo_password,omitempty"`
+	Transport       string         `json:"transport,omitempty"`
+	RemoteApproved  bool           `json:"remote_approved,omitempty"`
 	Tailnet         TailnetOptions `json:"-"`
 }
 

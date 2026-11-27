@@ -97,22 +97,69 @@ func classifySSHInterfaceKind(iface string, addr netip.Addr) string {
 	}
 }
 
-func validateSSHTransportPolicy(ctx context.Context, s *storage.Store, transportName string, remoteApproved bool) error {
+func networkAllowsTransport(policy map[string]bool, transportName string) bool {
+	if transportName == "lan" {
+		transportName = "direct"
+	}
+	if allowed, known := policy["network_"+transportName]; known && !allowed {
+		return false
+	}
+	usb, set := policy["network_usb"]
+	return transportName != "adb" || !set || usb
+}
+
+func sshOptions(ctx context.Context, s *storage.Store, opts bootstrap.TailnetOptions) (bootstrap.TailnetOptions, error) {
+	switch opts.SSHTransport {
+	case "", "auto", "direct", "tailnet", "wireguard", "adb":
+	default:
+		return opts, errors.New("unsupported SSH transport")
+	}
 	policy, err := s.NetworkPolicy(ctx, nil)
+	if err != nil {
+		return opts, err
+	}
+	opts.NetworkPolicy = policy
+	if !networkAllowsTransport(policy, opts.SSHTransport) {
+		return opts, errors.New("SSH transport disabled in Network settings")
+	}
+	if (opts.SSHTransport == "wireguard" || opts.SSHTransport == "tailnet") && !opts.RemoteApproved {
+		return opts, errors.New("remote SSH transport approval required")
+	}
+	return opts, nil
+}
+
+func recordBootstrapSSHAccount(ctx context.Context, s *storage.Store, req bootstrap.Request, res bootstrap.Result, upgrade *storage.SSHHost) error {
+	if upgrade != nil {
+		_, err := s.AssociateUpgradedSSHHost(ctx, *upgrade, res.PairedPeerID)
+		return err
+	}
+	hosts, err := s.SSHHosts(ctx)
 	if err != nil {
 		return err
 	}
-	policyID := transportName
-	if policyID == "direct" || policyID == "" || policyID == "auto" {
-		policyID = "direct"
+	for _, host := range hosts {
+		if host.Host == req.Host && host.Port == req.Port && host.User == req.User &&
+			host.Fingerprint == res.HostKeySHA256 {
+			if host.AgentPeerID == res.PairedPeerID {
+				return nil
+			}
+			if host.AgentPeerID != "" {
+				return errors.New("this SSH account is associated with another DeviceBridge identity")
+			}
+			_, err := s.AssociateUpgradedSSHHost(ctx, host, res.PairedPeerID)
+			return err
+		}
 	}
-	if allowed, known := policy["network_"+policyID]; known && !allowed {
-		return errors.New("SSH transport disabled in Network settings")
+	peer, err := s.Peer(res.PairedPeerID)
+	if err != nil || peer.Status != "paired" {
+		return errors.New("the DeviceBridge identity is no longer paired")
 	}
-	if (transportName == "wireguard" || transportName == "tailnet") && !remoteApproved {
-		return errors.New("remote SSH transport approval required")
-	}
-	return nil
+	_, err = s.SaveSSHHost(ctx, storage.SSHHost{
+		Version: 1, Name: res.RemoteHostname, Host: req.Host, Port: req.Port, User: req.User,
+		Fingerprint: res.HostKeySHA256, Transport: req.Transport, RemoteApproved: req.RemoteApproved,
+		AgentPeerID: res.PairedPeerID,
+	})
+	return err
 }
 
 func sshHostsCommand(s *storage.Store, opts bootstrap.TailnetOptions, a []string) error {
@@ -168,7 +215,8 @@ func sshHostsCommand(s *storage.Store, opts bootstrap.TailnetOptions, a []string
 	}
 	opts.SSHTransport = req.Transport
 	opts.RemoteApproved = req.RemoteApproved
-	if err := validateSSHTransportPolicy(ctx, s, req.Transport, req.RemoteApproved); err != nil {
+	opts, err := sshOptions(ctx, s, opts)
+	if err != nil {
 		return err
 	}
 	if a[1] == "probe" {
@@ -208,6 +256,7 @@ func sshHostsCommand(s *storage.Store, opts bootstrap.TailnetOptions, a []string
 	}
 	if a[1] == "save" {
 		defer s.RevokeGuest(ctx, grant.ID)
+		req.AgentPeerID = ""
 		host, err := s.SaveSSHHost(ctx, req.SSHHost)
 		if err != nil {
 			return err

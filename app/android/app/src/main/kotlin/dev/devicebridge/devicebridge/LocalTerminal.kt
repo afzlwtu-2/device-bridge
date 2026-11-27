@@ -8,6 +8,7 @@ import java.io.BufferedWriter
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Multi-session local PTY shell manager (fish / bash / sh) targeting the app-private terminal prefix. */
 internal class LocalTerminal(
@@ -18,6 +19,7 @@ internal class LocalTerminal(
     private val requests = Executors.newSingleThreadExecutor()
     private val streams = Executors.newCachedThreadPool()
     private val sessions = ConcurrentHashMap<String, Session>()
+    private val starts = ConcurrentHashMap<String, AtomicBoolean>()
     private val detached = DetachedTerminal(activity.applicationContext)
     @Volatile private var closed = false
 
@@ -29,10 +31,12 @@ internal class LocalTerminal(
     )
 
     fun start(sessionId: String, initial: String, finished: (Exception?) -> Unit) {
+        val cancelled = AtomicBoolean(false)
+        starts.put(sessionId, cancelled)?.set(true)
         requests.execute {
             var startReplied = false
             try {
-                check(!closed) { "The terminal screen has closed." }
+                check(!closed && !cancelled.get()) { "The terminal screen has closed." }
                 sessions.remove(sessionId)?.closeTransport?.invoke()
                 val reattach = JSONObject(initial).optBoolean("reattach")
                 val detachedAllowed = allowDetached()
@@ -61,11 +65,13 @@ internal class LocalTerminal(
                         activity.runOnUiThread { if (!closed) emit(frame.toString()) }
                     }
                     try {
-                        TermuxBootstrap.ensureReady(activity.applicationContext, emitLine, emitProgress)
+                        TermuxBootstrap.ensureReady(activity.applicationContext, emitLine, emitProgress,
+                            active = { !closed && !cancelled.get() })
                         emitLine("")
                     } catch (setupError: Exception) {
+                        if (closed || cancelled.get()) return@execute
                         emitLine("\r\n\u001b[33mTermux setup could not finish: ${setupError.message ?: setupError}\u001b[0m")
-                        emitLine("Check internet connectivity and reopen Terminal to retry.\r\n")
+                        emitLine("Opening the Android shell. Reopen Terminal to retry setup.\r\n")
                     }
                     val launchingFrame = JSONObject()
                         .put("session_id", sessionId)
@@ -74,6 +80,7 @@ internal class LocalTerminal(
                         .put("message", "Starting shell...")
                     activity.runOnUiThread { if (!closed) emit(launchingFrame.toString()) }
                 }
+                if (closed || cancelled.get()) return@execute
                 val background = if (detachedAllowed) {
                     try {
                         val socket = detached.attach(sessionId, initial, reattach)
@@ -88,7 +95,7 @@ internal class LocalTerminal(
                     }
                 } else null
                 val session = background ?: startAttached(initial)
-                if (closed) {
+                if (closed || cancelled.get()) {
                     session.closeTransport()
                     return@execute
                 }
@@ -151,6 +158,8 @@ internal class LocalTerminal(
                         .put("error", error.message ?: "Unable to start terminal session.")
                     activity.runOnUiThread { if (!closed) emit(frame.toString()) }
                 }
+            } finally {
+                starts.remove(sessionId, cancelled)
             }
         }
     }
@@ -215,6 +224,7 @@ internal class LocalTerminal(
     }
 
     fun stop(sessionId: String? = null) {
+        if (sessionId == null) starts.values.forEach { it.set(true) } else starts[sessionId]?.set(true)
         requests.execute {
             if (sessionId != null) {
                 sessions.remove(sessionId)?.closeTransport?.invoke()

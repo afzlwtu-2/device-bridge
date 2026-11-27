@@ -369,7 +369,8 @@ func run() error {
 		}
 		primaryMu.Unlock()
 		policy, policyErr := s.NetworkPolicy(ctx, nil)
-		status.AgentSSHEnabled = running && !*disableAgentSSH && policyErr == nil && policy["network_agent_ssh"]
+		status.AgentSSHEnabled = running && !*disableAgentSSH && policyErr == nil && policy["network_agent_ssh"] &&
+			(runtime.GOOS != "linux" || os.Geteuid() != 0)
 		status.AgentStatsSnapshot = sharedStats.Snapshot()
 		_ = publisher.publish(status)
 	}
