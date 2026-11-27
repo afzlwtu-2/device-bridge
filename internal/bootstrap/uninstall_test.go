@@ -80,6 +80,14 @@ fi
 		t.Fatalf("unexpected system changes after rejected unit: %v", err)
 	}
 	write(unit, "ExecStart="+filepath.Join(state, "bin/bridge-agent")+" --state "+state+" --interface wlan0 --port 8731\n")
+	for _, mode := range []string{"check-reinstall", "prepare-reinstall"} {
+		if out, err := run(mode); err != nil || strings.TrimSpace(out) != "8731" {
+			t.Fatalf("%s must report the installed port: %v %s", mode, err, out)
+		}
+	}
+	if contents, err := os.ReadFile(filepath.Join(state, "state.db")); err != nil || string(contents) != "state" {
+		t.Fatalf("preparing reinstall changed the pairing database: %q %v", contents, err)
+	}
 	for _, presence := range []string{"present", "absent"} {
 		if out, err := run(presence); err != nil {
 			t.Fatalf("%s: %v %s", presence, err, out)

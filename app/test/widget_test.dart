@@ -13,6 +13,7 @@ import 'package:devicebridge/main.dart';
 import 'package:devicebridge/core/bridge.dart';
 import 'package:devicebridge/core/debug_trace.dart';
 import 'package:devicebridge/features/ssh_bootstrap.dart';
+import 'package:devicebridge/features/ssh_hosts.dart';
 import 'package:devicebridge/features/appearance.dart';
 import 'package:devicebridge/features/amoled_editor.dart';
 import 'package:devicebridge/features/phone_files.dart';
@@ -5166,6 +5167,7 @@ class _DirectHubCore extends FakeCore {
 
 class _SSHHostsCore extends FakeCore {
   final hosts = <Map<String, dynamic>>[];
+  Map<String, dynamic>? maintenanceRequest;
   final policy = <String, dynamic>{'network_agent_ssh': true};
   final aclPeerTags = <String, List<String>>{};
   Map<String, dynamic> aclPolicy = {
@@ -5251,6 +5253,17 @@ class _SSHHostsCore extends FakeCore {
 
   @override
   Future<dynamic> run(List<String> args, {String? input}) async {
+    if (args.first == 'ssh-uninstall-host' ||
+        args.first == 'ssh-bootstrap' &&
+            (jsonDecode(input ?? '{}') as Map)['reinstall'] == true) {
+      calls.add(List.of(args));
+      maintenanceRequest = Map<String, dynamic>.from(jsonDecode(input!) as Map);
+      return {
+        'status': 'uninstalled',
+        'remote_hostname': 'lab',
+        'systemd_status': 'active',
+      };
+    }
     if (args.first == 'acl') {
       calls.add(List.of(args));
       if (args.length == 1) return await _aclSnapshot();
@@ -5360,6 +5373,62 @@ class _SSHHostsCore extends FakeCore {
 }
 
 void registerNetworkRefactorTests() {
+  testWidgets('SSH account can reinstall and uninstall without a pairing', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 1350);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final core = _SSHHostsCore();
+    final host = {
+      'id': 'saved-lab',
+      'name': 'Lab',
+      'host': '10.20.30.40',
+      'port': 22,
+      'user': 'owner',
+      'expected_host_key': 'SHA256:verified-fixture',
+      'transport': 'direct',
+    };
+    core.hosts.add(host);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SshHostScreen(core: core, host: host),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('ssh-host-reinstall-agent')),
+    );
+    await tester.tap(find.byKey(const ValueKey('ssh-host-reinstall-agent')));
+    await tester.pumpAndSettle();
+    expect(find.text('Reinstall DeviceBridge agent'), findsOneWidget);
+    await tester.tap(find.text('Reinstall agent').last);
+    await tester.pumpAndSettle();
+    expect(core.maintenanceRequest?['ssh_host_id'], 'saved-lab');
+    expect(core.maintenanceRequest?['auto_pair'], isFalse);
+    expect(
+      core.maintenanceRequest?['expected_host_key'],
+      'SHA256:verified-fixture',
+    );
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('ssh-host-uninstall-agent')),
+    );
+    await tester.tap(find.byKey(const ValueKey('ssh-host-uninstall-agent')));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('grants for every paired device'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Uninstall agent').last);
+    await tester.pumpAndSettle();
+    expect(core.calls.where((args) => args.first == 'ssh-uninstall-host').single,
+        ['ssh-uninstall-host', 'saved-lab', '-']);
+    expect(core.hosts.single['id'], 'saved-lab');
+  });
+
   testWidgets(
     'SSH-only host is saved separately without installing Agent or requiring SFTP',
     (tester) async {

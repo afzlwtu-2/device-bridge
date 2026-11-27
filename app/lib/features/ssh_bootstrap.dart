@@ -9,9 +9,9 @@ import 'network_rules.dart';
 import 'ssh_key_picker.dart';
 import 'ssh_transport_picker.dart';
 
-/// Connects via SSH (user-supplied credentials, held in memory only for setup),
-/// inspects host key fingerprint, starts/schedules precompiled bridge-agent in systemd,
-/// opens firewall TCP/8731 (UFW), and auto-pairs with the device.
+enum SshAgentMaintenance { reinstall, uninstall }
+
+/// Uses a verified SSH account to set up or maintain a managed agent.
 class SshBootstrapDialog extends StatefulWidget {
   const SshBootstrapDialog({
     super.key,
@@ -26,6 +26,7 @@ class SshBootstrapDialog extends StatefulWidget {
     this.initialPrivateKeyPem,
     this.initialKeyPassphrase,
     this.associateSshHostId,
+    this.maintenance,
     this.autoProbe = false,
     this.termuxCompanion = false,
     this.tailscaleSsh = false,
@@ -44,6 +45,7 @@ class SshBootstrapDialog extends StatefulWidget {
   final String? initialPrivateKeyPem;
   final String? initialKeyPassphrase;
   final String? associateSshHostId;
+  final SshAgentMaintenance? maintenance;
   final bool autoProbe;
   final bool termuxCompanion;
   final bool tailscaleSsh;
@@ -80,8 +82,12 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
   bool viaTailnet = false;
   String? error;
   Map<String, dynamic>? result;
-  bool get uninstall => widget.uninstallPeerId != null;
-  bool get upgrade => widget.associateSshHostId != null;
+  bool get uninstallSaved =>
+      widget.maintenance == SshAgentMaintenance.uninstall;
+  bool get reinstall => widget.maintenance == SshAgentMaintenance.reinstall;
+  bool get uninstall => uninstallSaved || widget.uninstallPeerId != null;
+  bool get savedTarget => widget.associateSshHostId != null;
+  bool get upgrade => savedTarget && widget.maintenance == null;
 
   String _friendlyError(Object e) {
     final s = e.toString();
@@ -95,6 +101,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
   @override
   void initState() {
     super.initState();
+    if (reinstall) autoPair = false;
     if (widget.termuxCompanion) {
       installSystemd = false;
       openFirewall = false;
@@ -130,9 +137,9 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
     hostCtrl.addListener(_invalidateProbe);
     portCtrl.addListener(_invalidateProbe);
     _loadProviders();
-    if (uninstall) {
+    if (widget.uninstallPeerId != null) {
       _loadSavedHostSsh(hostCtrl.text.trim(), peerId: widget.uninstallPeerId);
-    } else if (!upgrade) {
+    } else if (!savedTarget) {
       _loadSavedHostSsh(hostCtrl.text.trim());
     }
     if (widget.autoProbe && (widget.initialHost ?? '').trim().isNotEmpty) {
@@ -388,9 +395,15 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
       error = null;
     });
     try {
-      if (widget.uninstallPeerId case final String peerId) {
+      if (uninstall) {
         await widget.core.run(
-          ['ssh-uninstall', peerId, '-'],
+          [
+            uninstallSaved ? 'ssh-uninstall-host' : 'ssh-uninstall',
+            (uninstallSaved
+                ? widget.associateSshHostId
+                : widget.uninstallPeerId)!,
+            '-',
+          ],
           input: jsonEncode({
             'host': host,
             'port': port,
@@ -420,7 +433,8 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
         'expected_host_key': hostFingerprint,
         if (keyPassphraseCtrl.text.isNotEmpty)
           'key_passphrase': keyPassphraseCtrl.text,
-        if (upgrade) 'ssh_host_id': widget.associateSshHostId,
+        if (savedTarget) 'ssh_host_id': widget.associateSshHostId,
+        if (reinstall) 'reinstall': true,
         if (sudoCtrl.text.isNotEmpty) 'sudo_password': sudoCtrl.text,
         if (_transport != 'auto') 'transport': _transport,
         if (_remoteApproved) 'remote_approved': true,
@@ -543,7 +557,11 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
     final isTailnet = viaTailnet || widget.tailscaleSsh;
     final dialog = AlertDialog(
       title: Text(
-        uninstall
+        uninstallSaved
+            ? 'Uninstall DeviceBridge agent?'
+            : reinstall
+            ? 'Reinstall DeviceBridge agent'
+            : uninstall
             ? 'Remove ${widget.deviceName ?? 'laptop'}?'
             : widget.termuxCompanion
             ? 'Set up Termux folder sync'
@@ -557,7 +575,15 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               if (busy) const LinearProgressIndicator(),
-              if (uninstall)
+              if (uninstallSaved)
+                Text(
+                  'Uninstall the managed Linux agent on ${widget.initialHost}? This stops the service and deletes its DeviceBridge configuration, pairing identity, and grants for every paired device. The saved SSH account remains available.',
+                )
+              else if (reinstall)
+                const Text(
+                  'Replace DeviceBridge binaries and restart the managed Linux agent. Existing pairings and settings stay in place. An older system service is moved to the SSH user and may require sudo.',
+                )
+              else if (uninstall)
                 const Text(
                   'Remove this pairing from this device only (for offline, wiped, or uninstalled devices), or verify SSH below to also stop and uninstall the DeviceBridge daemon, binaries, and configuration on the remote device.',
                 )
@@ -579,12 +605,12 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
                   rules: _rules,
                   runtime: _runtime,
                   allowAuto: true,
-                  enabled: !busy,
+                  enabled: !busy && widget.maintenance == null,
                   approvalTitle:
                       'Allow SSH agent setup to use the selected overlay',
                   onTransportChanged: (value) {
                     setState(() => _transport = value);
-                    if (!upgrade) _invalidateProbe();
+                    if (!savedTarget) _invalidateProbe();
                   },
                   onRemoteApprovedChanged: (value) =>
                       setState(() => _remoteApproved = value),
@@ -597,7 +623,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
                     flex: 3,
                     child: TextField(
                       controller: hostCtrl,
-                      readOnly: upgrade,
+                      readOnly: savedTarget,
                       decoration: const InputDecoration(
                         labelText: 'Host / Tailscale hostname / IP',
                         hintText: 'probook or 10.100.102.69',
@@ -608,7 +634,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
                   Expanded(
                     child: TextField(
                       controller: portCtrl,
-                      readOnly: upgrade,
+                      readOnly: savedTarget,
                       keyboardType: TextInputType.number,
                       decoration: const InputDecoration(labelText: 'Port'),
                     ),
@@ -618,7 +644,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
               const SizedBox(height: 8),
               TextField(
                 controller: userCtrl,
-                readOnly: upgrade,
+                readOnly: savedTarget,
                 decoration: const InputDecoration(
                   labelText: 'SSH username',
                   hintText: 'afzl',
@@ -666,7 +692,9 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
                   value: installSystemd,
-                  onChanged: (v) => setState(() => installSystemd = v ?? true),
+                  onChanged: reinstall
+                      ? null
+                      : (v) => setState(() => installSystemd = v ?? true),
                   title: const Text('Schedule bridge-agent via systemd'),
                 ),
                 CheckboxListTile(
@@ -685,7 +713,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
                   labelText: 'SSH key passphrase (if required)',
                 ),
               ),
-              if (uninstall || openFirewall)
+              if (uninstall || reinstall || openFirewall)
                 TextField(
                   controller: sudoCtrl,
                   obscureText: true,
@@ -693,7 +721,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
                     labelText: 'Sudo password for this operation (if required)',
                   ),
                 ),
-              if (!uninstall)
+              if (!uninstall && !reinstall)
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
                   value: autoPair,
@@ -706,7 +734,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
                         : 'Auto-pair with full storage access',
                   ),
                 ),
-              if (!uninstall)
+              if (!uninstall && !reinstall)
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
                   value: updateBinaries,
@@ -772,7 +800,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
                       'Target: ${result!['remote_hostname']}\n'
                       'Service: ${result!['systemd_status']}\n'
                       'Firewall: ${result!['firewall_status']}\n'
-                      'Paired: ${result!['paired_route'] ?? '—'} (${result!['paired_endpoint'] ?? '—'})',
+                      '${reinstall ? 'Existing pairing state retained' : "Paired: ${result!['paired_route'] ?? '—'} (${result!['paired_endpoint'] ?? '—'})"}',
                       style: const TextStyle(fontSize: 12),
                     ),
                   ),
@@ -797,7 +825,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
                 ),
           child: Text(result != null ? 'Done' : 'Cancel'),
         ),
-        if (uninstall && result == null)
+        if (widget.uninstallPeerId != null && result == null)
           OutlinedButton(
             onPressed: busy ? null : removeLocallyOnly,
             child: const Text('Remove locally only'),
@@ -810,7 +838,15 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
         else if (result == null)
           FilledButton(
             onPressed: busy ? null : runBootstrap,
-            child: Text(uninstall ? 'Remove and uninstall' : 'Run Setup'),
+            child: Text(
+              uninstallSaved
+                  ? 'Uninstall agent'
+                  : reinstall
+                  ? 'Reinstall agent'
+                  : uninstall
+                  ? 'Remove and uninstall'
+                  : 'Run Setup',
+            ),
           ),
       ],
     );

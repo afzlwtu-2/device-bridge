@@ -123,17 +123,32 @@ func TestHostKeyMismatchRejectedAndSystemdUnitValid(t *testing.T) {
 						for r := range creqs {
 							var request struct{ Command string }
 							if r.Type == "exec" && ssh.Unmarshal(r.Payload, &request) == nil {
+								_ = r.Reply(true, nil)
 								cmd := request.Command
 								mu.Lock()
 								cmds = append(cmds, cmd)
 								mu.Unlock()
 								result := []byte("HOST=testbox\nHOME=/home/testuser\nHAS_AGENT=1\nHAS_CLI=1\n1: lo inet 127.0.0.1/8\n")
+								if cmd == "bash -s" {
+									script, _ := io.ReadAll(channel)
+									switch {
+									case strings.Contains(string(script), "prepare-reinstall") && strings.Contains(string(script), "check-reinstall"):
+										result = []byte("18731\n")
+									case strings.Contains(string(script), "installation is outside its managed directory"):
+										result = []byte(fmt.Sprintf("/home/testuser\ntestuser\n{\"id\":%q}\n", remoteID.ID))
+									}
+								}
+								if strings.HasPrefix(cmd, "mktemp -d ") {
+									result = []byte("/home/testuser/.local/share/devicebridge/bin/.devicebridge-reinstall.fixture\n")
+								}
+								if strings.Contains(cmd, ".devicebridge-reinstall.") && strings.Contains(cmd, "cat >") {
+									_, _ = io.Copy(io.Discard, channel)
+								}
 								if strings.HasSuffix(cmd, " identity") {
 									result, _ = json.Marshal(protocol.Device{Version: 1, ID: remoteID.ID, Name: remoteID.Name})
 								}
 								_, _ = channel.Write(result)
 								_, _ = channel.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
-								_ = r.Reply(true, nil)
 								return
 							}
 							_ = r.Reply(false, nil)
@@ -198,6 +213,35 @@ func TestHostKeyMismatchRejectedAndSystemdUnitValid(t *testing.T) {
 	}
 	if _, err = Bootstrap(ctx, localStore, localID, setup); err == nil {
 		t.Fatal("setup accepted a revoked remote relationship")
+	}
+	artifacts := t.TempDir()
+	for _, name := range []string{"bridge-agent", "bridge-cli"} {
+		if err := os.WriteFile(filepath.Join(artifacts, name), []byte("fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	beforeReinstall := len(cmds)
+	mu.Unlock()
+	setup.Reinstall, setup.LocalArtifacts = true, artifacts
+	res, err = Bootstrap(ctx, nil, nil, setup)
+	if err != nil || !res.AgentInstalled || res.PairedPeerID != "" {
+		t.Fatalf("reinstall without a pairing: %+v %v", res, err)
+	}
+	mu.Lock()
+	for _, command := range cmds[beforeReinstall:] {
+		if strings.Contains(command, " init ") || strings.Contains(command, " invite") {
+			t.Errorf("reinstall initialized or paired the existing agent: %s", command)
+		}
+	}
+	mu.Unlock()
+	remove := UninstallRequest{Host: setup.Host, Port: setup.Port, User: setup.User,
+		Password: setup.Password, ExpectedHostKey: setup.ExpectedHostKey}
+	if err := Uninstall(ctx, strings.Repeat("a", 64), remove); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("pairing-based uninstall accepted a different identity: %v", err)
+	}
+	if installedID, err := UninstallSSHHost(ctx, remove); err != nil || installedID != remoteID.ID {
+		t.Fatalf("saved SSH account could not uninstall without pairing: %q %v", installedID, err)
 	}
 	_ = ln.Close()
 	<-done

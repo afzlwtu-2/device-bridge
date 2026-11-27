@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"devicebridge/internal/actions"
 	"devicebridge/internal/auth"
 	"devicebridge/internal/bootstrap"
@@ -1071,10 +1072,15 @@ func run() error {
 			if err != nil {
 				return err
 			}
-			if !req.AutoPair || req.Host != host.Host || req.User != host.User || req.Port != host.Port || req.ExpectedHostKey != host.Fingerprint {
-				return errors.New("SSH upgrade must pair through the verified saved account")
+			if (!req.AutoPair && !req.Reinstall) || req.Host != host.Host || req.User != host.User || req.Port != host.Port || req.ExpectedHostKey != host.Fingerprint {
+				return errors.New("SSH agent maintenance requires the verified saved account")
+			}
+			if req.Reinstall {
+				req.Transport, req.RemoteApproved = host.Transport, host.RemoteApproved
 			}
 			upgrade = &host
+		} else if req.Reinstall {
+			return errors.New("save and verify the SSH account before reinstalling DeviceBridge")
 		}
 		if req.PreferredRoute == "" && req.Transport == "tailnet" {
 			req.PreferredRoute = "tailnet"
@@ -1104,13 +1110,9 @@ func run() error {
 			}
 		}
 		return output(res)
-	case "ssh-uninstall":
+	case "ssh-uninstall", "ssh-uninstall-host":
 		if len(a) != 3 || a[2] != "-" {
-			return errors.New("ssh-uninstall FULL_DEVICE_ID - (reads JSON credentials from stdin)")
-		}
-		peer, pe := s.Peer(a[1])
-		if pe != nil {
-			return pe
+			return errors.New("ssh-uninstall DEVICE_ID - or ssh-uninstall-host SSH_HOST_ID - (reads JSON credentials from stdin)")
 		}
 		rawReq, re := io.ReadAll(io.LimitReader(os.Stdin, 65536))
 		if re != nil {
@@ -1119,6 +1121,17 @@ func run() error {
 		var req bootstrap.UninstallRequest
 		if re = json.Unmarshal(rawReq, &req); re != nil {
 			return re
+		}
+		fromSSH := a[0] == "ssh-uninstall-host"
+		if fromSSH {
+			host, err := s.SSHHost(context.Background(), a[1])
+			if err != nil {
+				return err
+			}
+			req.Host, req.Port, req.User, req.ExpectedHostKey = host.Host, host.Port, host.User, host.Fingerprint
+			req.Transport, req.RemoteApproved = host.Transport, host.RemoteApproved
+		} else if _, err := s.Peer(a[1]); err != nil {
+			return err
 		}
 		req.Tailnet, re = sshOptions(context.Background(), s, bootstrap.TailnetOptions{
 			SSHTransport:   req.Transport,
@@ -1132,10 +1145,22 @@ func run() error {
 		}
 		uctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 		defer cancel()
-		if err := bootstrap.Uninstall(uctx, peer.ID, req); err != nil {
+		peerID := a[1]
+		if fromSSH {
+			var err error
+			peerID, err = bootstrap.UninstallSSHHost(uctx, req)
+			if err != nil {
+				return err
+			}
+			if _, err := s.Peer(peerID); errors.Is(err, sql.ErrNoRows) || peerID == "" {
+				return output(map[string]string{"status": "uninstalled"})
+			} else if err != nil {
+				return fmt.Errorf("agent uninstalled, but checking local pairing failed: %w", err)
+			}
+		} else if err := bootstrap.Uninstall(uctx, peerID, req); err != nil {
 			return err
 		}
-		if err := s.RemovePeer(peer.ID); err != nil {
+		if err := s.RemovePeer(peerID); err != nil {
 			return fmt.Errorf("laptop agent was uninstalled, but local removal failed: %w", err)
 		}
 		return output(map[string]string{"status": "uninstalled"})

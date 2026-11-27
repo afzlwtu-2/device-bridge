@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -61,6 +62,7 @@ type Request struct {
 	TermuxCompanion      bool           `json:"termux_companion,omitempty"`
 	AutoPair             bool           `json:"auto_pair"`
 	UpdateBinaries       bool           `json:"update_binaries,omitempty"`
+	Reinstall            bool           `json:"reinstall,omitempty"`
 	AllowTermuxFiles     bool           `json:"allow_termux_files,omitempty"`
 	AllowSyncControl     bool           `json:"allow_sync_control,omitempty"`
 	AllowSyncRemote      bool           `json:"allow_sync_remote,omitempty"`
@@ -803,7 +805,13 @@ read -r _ _ ssh_local _ <<<"${SSH_CONNECTION:-}"
 echo "SSH_LOCAL=$ssh_local"
 echo "SSH_UID=$(id -u)"
 if command -v ip >/dev/null 2>&1; then
-  ip -4 -o addr show scope global 2>/dev/null | grep -E -v 'tailscale|docker|waydroid|virbr|br-|veth' | head -n 1 || true
+  ip -4 -o addr show scope global 2>/dev/null | awk -v ssh="$ssh_local" '
+    $2 !~ /^(tailscale|wg|tun|docker|waydroid|virbr|br-|veth)/ && $3 == "inet" {
+      if (!first) first = $0
+      split($4, address, "/")
+      if (address[1] == ssh) {print; matched = 1; exit}
+    }
+    END {if (!matched && first) print first}'
 fi
 if command -v tailscale >/dev/null 2>&1; then
   echo "TS=$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
@@ -917,7 +925,7 @@ fi
 	}
 	remoteState := remoteHome + "/.local/share/devicebridge"
 	isTermux := strings.EqualFold(targetPlatform, "android/aarch64")
-	if legacySystemAgent {
+	if legacySystemAgent && !req.Reinstall {
 		return res, errors.New("the host already has a DeviceBridge system service; migrate that service to the SSH user's account before deploying")
 	}
 	if req.TermuxCompanion && !isTermux {
@@ -947,6 +955,9 @@ fi
 	}
 	if !isTermux && (sshUID == 0 || remoteUser == "root") {
 		return res, errors.New("sign in as the unprivileged account that will run DeviceBridge")
+	}
+	if req.Reinstall && isTermux {
+		return res, errors.New("SSH agent maintenance only supports the managed Linux installation")
 	}
 	remoteBinDir := remoteState + "/bin"
 	remoteAgent := remoteBinDir + "/bridge-agent"
@@ -986,6 +997,53 @@ fi
 		return ""
 	}
 
+	if req.Reinstall {
+		agentArtifact, cliArtifact := findLocalArt("bridge-agent"), findLocalArt("bridge-cli")
+		if agentArtifact == "" || cliArtifact == "" {
+			return res, fmt.Errorf("reinstall requires bundled agent and CLI binaries for %s", targetPlatform)
+		}
+		prepare := func(mode string) string {
+			return "set -- " + shellQuote(remoteHome) + " " + shellQuote(remoteUser) + " " + mode + "\n" + uninstallLinux
+		}
+		port, details, err := runSSH(cl, "bash -s", prepare("check-reinstall"))
+		if err != nil {
+			return res, fmt.Errorf("verify managed installation: %w (%s)", err, details)
+		}
+		if req.BridgePort, err = strconv.Atoi(port); err != nil || req.BridgePort < 1 || req.BridgePort > 65535 {
+			return res, errors.New("could not determine the installed service port")
+		}
+		stage, details, err := runSSH(cl, "mktemp -d "+shellQuote(remoteBinDir+"/.devicebridge-reinstall.XXXXXXXX"), "")
+		if err != nil {
+			return res, fmt.Errorf("stage reinstall: %w (%s)", err, details)
+		}
+		if path.Dir(stage) != remoteBinDir || !strings.HasPrefix(path.Base(stage), ".devicebridge-reinstall.") {
+			return res, errors.New("invalid remote staging directory")
+		}
+		stagedAgent, stagedCLI := stage+"/bridge-agent", stage+"/bridge-cli"
+		defer runSSH(cl, "rm -f -- "+shellQuote(stagedAgent)+" "+shellQuote(stagedCLI)+" "+
+			shellQuote(stagedAgent+".tmp")+" "+shellQuote(stagedCLI+".tmp")+"; rmdir -- "+shellQuote(stage), "")
+		if err := streamUploadSSH(cl, agentArtifact, stagedAgent); err != nil {
+			return res, err
+		}
+		if err := streamUploadSSH(cl, cliArtifact, stagedCLI); err != nil {
+			return res, err
+		}
+		if legacySystemAgent {
+			if _, details, err := runRemoteRoot(cl, remoteUser, req.SudoPassword, prepare("prepare-reinstall")); err != nil {
+				return res, fmt.Errorf("prepare migration from the legacy system service: %w (%s)", err, details)
+			}
+			res.Steps = append(res.Steps, "Stopped the legacy system service; restarting under the SSH user")
+		}
+		remoteAgent, remoteCLI = remoteBinDir+"/bridge-agent", remoteBinDir+"/bridge-cli"
+		publish := fmt.Sprintf("mv -fT -- %s %s && mv -fT -- %s %s",
+			shellQuote(stagedCLI), shellQuote(remoteCLI), shellQuote(stagedAgent), shellQuote(remoteAgent))
+		if _, details, err := runSSH(cl, publish, ""); err != nil {
+			return res, fmt.Errorf("publish staged DeviceBridge binaries: %w (%s)", err, details)
+		}
+		hasAgent, hasCLI = true, true
+		req.InstallSystemd, req.UpdateBinaries, req.AutoPair = true, false, false
+	}
+
 	if (!hasAgent || !hasCLI || req.UpdateBinaries) && req.LocalArtifacts != "" {
 		if req.UpdateBinaries {
 			remoteAgent = remoteBinDir + "/bridge-agent"
@@ -1012,7 +1070,7 @@ fi
 		return res, fmt.Errorf("precompiled bridge-agent / bridge-cli not found on target or in local_artifacts (%s)", targetPlatform)
 	}
 	res.AgentInstalled = true
-	if localPath := findLocalArt("bridge-sync"); localPath != "" && (!isTermux || req.UpdateBinaries || !companionEngine) {
+	if localPath := findLocalArt("bridge-sync"); !req.Reinstall && localPath != "" && (!isTermux || req.UpdateBinaries || !companionEngine) {
 		if err := streamUploadSSH(cl, localPath, remoteBinDir+"/bridge-sync"); err != nil {
 			return res, err
 		}
@@ -1024,9 +1082,11 @@ fi
 	if isTermux {
 		initialize += " --home-only"
 	}
-	if _, errOut, err = runSSH(cl, fmt.Sprintf("mkdir -p %s && chmod 700 %s && %s",
-		shellQuote(remoteState), shellQuote(remoteState), initialize), ""); err != nil {
-		return res, fmt.Errorf("remote init failed: %w (%s)", err, errOut)
+	if !req.Reinstall {
+		if _, errOut, err = runSSH(cl, fmt.Sprintf("mkdir -p %s && chmod 700 %s && %s",
+			shellQuote(remoteState), shellQuote(remoteState), initialize), ""); err != nil {
+			return res, fmt.Errorf("remote init failed: %w (%s)", err, errOut)
+		}
 	}
 	if isTermux {
 		res.Steps = append(res.Steps, "Exported Termux Home from the companion")
@@ -1044,6 +1104,9 @@ fi
 		stOut, stErr, stRunErr := runSSH(cl, "bash -c "+shellQuote(unitCmd), unit)
 		if stRunErr != nil {
 			res.SystemdStatus = "systemd user unavailable (" + stErr + ")"
+			if req.Reinstall {
+				return res, fmt.Errorf("restart user service: %w (%s)", stRunErr, stErr)
+			}
 		} else {
 			res.SystemdStatus = "active (" + stOut + ")"
 			res.Steps = append(res.Steps, "Enabled & started systemd user service devicebridge-agent")

@@ -1,5 +1,11 @@
 # Implementation status
 
+**2026-11-27T12:06:49Z — Manage a Linux agent from its saved SSH account.**
+
+- **Reinstall agent** stages replacement binaries and restarts the managed Linux service while keeping its identity, pairing database, grants, and port. It can retire the managed legacy system service and start a user service. **Uninstall agent** verifies the saved SSH host key, removes the managed installation and its remote pairings, and retains the SSH bookmark. Both flows work without a DeviceBridge pairing.
+- SSH setup prefers the actual SSH interface when it matches a LAN address, and its optional UFW rule uses the detected CIDR. The existing laptop firewall stays scoped to its configured subnets.
+- The loopback SSH fixture exercised reinstall and uninstall without pairing as well as identity mismatch rejection. Shell fixtures checked managed-service scope and preserved the pairing database during reinstall preparation. Go checks, Flutter analysis, and 80 Flutter tests passed. Remote production installations and a physical Wi-Fi subnet change were outside verification.
+
 **2026-11-27T09:29:39Z — Device connections, Linux setup, and Terminal backup.**
 
 - SSH deployment schedules a systemd user service. Opening the firewall is opt-in and scoped to the detected LAN. The agent disables Agent SSH when it runs as Linux root. The laptop's existing DeviceBridge service was migrated to the user manager, with its identity and three listener addresses preserved. The legacy system unit is disabled. Its broad UFW rule was replaced with rules for the current Wi-Fi subnet and the existing `tailscale0` interface.

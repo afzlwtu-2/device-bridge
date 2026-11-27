@@ -278,6 +278,53 @@ class _SshHostScreenState extends State<SshHostScreen> {
       decoration: InputDecoration(labelText: label),
     ),
   );
+  Future<void> _manageAgent(
+    Map<String, dynamic> saved, [
+    SshAgentMaintenance? maintenance,
+  ]) async {
+    final done = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => SshBootstrapDialog(
+        core: widget.core,
+        initialHost: '${saved['host'] ?? ''}',
+        initialPort: (saved['port'] as num?)?.toInt() ?? 22,
+        initialUser: '${saved['user'] ?? ''}',
+        initialExpectedHostKey: '${saved['expected_host_key'] ?? ''}',
+        initialTransport: '${saved['transport'] ?? ''}',
+        initialRemoteApproved: saved['remote_approved'] == true,
+        initialPassword: _password.text,
+        initialPrivateKeyPem: _key,
+        initialKeyPassphrase: _passphrase.text,
+        associateSshHostId: '${saved['id'] ?? ''}',
+        maintenance: maintenance,
+      ),
+    );
+    if (done != true || !mounted) return;
+    if (maintenance == null) {
+      Navigator.pop(context, true);
+    } else {
+      await _perform(() async {
+        final accounts = await widget.core.run(['ssh-hosts']) as List;
+        if (!mounted) return;
+        final updated = accounts
+            .whereType<Map>()
+            .where((h) => h['id'] == saved['id'])
+            .firstOrNull;
+        setState(() {
+          if (updated != null) _saved = Map<String, dynamic>.from(updated);
+        });
+        if (maintenance == SshAgentMaintenance.uninstall) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('DeviceBridge agent removed. SSH account kept.'),
+            ),
+          );
+        }
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final saved = _saved;
@@ -454,34 +501,25 @@ class _SshHostScreenState extends State<SshHostScreen> {
             if (saved['agent_peer_id'] == null)
               OutlinedButton.icon(
                 key: const ValueKey('ssh-host-upgrade-agent'),
-                onPressed: _busy
-                    ? null
-                    : () async {
-                        final upgraded = await showDialog<bool>(
-                          context: context,
-                          builder: (_) => SshBootstrapDialog(
-                            core: widget.core,
-                            initialHost: '${saved['host'] ?? ''}',
-                            initialPort: (saved['port'] as num?)?.toInt() ?? 22,
-                            initialUser: '${saved['user'] ?? ''}',
-                            initialExpectedHostKey:
-                                '${saved['expected_host_key'] ?? ''}',
-                            initialTransport: '${saved['transport'] ?? ''}',
-                            initialRemoteApproved:
-                                saved['remote_approved'] == true,
-                            initialPassword: _password.text,
-                            initialPrivateKeyPem: _key,
-                            initialKeyPassphrase: _passphrase.text,
-                            associateSshHostId: '${saved['id'] ?? ''}',
-                          ),
-                        );
-                        if (upgraded == true && mounted) {
-                          Navigator.pop(this.context, true);
-                        }
-                      },
+                onPressed: _busy ? null : () => _manageAgent(saved),
                 icon: const Icon(Icons.upgrade),
                 label: const Text('Upgrade to Agent / Direct device'),
               ),
+            OutlinedButton.icon(
+              key: const ValueKey('ssh-host-reinstall-agent'),
+              onPressed: _busy
+                  ? null
+                  : () => _manageAgent(saved, SshAgentMaintenance.reinstall),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Reinstall agent'),
+            ),
+            TextButton(
+              key: const ValueKey('ssh-host-uninstall-agent'),
+              onPressed: _busy
+                  ? null
+                  : () => _manageAgent(saved, SshAgentMaintenance.uninstall),
+              child: const Text('Uninstall agent'),
+            ),
             TextButton(
               onPressed: _busy
                   ? null

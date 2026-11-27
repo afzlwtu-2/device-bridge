@@ -30,6 +30,21 @@ check_unit() {
 
 check_unit "$user_unit"
 check_unit "$system_unit"
+if [[ "$presence" == check-reinstall || "$presence" == prepare-reinstall ]]; then
+    [[ -d "$state/bin" && "$(realpath -e -- "$state/bin")" == "$state/bin" && -f "$state/state.db" && ! -L "$state/state.db" ]] ||
+        fail "No existing managed DeviceBridge installation was found for this SSH account."
+    if [[ -e "$user_units" || -L "$user_units" ]]; then
+        [[ -d "$user_units" && "$(realpath -e -- "$user_units")" == "$user_units" ]] ||
+            fail "Invalid user service directory."
+    fi
+    if [[ "$presence" == prepare-reinstall ]]; then
+        systemctl disable --now "$unit"
+    else
+        systemctl --user show-environment >/dev/null || fail "The SSH account's systemd user manager is unavailable."
+    fi
+    printf '%s\n' "$port"
+    exit 0
+fi
 for file in "$sudoers" "$polkit"; do
     [[ ! -L "$file" ]] || fail "Refusing a linked configuration at $file."
 done

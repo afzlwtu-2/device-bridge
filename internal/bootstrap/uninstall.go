@@ -34,9 +34,20 @@ func Uninstall(ctx context.Context, peerID string, req UninstallRequest) error {
 	if _, err := hex.DecodeString(peerID); len(peerID) != 64 || err != nil {
 		return errors.New("invalid paired device ID")
 	}
+	_, err := uninstallAgent(ctx, peerID, req)
+	return err
+}
+
+// UninstallSSHHost authorizes removal through a saved, pinned SSH account.
+// The caller can reconcile any local pairing using the observed remote ID.
+func UninstallSSHHost(ctx context.Context, req UninstallRequest) (string, error) {
+	return uninstallAgent(ctx, "", req)
+}
+
+func uninstallAgent(ctx context.Context, peerID string, req UninstallRequest) (string, error) {
 	cl, _, _, _, err := dialSSHParams(ctx, req.Tailnet, req.Host, req.Port, req.User, req.Password, req.PrivateKeyPEM, req.KeyPassphrase, req.ExpectedHostKey)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer cl.Close()
 	stop := context.AfterFunc(ctx, func() { _ = cl.Close() })
@@ -55,7 +66,7 @@ if [ ! -L "$state" ] && [ ! -e "$state" ]; then
     echo absent
     exit
 fi
-if [ "$(realpath -e -- "$state")" != "$state" ] ||
+if [ ! -f "$state/state.db" ] || [ "$(realpath -e -- "$state")" != "$state" ] ||
    [ "$(realpath -e -- "$state/bin/bridge-cli")" != "$state/bin/bridge-cli" ]; then
     echo 'The DeviceBridge installation is outside its managed directory.' >&2
     exit 1
@@ -64,20 +75,28 @@ fi
 `
 	raw, stderr, err := runSSH(cl, "bash -s", inspect)
 	if err != nil {
-		return fmt.Errorf("verify laptop installation: %w (%s)", err, stderr)
+		return "", fmt.Errorf("verify laptop installation: %w (%s)", err, stderr)
 	}
 	parts := strings.SplitN(raw, "\n", 3)
 	if len(parts) != 3 || !path.IsAbs(parts[0]) || path.Clean(parts[0]) != parts[0] || parts[0] == "/" || parts[1] == "" {
-		return errors.New("could not identify the laptop's installation directory")
+		return "", errors.New("could not identify the laptop's installation directory")
 	}
 	present := parts[2] != "absent"
+	var installedID string
 	if present {
 		var identity struct {
 			ID string `json:"id"`
 		}
-		if err := json.Unmarshal([]byte(parts[2]), &identity); err != nil || identity.ID != peerID {
-			return errors.New("the laptop's DeviceBridge identity does not match this pairing")
+		if err := json.Unmarshal([]byte(parts[2]), &identity); err != nil {
+			return "", errors.New("could not read the installed DeviceBridge identity")
 		}
+		if _, err := hex.DecodeString(identity.ID); err != nil || len(identity.ID) != 64 {
+			return "", errors.New("invalid installed DeviceBridge identity")
+		}
+		if peerID != "" && identity.ID != peerID {
+			return "", errors.New("the laptop's DeviceBridge identity does not match this pairing")
+		}
+		installedID = identity.ID
 	}
 	script := "set -- " + shellQuote(parts[0]) + " " + shellQuote(parts[1]) + " "
 	if present {
@@ -87,7 +106,7 @@ fi
 	}
 	script += uninstallLinux
 	if _, stderr, err := runRemoteRoot(cl, parts[1], req.SudoPassword, script); err != nil {
-		return fmt.Errorf("uninstall DeviceBridge (root or sudo required): %w (%s)", err, stderr)
+		return "", fmt.Errorf("uninstall DeviceBridge (root or sudo required): %w (%s)", err, stderr)
 	}
-	return nil
+	return installedID, nil
 }

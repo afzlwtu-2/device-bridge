@@ -22,6 +22,7 @@
 - Failover never runs ADB, creates a Wi-Fi Direct group, starts a hotspot, changes system VPN settings or joins a manual link. It uses only existing eligible connections. An existing manual link can stay active once explicitly selected.
 - USB discovery lists wired transports and existing forwards. Starting a USB connection can create a forward and must authenticate the selected paired peer through it. A failed attempt removes only the forward it created.
 - Foreground device and connectivity events refresh the route list. Local Wi-Fi changes update LAN rows without disturbing a healthy user preference. A pending Tailscale startup gets bounded retries. Signs of logout or unsupported/unreachable peers remove the route from the list.
+- Direct LAN accepts any supported on-link subnet. The Linux agent follows the current address when configured with `--lan-cidr auto`. A UFW rule installed for a specific LAN CIDR stays scoped to that CIDR after roaming. A different LAN needs its own inbound rule for the agent port.
 - Automatically resumed bulk transfers use the same LAN → Tailscale → WireGuard ordering. Internet, relay and cellular bulk routes require the paired device's explicit approval. The transfer engine still verifies the same peer and manifest before it resumes.
 - Recovery also checks the current Networks settings and the peer's saved fallback list when present. SSH Automatic uses Tailscale only with overlay approval and an enabled Tailscale transport.
 - An interrupted remote download keeps its staging and progress. The CLI retries the selected route and eligible alternatives with bounded backoff for up to two minutes without progress. Android supplies the currently approved Wi-Fi binding when it changes. A recovered connection authenticates the original peer and continues by file offset using the original manifest and final XXH64 checks. Interrupted tar downloads continue via file streams. The same destination can be resumed manually after the wait expires.
@@ -34,6 +35,7 @@
 - A configured Tailscale route shows its reconnection status and a **Retry** action while peer verification is pending or unavailable. After a manual direct link stops, the row returns while the app checks reachability.
 - Links holds Wi-Fi Direct and Hotspot setup, channel selection, and wireless capabilities. For interrupted downloads, use **Use selected connection** after verifying the route.
 - Discover shows setup candidates from LAN and the tailnet. The global Connections screen still controls local transport login and configuration.
+- A saved SSH device offers **Reinstall agent** and **Uninstall agent** for managed Linux installations. Both use the saved SSH account and pinned host key and work independently of DeviceBridge pairing. Reinstall keeps the target identity, settings, and grants. Uninstall stops the agent and removes its DeviceBridge state and grants for all peers, while retaining the SSH bookmark.
 
 ### Networks hub
 
