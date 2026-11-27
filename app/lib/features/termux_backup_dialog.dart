@@ -11,7 +11,7 @@ class TermuxBackupSelection {
   final List<String> excludePatterns;
 
   Map<String, dynamic> toSpec() => {
-    if (includePaths.isNotEmpty) 'include_paths': includePaths,
+    'include_paths': includePaths,
     'exclude_patterns': excludePatterns,
   };
 }
@@ -49,6 +49,7 @@ class _TermuxBackupDialog extends StatefulWidget {
 class _TermuxBackupDialogState extends State<_TermuxBackupDialog> {
   final TextEditingController _excludeController = TextEditingController();
   final Set<String> _selectedPaths = <String>{};
+  final Map<String, List<Map<String, dynamic>>> _listings = {};
   late final List<String> _excludePatterns;
   List<Map<String, dynamic>> _entries = const [];
   String _currentPath = '';
@@ -104,6 +105,7 @@ class _TermuxBackupDialogState extends State<_TermuxBackupDialog> {
         }
       }
     }
+    _listings[_currentPath] = entries;
     _entries = entries;
   }
 
@@ -165,30 +167,20 @@ class _TermuxBackupDialogState extends State<_TermuxBackupDialog> {
         _selectedPaths.removeWhere((p) => p.startsWith(prefix));
         _selectedPaths.add(path);
       } else {
-        _selectedPaths.remove(path);
-        _selectedPaths.removeWhere((p) => p.startsWith(prefix));
-        // If a selected parent ancestor covered this item, split the parent selection into
-        // its sibling entries so sibling selections aren't lost.
-        final parentPath = path.contains('/')
-            ? path.substring(0, path.lastIndexOf('/'))
-            : '';
-        if (parentPath.isNotEmpty && _selectedPaths.contains(parentPath)) {
-          _selectedPaths.remove(parentPath);
-          for (final sibling in _entries) {
-            final sibPath = sibling['path'] as String? ?? '';
-            if (sibPath.isNotEmpty &&
-                sibPath != path &&
-                sibling['excluded_by_default'] != true) {
-              _selectedPaths.add(sibPath);
+        _selectedPaths.removeWhere((p) => p == path || p.startsWith(prefix));
+        final parts = path.split('/');
+        var parent = parts.first;
+        for (final segment in parts.skip(1)) {
+          final child = '$parent/$segment';
+          if (_selectedPaths.remove(parent)) {
+            for (final sibling in _listings[parent] ?? const []) {
+              final siblingPath = sibling['path'] as String? ?? '';
+              if (siblingPath.isNotEmpty && siblingPath != path) {
+                _selectedPaths.add(siblingPath);
+              }
             }
           }
-        }
-        var cursor = path;
-        while (true) {
-          final slash = cursor.lastIndexOf('/');
-          if (slash <= 0) break;
-          cursor = cursor.substring(0, slash);
-          _selectedPaths.remove(cursor);
+          parent = child;
         }
       }
     });

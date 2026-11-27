@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"devicebridge/internal/platform"
 	"github.com/cespare/xxhash/v2"
 )
 
@@ -54,6 +55,16 @@ func TestTermuxBackupRoundTripPreservesHomeAndPackageNames(t *testing.T) {
 		t.Fatalf("unreadable source should be reported: %+v", report)
 	}
 	truncated := append([]byte(nil), archive.Bytes()[:archive.Len()-4]...)
+	homeGuard, err := platform.LockTermuxHome(target, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RestoreTermuxBackup(targetState, bytes.NewReader(archive.Bytes())); err == nil {
+		t.Fatal("restore must refuse to replace a running shell's Home")
+	}
+	if err := homeGuard.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := RestoreTermuxBackup(targetState, bytes.NewReader(truncated)); err == nil {
 		t.Fatal("truncated archive restored")
 	}
@@ -113,9 +124,24 @@ func TestTermuxBackupExcludesCachesAndAlwaysPreservesDotEnv(t *testing.T) {
 	put(filepath.Join(source, ".env.local"), "LOCAL_SECRET=yes")
 	put(filepath.Join(source, "projects", "web", "index.ts"), "console.log('ok')")
 	put(filepath.Join(source, "projects", "web", ".env.production"), "PROD_KEY=123")
+	put(filepath.Join(source, "projects", "web", ".npmrc"), "registry=example")
+	put(filepath.Join(source, "projects", "web", ".yarn", "releases", "yarn.cjs"), "pinned yarn")
+	put(filepath.Join(source, "projects", "flutter", ".metadata"), "project metadata")
+	put(filepath.Join(source, "projects", "go", "go.sum"), "dependency checksums")
+	put(filepath.Join(source, "projects", "rust", "Cargo.lock"), "locked dependencies")
+	put(filepath.Join(source, "projects", "python", "pyproject.toml"), "configuration")
 	put(filepath.Join(source, "projects", "web", "node_modules", "pkg", "big.js"), "generated")
 	put(filepath.Join(source, "projects", "web", ".node_modules", "pkg", "big.js"), "generated dot")
 	put(filepath.Join(source, "notes", "todo.txt"), "not selected")
+	for _, rel := range []string{
+		"projects/web/.yarn/cache/module.zip", "projects/web/.next/chunk.js",
+		"projects/flutter/.dart_tool/package_config.json", "projects/flutter/build/app.apk",
+		"projects/go/go-build/cache", "projects/go/pkg/mod/dependency/file",
+		"projects/rust/target/debug/app", "projects/python/.pytest_cache/cache",
+		"projects/python/module.pyc", "projects/python/.venv/bin/python",
+	} {
+		put(filepath.Join(source, rel), "generated")
+	}
 
 	entries, err := ListTermuxBackupEntries(sourceState, "")
 	if err != nil {
@@ -166,6 +192,34 @@ func TestTermuxBackupExcludesCachesAndAlwaysPreservesDotEnv(t *testing.T) {
 	} {
 		if _, err := os.Lstat(filepath.Join(target, absent)); !os.IsNotExist(err) {
 			t.Fatalf("%s should have been excluded/unselected, got stat err=%v", absent, err)
+		}
+	}
+	archive.Reset()
+	if _, err := WriteTermuxBackupWithOptions(sourceState, &archive, TermuxBackupOptions{
+		IncludePaths: []string{"projects", "projects/web/node_modules/pkg/big.js"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RestoreTermuxBackup(targetState, &archive); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"projects/web/.npmrc", "projects/web/.yarn/releases/yarn.cjs", "projects/flutter/.metadata",
+		"projects/go/go.sum", "projects/rust/Cargo.lock", "projects/python/pyproject.toml",
+	} {
+		if _, err := os.Stat(filepath.Join(target, rel)); err != nil {
+			t.Errorf("missing preserved file %s: %v", rel, err)
+		}
+	}
+	for _, rel := range []string{
+		"projects/web/node_modules/pkg/big.js", "projects/web/.yarn/cache/module.zip", "projects/web/.next/chunk.js",
+		"projects/flutter/.dart_tool/package_config.json", "projects/flutter/build/app.apk",
+		"projects/go/go-build/cache", "projects/go/pkg/mod/dependency/file",
+		"projects/rust/target/debug/app", "projects/python/.pytest_cache/cache",
+		"projects/python/module.pyc", "projects/python/.venv/bin/python",
+	} {
+		if _, err := os.Stat(filepath.Join(target, rel)); !os.IsNotExist(err) {
+			t.Errorf("generated file %s: %v", rel, err)
 		}
 	}
 }

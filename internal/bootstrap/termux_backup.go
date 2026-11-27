@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"devicebridge/internal/platform"
 	"github.com/cespare/xxhash/v2"
 	"golang.org/x/sys/unix"
 )
@@ -42,16 +43,41 @@ var DefaultTermuxBackupExcludes = []string{
 	".node_modules",
 	".npm",
 	".pnpm-store",
-	".yarn",
+	".pnpm",
+	".yarn/cache",
+	".yarn/unplugged",
+	".yarn/install-state.gz",
+	".next",
+	".nuxt",
+	".output",
+	".vite",
+	".turbo",
+	".parcel-cache",
+	"coverage",
 	".cargo/registry",
+	".cargo/git",
 	"target",
+	"go/pkg/mod",
+	"go-build",
+	"gocache",
 	"__pycache__",
+	"*.pyc",
+	"*.pyo",
+	"*.egg-info",
+	".pytest_cache",
+	".mypy_cache",
+	".ruff_cache",
+	".tox",
+	".nox",
 	".venv",
 	"venv",
 	"build",
 	"dist",
 	".gradle",
+	".cxx",
 	".dart_tool",
+	".flutter-plugins",
+	".flutter-plugins-dependencies",
 	".Trash",
 }
 
@@ -59,7 +85,7 @@ var DefaultTermuxBackupExcludes = []string{
 // and which folder/file patterns are excluded. Top-level and walked .env* files
 // are always preserved regardless of exclude rules.
 type TermuxBackupOptions struct {
-	IncludePaths    []string  `json:"include_paths,omitempty"`
+	IncludePaths    []string  `json:"include_paths"`
 	ExcludePatterns *[]string `json:"exclude_patterns,omitempty"`
 }
 
@@ -164,11 +190,11 @@ func matchesTermuxExclude(relPath string, excludes []string) bool {
 	base := filepath.Base(rel)
 	for _, pat := range excludes {
 		if strings.Contains(pat, "/") {
-			if rel == pat || strings.HasPrefix(rel, pat+"/") {
-				return true
-			}
-			if matched, _ := filepath.Match(pat, rel); matched {
-				return true
+			for suffix := rel; suffix != ""; {
+				if matched, _ := filepath.Match(pat, suffix); matched || strings.HasPrefix(suffix, pat+"/") {
+					return true
+				}
+				_, suffix, _ = strings.Cut(suffix, "/")
 			}
 		} else {
 			if base == pat || rel == pat {
@@ -201,10 +227,14 @@ func estimateTermuxEntrySize(fsys fs.FS, rel string, isDir bool) int64 {
 		if visited > maxEntries {
 			return fs.SkipAll
 		}
-		if d.IsDir() {
-			if p != rel && matchesTermuxExclude(p, DefaultTermuxBackupExcludes) {
+		if p != rel && matchesTermuxExclude(p, DefaultTermuxBackupExcludes) &&
+			(d.IsDir() || !isTermuxEnvFile(d.Name())) {
+			if d.IsDir() {
 				return fs.SkipDir
 			}
+			return nil
+		}
+		if d.IsDir() {
 			return nil
 		}
 		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
@@ -396,7 +426,7 @@ func writeTermuxBackup(state string, output io.Writer, opts TermuxBackupOptions)
 	}
 
 	var walkRoots []string
-	if len(opts.IncludePaths) == 0 {
+	if opts.IncludePaths == nil {
 		walkRoots = []string{"."}
 	} else {
 		seenRoots := make(map[string]bool)
@@ -420,25 +450,27 @@ func writeTermuxBackup(state string, output io.Writer, opts TermuxBackupOptions)
 			}
 		}
 		// Always preserve top-level .env* files in Termux Home even on selective folder backups.
-		if topEntries, readErr := fs.ReadDir(root.FS(), "."); readErr == nil {
-			for _, te := range topEntries {
-				if !te.IsDir() && isTermuxEnvFile(te.Name()) {
-					_ = addRoot(te.Name())
-				}
+		topEntries, err := fs.ReadDir(root.FS(), ".")
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		for _, te := range topEntries {
+			if !te.IsDir() && isTermuxEnvFile(te.Name()) {
+				_ = addRoot(te.Name())
 			}
 		}
 	}
 
+	homeInfo, err := root.Stat(".")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if err := emitEntry(".", homeInfo); err != nil {
+		return 0, 0, 0, err
+	}
 	ensureAncestors := func(rel string) error {
 		if rel == "." {
 			return nil
-		}
-		if !emitted["."] {
-			if st, err := fs.Stat(root.FS(), "."); err == nil {
-				if err := emitEntry(".", st); err != nil {
-					return err
-				}
-			}
 		}
 		parts := strings.Split(rel, "/")
 		curr := ""
@@ -448,18 +480,53 @@ func writeTermuxBackup(state string, output io.Writer, opts TermuxBackupOptions)
 			} else {
 				curr += "/" + parts[i]
 			}
-			if !emitted[curr] {
-				if st, err := fs.Stat(root.FS(), curr); err == nil {
-					if err := emitEntry(curr, st); err != nil {
-						return err
-					}
-				}
+			st, err := root.Lstat(curr)
+			if err != nil {
+				return err
+			}
+			if !st.IsDir() {
+				return fmt.Errorf("backup selection traverses a non-directory: %s", curr)
+			}
+			if err := emitEntry(curr, st); err != nil {
+				return err
 			}
 		}
 		return nil
 	}
 
 	for _, walkRoot := range walkRoots {
+		if walkRoot != "." {
+			info, statErr := root.Lstat(walkRoot)
+			if statErr != nil {
+				if err := skipEntry(walkRoot, statErr); err != nil {
+					return 0, 0, 0, err
+				}
+				continue
+			}
+			excludedPath := false
+			for cursor := walkRoot; cursor != "."; cursor = filepath.Dir(cursor) {
+				if cursor == walkRoot && !info.IsDir() && isTermuxEnvFile(info.Name()) {
+					continue
+				}
+				if matchesTermuxExclude(cursor, excludes) {
+					excluded++
+					excludedPath = true
+					break
+				}
+			}
+			if excludedPath {
+				continue
+			}
+			if !info.IsDir() {
+				if err := ensureAncestors(walkRoot); err != nil {
+					return 0, 0, 0, err
+				}
+				if err := emitEntry(walkRoot, info); err != nil {
+					return 0, 0, 0, err
+				}
+				continue
+			}
+		}
 		if err := ensureAncestors(walkRoot); err != nil {
 			return 0, 0, 0, err
 		}
@@ -483,14 +550,11 @@ func writeTermuxBackup(state string, output io.Writer, opts TermuxBackupOptions)
 				return emitEntry(path, info)
 			}
 			if path != "." && matchesTermuxExclude(path, excludes) {
-				explicitRoot := walkRoot != "." && path == walkRoot
-				if !explicitRoot {
-					excluded++
-					if isDir {
-						return fs.SkipDir
-					}
-					return nil
+				excluded++
+				if isDir {
+					return fs.SkipDir
 				}
+				return nil
 			}
 			info, err := entry.Info()
 			if err != nil {
@@ -523,6 +587,11 @@ func RestoreTermuxBackup(state string, input io.Reader) (TermuxBackupInfo, error
 		return backup, err
 	}
 	defer guard.Close()
+	homeGuard, err := platform.LockTermuxHome(home, true)
+	if err != nil {
+		return backup, err
+	}
+	defer homeGuard.Close()
 	compressed, err := gzip.NewReader(input)
 	if err != nil {
 		return backup, err
@@ -574,6 +643,7 @@ func RestoreTermuxBackup(state string, input io.Reader) (TermuxBackupInfo, error
 	digest := xxhash.New()
 	buffer := make([]byte, 128*1024)
 	checksum := ""
+	seen := make(map[string]bool)
 	for {
 		header, err = archive.Next()
 		if errors.Is(err, io.EOF) {
@@ -601,6 +671,10 @@ func RestoreTermuxBackup(state string, input io.Reader) (TermuxBackupInfo, error
 		if !ok || !fs.ValidPath(name) || (name == "." && header.Name != "home/") {
 			return backup, fmt.Errorf("unsafe path in Termux backup: %q", header.Name)
 		}
+		if seen[name] {
+			return backup, fmt.Errorf("duplicate path in Termux backup: %q", name)
+		}
+		seen[name] = true
 		mode := header.FileInfo().Mode().Perm()
 		if err := root.MkdirAll(filepath.Dir(name), 0700); err != nil {
 			return backup, err
