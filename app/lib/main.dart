@@ -592,6 +592,63 @@ class _BridgeHomeState extends State<BridgeHome> {
     if (mounted) await task(refreshPeers);
   }
 
+  Future<void> _pairNearby(String id, Map<String, dynamic> candidate) async {
+    final name = candidate['device_name'] as String?;
+    Map? match;
+    await task(() async {
+      try {
+        final hint = candidate['tailnet_hint'] as String?;
+        final result = await widget.core.run([
+          if (hint != null) ...['--endpoint', hint],
+          'tailnet-pair-match',
+          id,
+        ]);
+        if (result is Map && result['endpoint'] is String) match = result;
+      } catch (_) {
+        // The invitation remains available when Tailscale is offline.
+      }
+    });
+    if (!mounted) return;
+    final endpoint = match?['endpoint'] as String?;
+    if (endpoint == null) {
+      await _pairWithInvitation(peerId: id, peerName: name);
+      return;
+    }
+    final choice = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => SimpleDialog(
+        title: Text('Add ${match?['name'] ?? name ?? 'DeviceBridge device'}'),
+        children: [
+          SimpleDialogOption(
+            key: const ValueKey('nearby-pair-tailnet'),
+            onPressed: () => Navigator.pop(dialog, true),
+            child: ListTile(
+              leading: const Icon(Icons.vpn_lock_outlined),
+              title: const Text('Pair via Tailscale'),
+              subtitle: Text('${match?['tailnet_name'] ?? endpoint}'),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(dialog, false),
+            child: const ListTile(
+              leading: Icon(Icons.qr_code),
+              title: Text('Scan or enter invitation'),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || choice == null) return;
+    if (!choice) {
+      await _pairWithInvitation(peerId: id, peerName: name);
+      return;
+    }
+    await task(() async {
+      await widget.core.run(['--endpoint', endpoint, 'tailnet-pair', id]);
+      await refreshPeers();
+    });
+  }
+
   Future<void> _pairWithInvitation({String? peerId, String? peerName}) async {
     var tailnetPeers = <Map<String, dynamic>>[];
     try {
@@ -1607,10 +1664,7 @@ class _BridgeHomeState extends State<BridgeHome> {
                 trailing: const Icon(Icons.chevron_right),
                 onTap: busy
                     ? null
-                    : () => _pairWithInvitation(
-                        peerId: entry.key,
-                        peerName: entry.value['device_name'] as String?,
-                      ),
+                    : () => _pairNearby(entry.key, entry.value),
               ),
           ],
           if (revokedPeers.isNotEmpty) ...[

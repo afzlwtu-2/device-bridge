@@ -49,7 +49,7 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	return c.doRequest(c.HTTP, ctx, method, path, query, body)
 }
 func (c *Client) doRequest(httpClient *http.Client, ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
-	if path != "/v1/pair" {
+	if path != "/v1/pair" && path != "/v1/pair/tailnet" {
 		p, err := c.Store.Peer(c.PeerID)
 		if err != nil || p.Status != "paired" {
 			return nil, storage.ErrDenied

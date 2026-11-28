@@ -114,7 +114,11 @@ func openOverlay(ctx context.Context, stateDir, controlSocket, tailnetMode strin
 			return nil, errors.New("system Tailscale unavailable")
 		}
 	}
-	return &tailnet.Provider{Control: tailnetipc.Client{Socket: socket}, RemoteApproved: remoteApproved}, nil
+	app := &tailnet.Provider{Control: tailnetipc.Client{Socket: socket}, RemoteApproved: remoteApproved}
+	if runtime.GOOS == "android" && tailnetMode == "auto" {
+		app.SystemVPN = tailnet.NewAndroidVPN(os.Getenv("DEVICEBRIDGE_SYSTEM_TAILNET_HANDLE"), os.Getenv("DEVICEBRIDGE_SYSTEM_TAILNET_IP"))
+	}
+	return app, nil
 }
 
 func (c *command) connect(id string, authenticate bool) (*client.Client, transport.Candidate, error) {
@@ -1007,6 +1011,8 @@ func run() error {
 		return sshHostsCommand(s, bootstrap.TailnetOptions{StateDir: *state, ControlSocket: *controlSocket, Mode: *tailnetMode}, a)
 	case "acl":
 		return aclCommand(s, a)
+	case "tailnet-pair-match", "tailnet-pair":
+		return tailnetPairCommand(s, id, *state, *controlSocket, *tailnetMode, *endpoint, a)
 	case "peer-tags":
 		return peerTagsCommand(s, a)
 	case "acl-group":

@@ -585,7 +585,33 @@ func run() error {
 				if addr == "" {
 					return
 				}
-				c, e := net.DialTimeout("tcp", addr, 3*time.Second)
+				socket := filepath.Join(filepath.Dir(*state), "tailnet-agent.sock")
+				c, e := net.DialTimeout("unix", socket, time.Second)
+				if e == nil {
+					tags := []string{}
+					query, cancel := context.WithTimeout(ctx, 2*time.Second)
+					who, err := lc.WhoIsProto(query, "tcp", incoming.RemoteAddr().String())
+					cancel()
+					if err == nil && who != nil && who.Node != nil {
+						if source, err := netip.ParseAddrPort(incoming.RemoteAddr().String()); err == nil {
+							for _, assigned := range who.Node.Addresses {
+								if assigned.IsSingleIP() && assigned.Addr() == source.Addr().Unmap() {
+									tags = who.Node.Tags
+									break
+								}
+							}
+						}
+					}
+					_ = c.SetWriteDeadline(time.Now().Add(time.Second))
+					err = json.NewEncoder(c).Encode(tags)
+					_ = c.SetWriteDeadline(time.Time{})
+					if err != nil {
+						c.Close()
+						return
+					}
+				} else {
+					c, e = net.DialTimeout("tcp", addr, 3*time.Second)
+				}
 				if e != nil {
 					return
 				}

@@ -399,6 +399,9 @@ func (s *Store) Approve(id string, roots []string, ttl time.Duration, quota int6
 	return tx.Commit()
 }
 func removePeerACLMetadataTx(tx *sql.Tx, id string) error {
+	if _, err := tx.Exec("DELETE FROM preferences WHERE key=?", verifiedTailnetTrustPrefix+id); err != nil {
+		return err
+	}
 	if _, err := tx.Exec("DELETE FROM preferences WHERE key=?", peerTagsPrefix+id); err != nil {
 		return err
 	}

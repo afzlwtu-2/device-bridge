@@ -197,6 +197,22 @@ object CoreRuntime {
             if (approvedHandle != null) {
                 builder.environment()["DEVICEBRIDGE_NETWORK_HANDLE"] = approvedHandle
             }
+            // Use the VPN visible to this app. An excluded app has a physical
+            // default network and continues to use the app-private node.
+            val defaultNetwork = cm.activeNetwork
+            val vpn = defaultNetwork?.takeIf {
+                cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+            }
+            val tailnetIp = vpn?.let { cm.getLinkProperties(it) }?.linkAddresses
+                ?.map { it.address }?.filterIsInstance<java.net.Inet4Address>()
+                ?.firstOrNull {
+                    val bytes = it.address
+                    bytes[0].toInt() == 100 && (bytes[1].toInt() and 0xff) in 64..127
+                }
+            if (vpn != null && tailnetIp != null) {
+                builder.environment()["DEVICEBRIDGE_SYSTEM_TAILNET_HANDLE"] = vpn.networkHandle.toString()
+                builder.environment()["DEVICEBRIDGE_SYSTEM_TAILNET_IP"] = tailnetIp.hostAddress.orEmpty()
+            }
             val started = builder.start()
             child = started
             running.set(started)

@@ -50,10 +50,11 @@ type ACLRule struct {
 }
 
 type ACLPolicy struct {
-	Version int                 `json:"version"`
-	Enabled bool                `json:"enabled"`
-	Groups  map[string][]string `json:"groups"`
-	Rules   []ACLRule           `json:"rules"`
+	Version         int                 `json:"version"`
+	Enabled         bool                `json:"enabled"`
+	Groups          map[string][]string `json:"groups"`
+	Rules           []ACLRule           `json:"rules"`
+	TailnetPairTags []string            `json:"tailnet_pair_tags"`
 }
 
 type ACLDecision struct {
@@ -75,10 +76,11 @@ type PeerACLEvaluation struct {
 
 func defaultACLPolicy() ACLPolicy {
 	return ACLPolicy{
-		Version: 1,
-		Enabled: false,
-		Groups:  map[string][]string{},
-		Rules:   []ACLRule{},
+		Version:         1,
+		Enabled:         false,
+		Groups:          map[string][]string{},
+		Rules:           []ACLRule{},
+		TailnetPairTags: []string{trustedTailnetTag},
 	}
 }
 
@@ -180,6 +182,21 @@ func sanitizeACLPolicy(in ACLPolicy) (ACLPolicy, error) {
 		return out, errors.New("unsupported ACL policy version")
 	}
 	out.Enabled = in.Enabled
+	if in.TailnetPairTags != nil {
+		if len(in.TailnetPairTags) > maxTagsPerPeer {
+			return out, errors.New("too many Tailscale pairing tags")
+		}
+		out.TailnetPairTags = []string{}
+		for _, raw := range in.TailnetPairTags {
+			tag, err := NormalizeACLTag(raw)
+			if err != nil {
+				return out, err
+			}
+			if !slices.Contains(out.TailnetPairTags, tag) {
+				out.TailnetPairTags = append(out.TailnetPairTags, tag)
+			}
+		}
+	}
 	if len(in.Groups) > maxACLGroups {
 		return out, errors.New("too many ACL groups")
 	}
@@ -265,8 +282,12 @@ func sanitizeACLPolicy(in ACLPolicy) (ACLPolicy, error) {
 }
 
 func (s *Store) ACLPolicy(ctx context.Context) (ACLPolicy, error) {
+	return readACLPolicy(s.DB.QueryRowContext(ctx, "SELECT value FROM preferences WHERE key=?", aclPolicyKey))
+}
+
+func readACLPolicy(row *sql.Row) (ACLPolicy, error) {
 	var raw string
-	err := s.DB.QueryRowContext(ctx, "SELECT value FROM preferences WHERE key=?", aclPolicyKey).Scan(&raw)
+	err := row.Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return defaultACLPolicy(), nil
 	}
@@ -282,6 +303,9 @@ func (s *Store) ACLPolicy(ctx context.Context) (ACLPolicy, error) {
 	}
 	if p.Rules == nil {
 		p.Rules = []ACLRule{}
+	}
+	if p.TailnetPairTags == nil {
+		p.TailnetPairTags = []string{trustedTailnetTag}
 	}
 	if p.Version == 0 {
 		p.Version = 1
@@ -444,14 +468,18 @@ func (s *Store) CheckPeerACL(ctx context.Context, peer, resource string) (enable
 	if err != nil {
 		return false, false, err
 	}
-	if !policy.Enabled {
+	trusted, err := s.hasVerifiedTailnetTrust(ctx, p.ID, policy)
+	if err != nil {
+		return true, false, err
+	}
+	if !policy.Enabled && !trusted {
 		return false, true, nil
 	}
 	tags, err := s.PeerTags(ctx, p.ID)
 	if err != nil {
 		return true, false, err
 	}
-	dec := evaluateRuleSet(policy, p.ID, tags, resource)
+	dec := evaluatePeerPolicy(policy, p.ID, tags, resource, trusted)
 	return true, dec.Allowed, nil
 }
 
@@ -468,6 +496,10 @@ func (s *Store) EvaluatePeerACL(ctx context.Context, peer string) (PeerACLEvalua
 	if err != nil {
 		return PeerACLEvaluation{}, err
 	}
+	trusted, err := s.hasVerifiedTailnetTrust(ctx, p.ID, policy)
+	if err != nil {
+		return PeerACLEvaluation{}, err
+	}
 	groups := []string{}
 	for g, members := range policy.Groups {
 		if slices.Contains(members, p.ID) {
@@ -481,7 +513,7 @@ func (s *Store) EvaluatePeerACL(ctx context.Context, peer string) (PeerACLEvalua
 			decisions = append(decisions, ACLDecision{Resource: res, Allowed: false, Reason: "Peer status is " + p.Status})
 			continue
 		}
-		decisions = append(decisions, evaluateRuleSet(policy, p.ID, tags, res))
+		decisions = append(decisions, evaluatePeerPolicy(policy, p.ID, tags, res, trusted))
 	}
 	return PeerACLEvaluation{
 		PeerID:    p.ID,
@@ -489,7 +521,7 @@ func (s *Store) EvaluatePeerACL(ctx context.Context, peer string) (PeerACLEvalua
 		Status:    p.Status,
 		Tags:      tags,
 		Groups:    groups,
-		Enabled:   policy.Enabled,
+		Enabled:   policy.Enabled || trusted,
 		Decisions: decisions,
 	}, nil
 }

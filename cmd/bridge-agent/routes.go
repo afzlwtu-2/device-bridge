@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"devicebridge/internal/server"
 	"devicebridge/internal/tailnetipc"
 	"devicebridge/internal/transport/tailscaled"
 	"encoding/json"
@@ -92,7 +93,7 @@ func newOverlayListeners(port int, useTailnet bool) *overlayListeners {
 	}
 }
 
-func (r *overlayListeners) refresh(ctx context.Context, primary string, serve func(net.Listener)) {
+func (r *overlayListeners) refresh(ctx context.Context, primary string, serve func(net.Listener, server.TailnetTagSource)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if time.Since(r.lastRefresh) < 8*time.Second {
@@ -131,12 +132,19 @@ func (r *overlayListeners) refresh(ctx context.Context, primary string, serve fu
 		}
 		bound := overlayBinding{transport: transport}
 		if address != primary {
-			ln, err := net.Listen("tcp", address)
+			var ln net.Listener
+			var source server.TailnetTagSource
+			var err error
+			if transport == "tailnet" {
+				ln, source, err = systemTailnetListener(ctx, address)
+			} else {
+				ln, err = net.Listen("tcp", address)
+			}
 			if err != nil {
 				continue
 			}
 			bound.listener = ln
-			serve(ln)
+			serve(ln, source)
 		}
 		r.bindings[address] = bound
 	}

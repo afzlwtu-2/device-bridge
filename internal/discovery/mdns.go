@@ -13,6 +13,7 @@ import (
 	"github.com/miekg/dns"
 	"golang.org/x/net/ipv4"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"syscall"
@@ -70,7 +71,7 @@ func listenMulticast(ctx context.Context, iface *net.Interface) (*net.UDPConn, e
 	return conn, nil
 }
 
-func Advertise(ctx context.Context, p *direct.Provider, id, name string, port int) (func(), error) {
+func Advertise(ctx context.Context, p *direct.Provider, id, name string, port int, tailnetHint ...func() string) (func(), error) {
 	iface, err := networkInterface(p.Interface)
 	if err != nil {
 		return nil, err
@@ -100,6 +101,12 @@ func Advertise(ctx context.Context, p *direct.Provider, id, name string, port in
 					continue
 				}
 				msg := dns.Msg{MsgHdr: dns.MsgHdr{Id: query.Id, Response: true, Authoritative: true}, Answer: records(id, name, port, net.ParseIP(p.Address.String()))}
+				if len(tailnetHint) > 0 {
+					if endpoint := tailnetHint[0](); validTailnetHint(endpoint) {
+						txt := msg.Answer[2].(*dns.TXT)
+						txt.Txt = append(txt.Txt, "tailnet="+endpoint)
+					}
+				}
 				data, e := msg.Pack()
 				if e != nil {
 					continue
@@ -115,6 +122,11 @@ func Advertise(ctx context.Context, p *direct.Provider, id, name string, port in
 	}()
 	return stop, nil
 }
+func validTailnetHint(endpoint string) bool {
+	addr, err := netip.ParseAddrPort(endpoint)
+	return err == nil && addr.Port() == 8731 && netip.MustParsePrefix("100.64.0.0/10").Contains(addr.Addr())
+}
+
 func parseResponse(p *direct.Provider, src *net.UDPAddr, raw []byte, found map[string]transport.Candidate) {
 	if !p.Prefix.Contains(src.AddrPort().Addr().Unmap()) {
 		return
@@ -126,6 +138,7 @@ func parseResponse(p *direct.Provider, src *net.UDPAddr, raw []byte, found map[s
 	srv := map[string]uint16{}
 	ids := map[string]string{}
 	names := map[string]string{}
+	tailnetHints := map[string]string{}
 	ptrs := map[string]bool{}
 	for _, rr := range append(msg.Answer, msg.Extra...) {
 		switch r := rr.(type) {
@@ -141,6 +154,8 @@ func parseResponse(p *direct.Provider, src *net.UDPAddr, raw []byte, found map[s
 					ids[r.Hdr.Name] = id
 				} else if name, ok := strings.CutPrefix(v, "name="); ok && len(name) <= 128 && utf8.ValidString(name) {
 					names[r.Hdr.Name] = protocol.DeviceDisplayName(name)
+				} else if hint, ok := strings.CutPrefix(v, "tailnet="); ok && validTailnetHint(hint) {
+					tailnetHints[r.Hdr.Name] = hint
 				}
 			}
 		}
@@ -151,7 +166,7 @@ func parseResponse(p *direct.Provider, src *net.UDPAddr, raw []byte, found map[s
 			continue
 		}
 		endpoint := net.JoinHostPort(src.IP.String(), strconv.Itoa(int(srv[instance])))
-		found[id+endpoint] = transport.Candidate{DeviceID: id, DeviceName: names[instance], Endpoint: endpoint, Interface: p.Interface, Transport: p.ID(), Observed: time.Now().UTC(), Cost: p.NetworkCost(transport.Candidate{}), Direct: true}
+		found[id+endpoint] = transport.Candidate{DeviceID: id, DeviceName: names[instance], TailnetHint: tailnetHints[instance], Endpoint: endpoint, Interface: p.Interface, Transport: p.ID(), Observed: time.Now().UTC(), Cost: p.NetworkCost(transport.Candidate{}), Direct: true}
 	}
 }
 

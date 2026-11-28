@@ -477,6 +477,47 @@ class _AclScreenState extends State<AclScreen> {
     return 'Allowed: ${allowed.join(', ')}\nDenied: ${denied.join(', ')}';
   }
 
+  List<String> get _tailnetPairTags =>
+      (_policy['tailnet_pair_tags'] as List? ?? ['tag:trusted'])
+          .map((tag) => '$tag')
+          .toList();
+
+  Future<void> _editTailnetPairTags() async {
+    final controller = TextEditingController(text: _tailnetPairTags.join(', '));
+    final input = await showDialog<String>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('Tailscale pairing tags'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            labelText: 'Allowed tags, comma-separated',
+            helperText: 'Leave blank to disable QR-free Tailscale pairing.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialog, controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) => controller.dispose());
+    if (!mounted || input == null) return;
+    final tags = input
+        .split(',')
+        .map(normalizeTagInput)
+        .where((tag) => tag.isNotEmpty)
+        .toSet()
+        .toList();
+    await _savePolicy({..._policy, 'tailnet_pair_tags': tags});
+  }
+
   @override
   Widget build(BuildContext context) {
     final enabled = _policy['enabled'] == true;
@@ -542,6 +583,18 @@ class _AclScreenState extends State<AclScreen> {
                       label: const Text('Apply Trusted / Guest preset'),
                     ),
                   ],
+                ),
+                ListTile(
+                  key: const ValueKey('acl-tailnet-pair-tags'),
+                  leading: const Icon(Icons.vpn_lock_outlined),
+                  title: const Text('Tailscale pairing tags'),
+                  subtitle: Text(
+                    _tailnetPairTags.isEmpty
+                        ? 'QR-free pairing disabled'
+                        : _tailnetPairTags.join(', '),
+                  ),
+                  trailing: const Icon(Icons.edit_outlined),
+                  onTap: _busy ? null : _editTailnetPairTags,
                 ),
                 NetworkCard(
                   icon: Icons.label_outline,

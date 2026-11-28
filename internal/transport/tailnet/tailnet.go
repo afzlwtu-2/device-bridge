@@ -15,6 +15,7 @@ type Provider struct {
 	Control        tailnetipc.Client
 	RemoteApproved bool
 	PullNetwork    func() (string, error)
+	SystemVPN      *AndroidVPN
 }
 
 func (*Provider) ID() string { return "tsnet-v1" }
@@ -25,6 +26,11 @@ func (*Provider) DiscoverCandidates(context.Context) ([]transport.Candidate, err
 	return nil, errors.New("select a tailnet endpoint and verify its DeviceBridge key")
 }
 func (p *Provider) Probe(ctx context.Context, c transport.Candidate) (transport.Candidate, error) {
+	if p.SystemVPN.canReach(c.Endpoint) {
+		c.PathKind = "unknown"
+		c.Cost = p.NetworkCost(c)
+		return c, nil
+	}
 	v, _, err := p.Control.Exchange(ctx, tailnetipc.Request{Operation: "probe", Target: c.Endpoint})
 	if err != nil {
 		return c, err
@@ -51,6 +57,12 @@ func (p *Provider) Dial(ctx context.Context, c transport.Candidate) (net.Conn, e
 			return nil, err
 		}
 		req.NetworkHandle = handle
+	}
+	if p.SystemVPN.canReach(c.Endpoint) {
+		if req.NetworkHandle != "" && req.NetworkHandle != p.SystemVPN.handle {
+			return nil, &net.OpError{Op: "dial", Net: "tailscale", Err: tailnetipc.ErrNetworkBinding}
+		}
+		return p.SystemVPN.dial(ctx, c.Endpoint)
 	}
 	_, conn, err := p.Control.Exchange(ctx, req)
 	if errors.Is(err, tailnetipc.ErrNetworkBinding) {

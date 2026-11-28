@@ -22,6 +22,7 @@ type NetworkCost struct {
 type Candidate struct {
 	DeviceID        string        `json:"device_id"`
 	DeviceName      string        `json:"device_name,omitempty"`
+	TailnetHint     string        `json:"tailnet_hint,omitempty"`
 	Endpoint        string        `json:"endpoint"`
 	Interface       string        `json:"interface"`
 	Transport       string        `json:"transport"`

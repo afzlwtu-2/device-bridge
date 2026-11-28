@@ -49,12 +49,16 @@ func BindApprovedSocket(fd uintptr) error {
 	if value == "" {
 		return nil
 	}
+	return BindSocketToNetwork(fd, value)
+}
+
+func BindSocketToNetwork(fd uintptr, value string) error {
 	handle, err := strconv.ParseUint(value, 10, 64)
 	if err != nil || handle == 0 {
 		return errors.New("invalid approved Android network")
 	}
 	if C.android_setsocknetwork(C.net_handle_t(handle), C.int(fd)) != 0 {
-		return errors.New("cannot bind socket to approved Wi-Fi")
+		return errors.New("cannot bind socket to approved Android network")
 	}
 	return nil
 }

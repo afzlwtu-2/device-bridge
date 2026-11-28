@@ -64,6 +64,28 @@ func (p *Provider) api(ctx context.Context, method, path string, out any) error 
 	}
 	return json.NewDecoder(io.LimitReader(res.Body, 4<<20)).Decode(out)
 }
+func (p *Provider) PeerTags(ctx context.Context, remote string) []string {
+	var result struct {
+		Node *struct {
+			Tags      []string
+			Addresses []netip.Prefix
+		}
+	}
+	q := url.Values{"proto": {"tcp"}, "addr": {remote}}
+	if p.api(ctx, "GET", "/localapi/v0/whois?"+q.Encode(), &result) != nil || result.Node == nil {
+		return nil
+	}
+	source, err := netip.ParseAddrPort(remote)
+	if err == nil {
+		for _, assigned := range result.Node.Addresses {
+			if assigned.IsSingleIP() && assigned.Addr() == source.Addr().Unmap() {
+				return result.Node.Tags
+			}
+		}
+	}
+	return nil
+}
+
 func (p *Provider) Status(ctx context.Context) (tailnetipc.Response, error) {
 	var s status
 	err := p.api(ctx, "GET", "/localapi/v0/status", &s)

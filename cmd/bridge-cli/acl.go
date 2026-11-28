@@ -80,7 +80,9 @@ func aclCommand(s *storage.Store, a []string) error {
 		if err != nil {
 			return err
 		}
-		if _, err = s.SaveACLPolicy(ctx, storage.PresetTrustedACLPolicy(cur.Groups)); err != nil {
+		preset := storage.PresetTrustedACLPolicy(cur.Groups)
+		preset.TailnetPairTags = cur.TailnetPairTags
+		if _, err = s.SaveACLPolicy(ctx, preset); err != nil {
 			return err
 		}
 		snap, err := buildACLSnapshot(ctx, s)

@@ -206,6 +206,22 @@ func run() error {
 	}
 	defer stopDynamic()
 
+	var overlays *overlayListeners
+	if runtime.GOOS == "linux" && *port > 0 {
+		overlays = newOverlayListeners(*port, *systemTailnet)
+		defer overlays.close()
+	}
+	tailnetHint := func() string {
+		if overlays != nil {
+			endpoint, _ := overlays.endpoints()
+			return endpoint
+		}
+		if runtime.GOOS == "android" {
+			return sidecarRoute(ctx, *state, "tailnet")
+		}
+		return ""
+	}
+
 	startPrimaryDiscoveryFor := func(pctx context.Context, dp *direct.Provider, portNum int) (bool, string) {
 		if *noDiscovery {
 			return false, ""
@@ -216,7 +232,7 @@ func run() error {
 			stopPrimaryDisc()
 			stopPrimaryDisc = nil
 		}
-		stop, e := discovery.Advertise(pctx, dp, id.ID, id.Name, portNum)
+		stop, e := discovery.Advertise(pctx, dp, id.ID, id.Name, portNum, tailnetHint)
 		if e != nil {
 			return false, e.Error()
 		}
@@ -322,7 +338,7 @@ func run() error {
 			}
 			defer dln.Close()
 			if !*noDiscovery {
-				if dstop, aerr := discovery.Advertise(dctx, dp, id.ID, id.Name, dln.Addr().(*net.TCPAddr).Port); aerr == nil {
+				if dstop, aerr := discovery.Advertise(dctx, dp, id.ID, id.Name, dln.Addr().(*net.TCPAddr).Port, tailnetHint); aerr == nil {
 					defer dstop()
 				}
 			}
@@ -330,11 +346,6 @@ func run() error {
 		}()
 	}
 
-	var overlays *overlayListeners
-	if runtime.GOOS == "linux" && *port > 0 {
-		overlays = newOverlayListeners(*port, *systemTailnet)
-		defer overlays.close()
-	}
 	refreshRoutes := func() {
 		if overlays == nil {
 			return
@@ -342,8 +353,8 @@ func run() error {
 		primaryMu.Lock()
 		primaryAddress := primaryLn.Addr().String()
 		primaryMu.Unlock()
-		overlays.refresh(ctx, primaryAddress, func(ln net.Listener) {
-			go func() { _ = newSrv().Serve(ctx, ln) }()
+		overlays.refresh(ctx, primaryAddress, func(ln net.Listener, source server.TailnetTagSource) {
+			go func() { _ = newSrv().ServeWithTailnetTags(ctx, ln, source) }()
 		})
 	}
 	syncManager := synccontrol.New(ctx, *state, s, providers)
@@ -442,6 +453,9 @@ func run() error {
 		return srv
 	}
 
+	if runtime.GOOS == "linux" || (runtime.GOOS == "android" && p.Address.IsLoopback()) {
+		go listenSidecarIngress(ctx, *state, newSrv())
+	}
 	refreshRoutes()
 	lbPort := *loopbackPort
 	if lbPort == 0 && !p.Address.IsLoopback() && *port > 0 {

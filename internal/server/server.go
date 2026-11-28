@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"devicebridge/internal/actions"
 	"devicebridge/internal/auth"
 	"devicebridge/internal/features"
@@ -131,6 +132,8 @@ func peerID(r *http.Request) string { return auth.Fingerprint(r.TLS.PeerCertific
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/pair", s.pair)
+	mux.HandleFunc("POST /v1/pair/tailnet", s.tailnetPair)
+	mux.HandleFunc("GET /v1/pair/tailnet", s.tailnetPair)
 	mux.HandleFunc("GET /v1/pair", s.pairStatus)
 	mux.HandleFunc("GET /v1/device", s.device)
 	mux.HandleFunc("GET /v1/speedtest", s.speedtest)
@@ -205,12 +208,27 @@ func (s *Server) Handler() http.Handler {
 	})
 }
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	return s.ServeWithTailnetTags(ctx, ln, nil)
+}
+
+func (s *Server) ServeWithTailnetTags(ctx context.Context, ln net.Listener, source TailnetTagSource) error {
 	serveCtx, stop := context.WithCancel(ctx)
 	go s.watchLinkLease(serveCtx)
 	h := &http.Server{
-		Handler:           s.Handler(),
-		BaseContext:       func(net.Listener) context.Context { return serveCtx },
-		TLSConfig:         s.Identity.ServerTLS(),
+		Handler:     s.Handler(),
+		BaseContext: func(net.Listener) context.Context { return serveCtx },
+		TLSConfig:   s.Identity.ServerTLS(),
+		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
+			if source == nil {
+				return ctx
+			}
+			if tlsConn, ok := conn.(*tls.Conn); ok {
+				conn = tlsConn.NetConn()
+			}
+			return context.WithValue(ctx, tailnetTagsKey{}, func(ctx context.Context) []string {
+				return source(ctx, conn)
+			})
+		},
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      3 * time.Minute,

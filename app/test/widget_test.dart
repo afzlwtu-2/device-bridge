@@ -1318,6 +1318,30 @@ void main() {
     },
   );
 
+  testWidgets('Nearby contact can pair by verified Tailscale endpoint', (
+    tester,
+  ) async {
+    final core = _NearbyPairingCore()..tailnetMatch = true;
+    await tester.pumpWidget(DeviceBridgeApp(core: core));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Devices').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Nearby phone'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('phone-ts.tailnet.example'), findsOneWidget);
+    expect(find.text('Scan or enter invitation'), findsOneWidget);
+    await tester.tap(find.text('Pair via Tailscale'));
+    await tester.pumpAndSettle();
+    expect(core.calls.where((args) => args.contains('tailnet-pair')).single, [
+      '--endpoint',
+      '100.64.0.2:8731',
+      'tailnet-pair',
+      List.filled(64, 'b').join(),
+    ]);
+    expect(core.calls.any((args) => args.contains('pair')), isFalse);
+  });
+
   testWidgets(
     'Devices lists nearby DeviceBridge peers automatically and invites show QR and JSON copy',
     (tester) async {
@@ -2044,8 +2068,21 @@ class _AutomaticPairingCore extends FakeCore {
 }
 
 class _NearbyPairingCore extends FakeCore {
+  bool tailnetMatch = false;
+
   @override
   Future<dynamic> run(List<String> arguments, {String? input}) async {
+    if (tailnetMatch && arguments.contains('tailnet-pair-match')) {
+      return {
+        'name': 'Nearby phone',
+        'tailnet_name': 'phone-ts.tailnet.example',
+        'endpoint': '100.64.0.2:8731',
+      };
+    }
+    if (arguments.contains('tailnet-pair')) {
+      calls.add(arguments);
+      return {'status': 'paired'};
+    }
     if (arguments.first == 'discover') {
       return [
         {
