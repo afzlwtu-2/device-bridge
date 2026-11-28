@@ -397,7 +397,7 @@ func SetupTermuxEnvironment(ctx context.Context, stateDir, cliBin, mode, archive
 	tmpDir := filepath.Join(prefix, "tmp")
 	cacheDir := filepath.Join(termRoot, "cache")
 
-	if mode != "base" && mode != "tools" && mode != "openssh" {
+	if mode != "base" && mode != "tools" && mode != "openssh" && mode != "ssh-client" {
 		return errors.New("unsupported Termux setup mode")
 	}
 	for _, d := range []string{home, cacheDir} {
@@ -440,9 +440,11 @@ func SetupTermuxEnvironment(ctx context.Context, stateDir, cliBin, mode, archive
 	if mode == "base" {
 		requiredBins = nil
 	}
-	if mode == "openssh" {
+	if mode == "ssh-client" || mode == "openssh" {
 		requiredBins = requiredBins[2:3]
-		requiredBins[0].bin = filepath.Join(prefix, "bin", "sshd")
+		if mode == "openssh" {
+			requiredBins[0].bin = filepath.Join(prefix, "bin", "sshd")
+		}
 	}
 	var missingPkgs []string
 	for _, item := range requiredBins {
@@ -535,7 +537,7 @@ func SetupTermuxEnvironment(ctx context.Context, stateDir, cliBin, mode, archive
 
 	sshKeygen := filepath.Join(prefix, "bin", "ssh-keygen")
 	hostKey := filepath.Join(prefix, "etc", "ssh", "ssh_host_ed25519_key")
-	if mode != "base" && isExecutableFile(sshKeygen) {
+	if (mode == "tools" || mode == "openssh") && isExecutableFile(sshKeygen) {
 		if _, err := os.Stat(hostKey); os.IsNotExist(err) {
 			emit("Generating OpenSSH host keys...")
 			adaptCtx := resolveTermuxAdaptContext(stateDir, cliBin, termRoot, prefix, home, cacheDir)

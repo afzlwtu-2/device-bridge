@@ -442,3 +442,40 @@ func TestConfigureTermuxPrefixInstallsStarshipFastfetchAndBash(t *testing.T) {
 		t.Fatalf("unexpected fish config: %s (%v)", string(fishCfg), err)
 	}
 }
+
+func TestTermuxManagedConfigRefreshesAfterAPKReplacement(t *testing.T) {
+	root := t.TempDir()
+	termRoot := filepath.Join(root, "terminal")
+	prefix := filepath.Join(termRoot, "files", "usr")
+	home := filepath.Join(termRoot, "files", "home")
+	cache := filepath.Join(termRoot, "cache")
+	state := filepath.Join(root, "devicebridge")
+	for _, version := range []string{"old-apk", "new-apk"} {
+		native := filepath.Join(root, version)
+		if err := os.Mkdir(native, 0700); err != nil {
+			t.Fatal(err)
+		}
+		adapter := filepath.Join(native, "libdb_termux_adapt.so")
+		if err := os.WriteFile(adapter, nil, 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("DEVICEBRIDGE_NATIVE_LIB_DIR", native)
+		cli := filepath.Join(native, "libbridge_cli.so")
+		if err := configureTermuxPrefix(state, cli, termRoot, prefix, home, cache); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, pair := range [][2]string{
+		{filepath.Join(home, ".tmux.conf"), "libdb_termux_adapt.so"},
+		{filepath.Join(home, ".ssh", "config"), "libbridge_cli.so"},
+		{filepath.Join(prefix, "etc", "ssh", "ssh_config"), "libbridge_cli.so"},
+	} {
+		config, err := os.ReadFile(pair[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(config), "old-apk") || !strings.Contains(string(config), filepath.Join(root, "new-apk", pair[1])) {
+			t.Fatalf("%s did not refresh its APK path", pair[0])
+		}
+	}
+}

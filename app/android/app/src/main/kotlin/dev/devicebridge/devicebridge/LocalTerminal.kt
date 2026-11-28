@@ -38,14 +38,19 @@ internal class LocalTerminal(
             try {
                 check(!closed && !cancelled.get()) { "The terminal screen has closed." }
                 sessions.remove(sessionId)?.closeTransport?.invoke()
-                val reattach = JSONObject(initial).optBoolean("reattach")
+                val request = JSONObject(initial)
+                val reattach = request.optBoolean("reattach")
+                val needsSshClient = request.optJSONObject("remote") != null
                 val detachedAllowed = allowDetached()
                 check(!reattach || detachedAllowed) { "Background terminal persistence is unavailable." }
                 if (!reattach) {
                     startReplied = true
                     activity.runOnUiThread { finished(null) }
                 }
-                if (!reattach && !TermuxBootstrap.isReady(activity.applicationContext)) {
+                val context = activity.applicationContext
+                val setupNeeded = if (needsSshClient) !TermuxBootstrap.hasSshClient(context)
+                    else !TermuxBootstrap.isReady(context)
+                if (!reattach && setupNeeded) {
                     val emitLine: (String) -> Unit = { line ->
                         val payload = "$line\r\n"
                         val frame = JSONObject().put("session_id", sessionId).put(
@@ -65,11 +70,13 @@ internal class LocalTerminal(
                         activity.runOnUiThread { if (!closed) emit(frame.toString()) }
                     }
                     try {
-                        TermuxBootstrap.ensureReady(activity.applicationContext, emitLine, emitProgress,
+                        TermuxBootstrap.ensureReady(context, emitLine, emitProgress,
+                            mode = if (needsSshClient) "ssh-client" else "base",
                             active = { !closed && !cancelled.get() })
                         emitLine("")
                     } catch (setupError: Exception) {
                         if (closed || cancelled.get()) return@execute
+                        if (needsSshClient) throw setupError
                         emitLine("\r\n\u001b[33mTermux setup could not finish: ${setupError.message ?: setupError}\u001b[0m")
                         emitLine("Opening the Android shell. Reopen Terminal to retry setup.\r\n")
                     }

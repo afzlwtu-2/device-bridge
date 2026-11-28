@@ -188,10 +188,10 @@ func resolveTermuxAdaptContext(stateDir, cliBin, termRoot, prefix, home, cacheDi
 	}
 }
 
-func parseConfiguredSentinel(path string) (prefix, home, cacheDir, pkg string, ok bool) {
+func parseConfiguredSentinel(path string) (prefix, home, cacheDir, pkg, cli string, ok bool) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", "", "", false
+		return "", "", "", "", "", false
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		k, v, found := strings.Cut(strings.TrimSpace(line), "=")
@@ -207,9 +207,11 @@ func parseConfiguredSentinel(path string) (prefix, home, cacheDir, pkg string, o
 			cacheDir = v
 		case "pkg":
 			pkg = v
+		case "cli":
+			cli = v
 		}
 	}
-	return prefix, home, cacheDir, pkg, prefix != "" && home != ""
+	return prefix, home, cacheDir, pkg, cli, prefix != "" && home != ""
 }
 
 func shellSingleQuote(s string) string {
@@ -250,6 +252,24 @@ func refreshTermuxFishConfig(path string, existing []byte, adapter string) error
 	return writeTermuxConfig(path, []byte(updated), 0o644)
 }
 
+func refreshTmuxAdapter(config, adapter string) string {
+	for _, name := range []string{"LD_PRELOAD", "DB_TERMUX_ADAPT_SO"} {
+		prefix := "set-environment -g " + name + " "
+		lines := strings.SplitAfter(config, "\n")
+		for index, line := range lines {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			lines[index] = ""
+			if adapter != "" {
+				lines[index] = prefix + fmt.Sprintf("%q\n", adapter)
+			}
+		}
+		config = strings.Join(lines, "")
+	}
+	return config
+}
+
 func configureTermuxPrefix(stateDir, cliBin, termRoot, prefix, home, cacheDir string) error {
 	_ = os.MkdirAll(filepath.Join(home, ".config", "fish", "conf.d"), 0o755)
 	_ = os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o755)
@@ -262,7 +282,7 @@ func configureTermuxPrefix(stateDir, cliBin, termRoot, prefix, home, cacheDir st
 
 	ctx := resolveTermuxAdaptContext(stateDir, cliBin, termRoot, prefix, home, cacheDir)
 	sentinel := filepath.Join(prefix, ".devicebridge-configured-v4")
-	prevPrefix, prevHome, prevCache, prevPkg, hasSentinel := parseConfiguredSentinel(sentinel)
+	prevPrefix, prevHome, prevCache, prevPkg, prevCLI, hasSentinel := parseConfiguredSentinel(sentinel)
 	pathChanged := !hasSentinel || prevPrefix != prefix || prevHome != home || prevCache != cacheDir || (ctx.AppPkg != "" && prevPkg != "" && prevPkg != ctx.AppPkg)
 
 	tailnetSock := filepath.Join(stateDir, "tailnet", "control.sock")
@@ -320,7 +340,7 @@ esac
 	installTermuxRootWrappers(ctx)
 
 	// Configure shared OpenSSH client/server; only run Termux sshd on 127.0.0.1:8022 when explicitly enabled.
-	configureTermuxSSH(stateDir, cliBin, termRoot, prefix, home, tsnetBin, pathChanged)
+	configureTermuxSSH(stateDir, cliBin, termRoot, prefix, home, tsnetBin, pathChanged || prevCLI != cliBin)
 
 	// Configure ~/.tmux.conf ported from laptop ~/.tmux.conf for Android touchscreen ergonomics.
 	tmuxCfgPath := filepath.Join(home, ".tmux.conf")
@@ -465,7 +485,11 @@ setw -g monitor-bell on
 	} else {
 		oldLine := fmt.Sprintf("set-environment -g APT_CONFIG %q", filepath.Join(prefix, "etc", "apt", "apt.conf"))
 		newLine := fmt.Sprintf("set-environment -g APT_CONFIG %q", termuxAPTConfig(prefix))
-		if updated := strings.ReplaceAll(string(existingTmux), oldLine, newLine); updated != string(existingTmux) {
+		updated := strings.ReplaceAll(string(existingTmux), oldLine, newLine)
+		if strings.HasPrefix(updated, "# DEVICEBRIDGE_TMUX_V8") {
+			updated = refreshTmuxAdapter(updated, ctx.AdaptSo)
+		}
+		if updated != string(existingTmux) {
 			if err := writeTermuxConfig(tmuxCfgPath, []byte(updated), 0o644); err != nil {
 				return err
 			}
@@ -568,11 +592,12 @@ end
 	if err := configureTermuxAPT(stateDir, cliBin, ctx); err != nil {
 		return err
 	}
-	if !pathChanged {
+	if !pathChanged && prevCLI == cliBin {
 		return nil
 	}
-
-	adaptTermuxInstallation(ctx, prevPrefix, prevHome, prevCache)
+	if pathChanged {
+		adaptTermuxInstallation(ctx, prevPrefix, prevHome, prevCache)
+	}
 	sentinelContent := fmt.Sprintf("prefix=%s\nhome=%s\ncache=%s\npkg=%s\ncli=%s\n", prefix, home, cacheDir, ctx.AppPkg, cliBin)
 	return writeTermuxConfig(sentinel, []byte(sentinelContent), 0o644)
 }
@@ -1013,12 +1038,12 @@ func EnsureTermuxAdapted(stateDir, cliBin string) error {
 	}
 	ctx := resolveTermuxAdaptContext(stateDir, cliBin, termRoot, prefix, home, cacheDir)
 	sentinel := filepath.Join(prefix, ".devicebridge-configured-v4")
-	prevPrefix, prevHome, prevCache, _, _ := parseConfiguredSentinel(sentinel)
+	prevPrefix, prevHome, prevCache, _, prevCLI, _ := parseConfiguredSentinel(sentinel)
 	installTermuxRootWrappers(ctx)
 	adaptTermuxInstallation(ctx, prevPrefix, prevHome, prevCache)
 	if cliBin != "" {
 		tsnetBin := filepath.Join(prefix, "bin", "tsnet")
-		configureTermuxSSH(stateDir, cliBin, termRoot, prefix, home, tsnetBin, prevPrefix != "" && prevPrefix != prefix)
+		configureTermuxSSH(stateDir, cliBin, termRoot, prefix, home, tsnetBin, (prevPrefix != "" && prevPrefix != prefix) || prevCLI != cliBin)
 	}
 	sentinelContent := fmt.Sprintf("prefix=%s\nhome=%s\ncache=%s\npkg=%s\ncli=%s\n", prefix, home, cacheDir, ctx.AppPkg, cliBin)
 	return writeTermuxConfig(sentinel, []byte(sentinelContent), 0o644)
@@ -1050,9 +1075,10 @@ func configureTermuxSSH(stateDir, cliBin, termRoot, prefix, home, tsnetBin strin
 	_ = os.MkdirAll(filepath.Join(prefix, "var", "run"), 0o755)
 
 	sshClientCfg := filepath.Join(home, ".ssh", "config")
-	if existingSSH, err := os.ReadFile(sshClientCfg); os.IsNotExist(err) || forceRewrite || !strings.Contains(string(existingSSH), "DEVICEBRIDGE_TSNET_SSH_V3") {
+	if existingSSH, err := os.ReadFile(sshClientCfg); os.IsNotExist(err) || forceRewrite || !strings.Contains(string(existingSSH), "DEVICEBRIDGE_TSNET_SSH_V4") {
 		var preserved []string
 		inManaged := false
+		bounded := strings.Contains(string(existingSSH), "# END DEVICEBRIDGE_TSNET_SSH")
 		for _, line := range strings.Split(string(existingSSH), "\n") {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "# Shared DeviceBridge tsnet") || strings.HasPrefix(trimmed, "# DEVICEBRIDGE_TSNET_SSH_") {
@@ -1064,9 +1090,9 @@ func configureTermuxSSH(stateDir, cliBin, termRoot, prefix, home, tsnetBin strin
 				continue
 			}
 			if inManaged {
-				if trimmed == "" || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") ||
+				if bounded || trimmed == "" || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") ||
 					trimmed == "Host 100.* *.ts.net" || strings.HasPrefix(trimmed, "Host 100.* *.ts.net ") ||
-					trimmed == "Host *" || strings.HasPrefix(trimmed, "Match host ") {
+					trimmed == "Host *" || trimmed == "Host db.*" || strings.HasPrefix(trimmed, "Match host ") {
 					continue
 				}
 				inManaged = false

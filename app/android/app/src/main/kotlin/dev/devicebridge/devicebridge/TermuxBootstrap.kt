@@ -43,6 +43,8 @@ internal object TermuxBootstrap {
         File(prefix(context), "bin/db-ssh-shell").canExecute() &&
         File(prefix(context), ".devicebridge-configured-v4").isFile
 
+    fun hasSshClient(context: Context) = isReady(context) && File(prefix(context), "bin/ssh").canExecute()
+
     fun hasOpenSsh(context: Context) = isReady(context) &&
         File(prefix(context), "bin/sshd").canExecute() &&
         File(prefix(context), "etc/ssh/ssh_host_ed25519_key").isFile
@@ -54,9 +56,9 @@ internal object TermuxBootstrap {
         mode: String = "base",
         active: () -> Boolean = { true },
     ) {
-        if (mode == "base" && isReady(context)) return
+        if (mode == "base" && isReady(context) || mode == "ssh-client" && hasSshClient(context)) return
         synchronized(setupLock) {
-            if (mode == "base" && isReady(context)) return
+            if (mode == "base" && isReady(context) || mode == "ssh-client" && hasSshClient(context)) return
             val deadline = android.os.SystemClock.elapsedRealtime() + TimeUnit.MINUTES.toMillis(10)
             fun inTime() = active() && android.os.SystemClock.elapsedRealtime() < deadline
             fun checkActive() = check(inTime()) { if (active()) "Terminal setup timed out." else "Terminal setup cancelled." }
@@ -107,6 +109,7 @@ internal object TermuxBootstrap {
                     checkActive()
                     check(proc.exitValue() == 0) { "Terminal setup exited with code ${proc.exitValue()}." }
                     check(isReady(context)) { "Terminal base setup is incomplete." }
+                    if (mode == "ssh-client") check(hasSshClient(context)) { "OpenSSH client setup is incomplete." }
                     if (mode == "openssh") check(hasOpenSsh(context)) { "OpenSSH setup is incomplete." }
                 } finally {
                     if (proc.isAlive) proc.destroyForcibly()
