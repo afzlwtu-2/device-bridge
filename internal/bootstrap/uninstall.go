@@ -22,6 +22,7 @@ type UninstallRequest struct {
 	PrivateKeyPEM   string         `json:"private_key_pem,omitempty"`
 	KeyPassphrase   string         `json:"key_passphrase,omitempty"`
 	ExpectedHostKey string         `json:"expected_host_key"`
+	ServiceUser     string         `json:"service_user,omitempty"`
 	SudoPassword    string         `json:"sudo_password,omitempty"`
 	Transport       string         `json:"transport,omitempty"`
 	RemoteApproved  bool           `json:"remote_approved,omitempty"`
@@ -73,7 +74,14 @@ if [ ! -f "$state/state.db" ] || [ "$(realpath -e -- "$state")" != "$state" ] ||
 fi
 "$state/bin/bridge-cli" --state "$state" identity
 `
-	raw, stderr, err := runSSH(cl, "bash -s", inspect)
+	command := "bash -s"
+	if req.User == "root" {
+		if !validServiceAccount(req.ServiceUser) {
+			return "", errors.New("an unprivileged service account is required for root SSH maintenance")
+		}
+		command = commandAsSSHAccount(req.ServiceUser, command)
+	}
+	raw, stderr, err := runSSH(cl, command, inspect)
 	if err != nil {
 		return "", fmt.Errorf("verify laptop installation: %w (%s)", err, stderr)
 	}
@@ -105,7 +113,7 @@ fi
 		script += "absent\n"
 	}
 	script += uninstallLinux
-	if _, stderr, err := runRemoteRoot(cl, parts[1], req.SudoPassword, script); err != nil {
+	if _, stderr, err := runRemoteRoot(cl, req.User, req.SudoPassword, script); err != nil {
 		return "", fmt.Errorf("uninstall DeviceBridge (root or sudo required): %w (%s)", err, stderr)
 	}
 	return installedID, nil

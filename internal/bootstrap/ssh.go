@@ -55,6 +55,8 @@ type Request struct {
 	KeyPassphrase        string         `json:"key_passphrase,omitempty"`
 	SSHHostID            string         `json:"ssh_host_id,omitempty"`
 	ExpectedHostKey      string         `json:"expected_host_key,omitempty"`
+	PrivilegedSetup      bool           `json:"privileged_setup,omitempty"`
+	ServiceUser          string         `json:"service_user,omitempty"`
 	SudoPassword         string         `json:"sudo_password,omitempty"`
 	OpenFirewall         bool           `json:"open_firewall"`
 	InstallSystemd       bool           `json:"install_systemd"`
@@ -701,7 +703,7 @@ func runSSH(cl *ssh.Client, cmd string, stdin string) (string, string, error) {
 	return strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
 }
 
-func streamUploadSSH(cl *ssh.Client, localPath, remotePath string) error {
+func streamUploadSSH(cl *ssh.Client, localPath, remotePath string, wrap func(string) string) error {
 	f, err := os.Open(localPath)
 	if err != nil {
 		return err
@@ -722,7 +724,7 @@ func streamUploadSSH(cl *ssh.Client, localPath, remotePath string) error {
 	)
 	var stderr bytes.Buffer
 	sess.Stderr = &stderr
-	if err = sess.Run(cmd); err != nil {
+	if err = sess.Run(wrap(cmd)); err != nil {
 		return fmt.Errorf("upload %s failed: %w (%s)", filepath.Base(remotePath), err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
@@ -773,6 +775,9 @@ func runRemoteRoot(cl *ssh.Client, sshUser, sudoPass, script string) (string, st
 func Bootstrap(ctx context.Context, s *storage.Store, id *auth.Identity, req Request) (Result, error) {
 	var res Result
 	res.Host = req.Host
+	if req.PrivilegedSetup && (req.Reinstall || req.TermuxCompanion || !req.InstallSystemd || !req.AutoPair) {
+		return res, errors.New("privileged setup requires Linux installation and automatic pairing")
+	}
 	if req.InstallSystemService {
 		return res, errors.New("root system service setup has been removed; use the systemd user service")
 	}
@@ -789,12 +794,25 @@ func Bootstrap(ctx context.Context, s *storage.Store, id *auth.Identity, req Req
 		return res, err
 	}
 	defer cl.Close()
+	stop := context.AfterFunc(ctx, func() { _ = cl.Close() })
+	defer stop()
 	if viaTailnet {
 		res.Steps = append(res.Steps, "SSH authenticated over Tailscale ("+fp+")")
 	} else {
 		res.Steps = append(res.Steps, "SSH authenticated ("+fp+")")
 	}
 
+	sshUser := strings.TrimSpace(req.User)
+	wrapUser := func(command string) string { return command }
+	if (req.PrivilegedSetup || req.Reinstall) && sshUser == "root" {
+		if !validServiceAccount(req.ServiceUser) {
+			return res, errors.New("enter an existing unprivileged Linux account to run the agent")
+		}
+		wrapUser = func(command string) string { return commandAsSSHAccount(req.ServiceUser, command) }
+	}
+	runUser := func(command, input string) (string, string, error) {
+		return runSSH(cl, wrapUser(command), input)
+	}
 	probeScript := `
 set -e
 export PATH="$PATH:/usr/local/bin:/usr/sbin:/sbin:$HOME/.local/share/devicebridge/bin:$HOME/.local/bin"
@@ -844,7 +862,7 @@ if [ "$OS_NAME" = Android ]; then
   [ ! -x "$companion/bridge-sync" ] || echo 'COMPANION_ENGINE=1'
 fi
 `
-	out, errOut, err := runSSH(cl, "bash -s", probeScript)
+	out, errOut, err := runUser("bash -s", probeScript)
 	if err != nil {
 		return res, fmt.Errorf("target inspection failed: %w (%s)", err, errOut)
 	}
@@ -953,6 +971,9 @@ fi
 		hasAgent, hasCLI = companionAgent, companionCLI
 		agentBin, cliBin = "", ""
 	}
+	if req.PrivilegedSetup && (isTermux || !strings.HasPrefix(strings.ToLower(targetPlatform), "linux/") || sshUID <= 0 || !validServiceAccount(remoteUser)) {
+		return res, errors.New("elevated agent setup requires an unprivileged Linux service account")
+	}
 	if !isTermux && (sshUID == 0 || remoteUser == "root") {
 		return res, errors.New("sign in as the unprivileged account that will run DeviceBridge")
 	}
@@ -997,6 +1018,21 @@ fi
 		return ""
 	}
 
+	if req.PrivilegedSetup {
+		if (!hasAgent || req.UpdateBinaries) && findLocalArt("bridge-agent") == "" ||
+			(!hasCLI || req.UpdateBinaries) && findLocalArt("bridge-cli") == "" {
+			return res, fmt.Errorf("bundled agent and CLI binaries are required for %s", targetPlatform)
+		}
+		sudoPassword := req.SudoPassword
+		if sudoPassword == "" {
+			sudoPassword = req.Password
+		}
+		if _, details, err := runRemoteRoot(cl, sshUser, sudoPassword, enableSSHAgentUserManager(remoteUser, sshUID)); err != nil {
+			return res, fmt.Errorf("enable the Linux user service using sudo or root: %w (%s)", err, details)
+		}
+		res.Steps = append(res.Steps, "Enabled the Linux service account using sudo or root")
+	}
+
 	if req.Reinstall {
 		agentArtifact, cliArtifact := findLocalArt("bridge-agent"), findLocalArt("bridge-cli")
 		if agentArtifact == "" || cliArtifact == "" {
@@ -1005,14 +1041,14 @@ fi
 		prepare := func(mode string) string {
 			return "set -- " + shellQuote(remoteHome) + " " + shellQuote(remoteUser) + " " + mode + "\n" + uninstallLinux
 		}
-		port, details, err := runSSH(cl, "bash -s", prepare("check-reinstall"))
+		port, details, err := runUser("bash -s", prepare("check-reinstall"))
 		if err != nil {
 			return res, fmt.Errorf("verify managed installation: %w (%s)", err, details)
 		}
 		if req.BridgePort, err = strconv.Atoi(port); err != nil || req.BridgePort < 1 || req.BridgePort > 65535 {
 			return res, errors.New("could not determine the installed service port")
 		}
-		stage, details, err := runSSH(cl, "mktemp -d "+shellQuote(remoteBinDir+"/.devicebridge-reinstall.XXXXXXXX"), "")
+		stage, details, err := runUser("mktemp -d "+shellQuote(remoteBinDir+"/.devicebridge-reinstall.XXXXXXXX"), "")
 		if err != nil {
 			return res, fmt.Errorf("stage reinstall: %w (%s)", err, details)
 		}
@@ -1020,16 +1056,16 @@ fi
 			return res, errors.New("invalid remote staging directory")
 		}
 		stagedAgent, stagedCLI := stage+"/bridge-agent", stage+"/bridge-cli"
-		defer runSSH(cl, "rm -f -- "+shellQuote(stagedAgent)+" "+shellQuote(stagedCLI)+" "+
+		defer runUser("rm -f -- "+shellQuote(stagedAgent)+" "+shellQuote(stagedCLI)+" "+
 			shellQuote(stagedAgent+".tmp")+" "+shellQuote(stagedCLI+".tmp")+"; rmdir -- "+shellQuote(stage), "")
-		if err := streamUploadSSH(cl, agentArtifact, stagedAgent); err != nil {
+		if err := streamUploadSSH(cl, agentArtifact, stagedAgent, wrapUser); err != nil {
 			return res, err
 		}
-		if err := streamUploadSSH(cl, cliArtifact, stagedCLI); err != nil {
+		if err := streamUploadSSH(cl, cliArtifact, stagedCLI, wrapUser); err != nil {
 			return res, err
 		}
 		if legacySystemAgent {
-			if _, details, err := runRemoteRoot(cl, remoteUser, req.SudoPassword, prepare("prepare-reinstall")); err != nil {
+			if _, details, err := runRemoteRoot(cl, sshUser, req.SudoPassword, prepare("prepare-reinstall")); err != nil {
 				return res, fmt.Errorf("prepare migration from the legacy system service: %w (%s)", err, details)
 			}
 			res.Steps = append(res.Steps, "Stopped the legacy system service; restarting under the SSH user")
@@ -1037,7 +1073,7 @@ fi
 		remoteAgent, remoteCLI = remoteBinDir+"/bridge-agent", remoteBinDir+"/bridge-cli"
 		publish := fmt.Sprintf("mv -fT -- %s %s && mv -fT -- %s %s",
 			shellQuote(stagedCLI), shellQuote(remoteCLI), shellQuote(stagedAgent), shellQuote(remoteAgent))
-		if _, details, err := runSSH(cl, publish, ""); err != nil {
+		if _, details, err := runUser(publish, ""); err != nil {
 			return res, fmt.Errorf("publish staged DeviceBridge binaries: %w (%s)", err, details)
 		}
 		hasAgent, hasCLI = true, true
@@ -1051,7 +1087,7 @@ fi
 		}
 		if !hasAgent || req.UpdateBinaries {
 			if localPath := findLocalArt("bridge-agent"); localPath != "" {
-				if ue := streamUploadSSH(cl, localPath, remoteAgent); ue != nil {
+				if ue := streamUploadSSH(cl, localPath, remoteAgent, wrapUser); ue != nil {
 					return res, ue
 				}
 				hasAgent = true
@@ -1059,7 +1095,7 @@ fi
 		}
 		if !hasCLI || req.UpdateBinaries {
 			if localPath := findLocalArt("bridge-cli"); localPath != "" {
-				if ue := streamUploadSSH(cl, localPath, remoteCLI); ue != nil {
+				if ue := streamUploadSSH(cl, localPath, remoteCLI, wrapUser); ue != nil {
 					return res, ue
 				}
 				hasCLI = true
@@ -1071,7 +1107,7 @@ fi
 	}
 	res.AgentInstalled = true
 	if localPath := findLocalArt("bridge-sync"); !req.Reinstall && localPath != "" && (!isTermux || req.UpdateBinaries || !companionEngine) {
-		if err := streamUploadSSH(cl, localPath, remoteBinDir+"/bridge-sync"); err != nil {
+		if err := streamUploadSSH(cl, localPath, remoteBinDir+"/bridge-sync", wrapUser); err != nil {
 			return res, err
 		}
 	}
@@ -1083,14 +1119,14 @@ fi
 		initialize += " --home-only"
 	}
 	if !req.Reinstall {
-		if _, errOut, err = runSSH(cl, fmt.Sprintf("mkdir -p %s && chmod 700 %s && %s",
+		if _, errOut, err = runUser(fmt.Sprintf("mkdir -p %s && chmod 700 %s && %s",
 			shellQuote(remoteState), shellQuote(remoteState), initialize), ""); err != nil {
 			return res, fmt.Errorf("remote init failed: %w (%s)", err, errOut)
 		}
 	}
 	if isTermux {
 		res.Steps = append(res.Steps, "Exported Termux Home from the companion")
-		if _, details, err := runSSH(cl, termuxStartCommand(remoteState, remoteAgent, res.LanIface, res.LanCIDR, req.BridgePort), ""); err != nil {
+		if _, details, err := runUser(termuxStartCommand(remoteState, remoteAgent, res.LanIface, res.LanCIDR, req.BridgePort), ""); err != nil {
 			return res, fmt.Errorf("Termux companion start failed: %w (%s)", err, details)
 		}
 		res.SystemdStatus = "Termux companion running"
@@ -1101,10 +1137,13 @@ fi
 	if req.InstallSystemd && !isTermux {
 		unit := SystemdUnit(remoteAgent, remoteState, res.LanIface, "auto", req.BridgePort, true)
 		unitCmd := `mkdir -p "$HOME/.config/systemd/user" && cat > "$HOME/.config/systemd/user/devicebridge-agent.service" && systemctl --user daemon-reload && systemctl --user enable devicebridge-agent.service && systemctl --user restart devicebridge-agent.service && systemctl --user is-active devicebridge-agent.service`
-		stOut, stErr, stRunErr := runSSH(cl, "bash -c "+shellQuote(unitCmd), unit)
+		if req.PrivilegedSetup || req.ServiceUser != "" {
+			unitCmd = "export XDG_RUNTIME_DIR=/run/user/$(id -u); export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus; " + unitCmd
+		}
+		stOut, stErr, stRunErr := runUser("bash -c "+shellQuote(unitCmd), unit)
 		if stRunErr != nil {
 			res.SystemdStatus = "systemd user unavailable (" + stErr + ")"
-			if req.Reinstall {
+			if req.Reinstall || req.PrivilegedSetup {
 				return res, fmt.Errorf("restart user service: %w (%s)", stRunErr, stErr)
 			}
 		} else {
@@ -1141,7 +1180,7 @@ ufw allow in on %s from %s to any port %d proto tcp comment 'DeviceBridge agent'
 
 	if req.AutoPair && s != nil && id != nil {
 		remoteCommand := fmt.Sprintf("%s --state %s ", shellQuote(remoteCLI), shellQuote(remoteState))
-		identityRaw, details, err := runSSH(cl, remoteCommand+"identity", "")
+		identityRaw, details, err := runUser(remoteCommand+"identity", "")
 		if err != nil {
 			return res, fmt.Errorf("remote identity failed: %w (%s)", err, details)
 		}
@@ -1160,9 +1199,12 @@ ufw allow in on %s from %s to any port %d proto tcp comment 'DeviceBridge agent'
 		type pairTarget struct {
 			route    string
 			endpoint string
-			provider transport.Provider
-			iface    string
-			direct   bool
+			provider interface {
+				ID() string
+				Dial(context.Context, transport.Candidate) (net.Conn, error)
+			}
+			iface  string
+			direct bool
 		}
 		var targets []pairTarget
 		lanEp := ""
@@ -1264,12 +1306,18 @@ ufw allow in on %s from %s to any port %d proto tcp comment 'DeviceBridge agent'
 				addTailnet()
 			}
 		}
+		if req.PrivilegedSetup {
+			targets = append(targets, pairTarget{
+				route: "ssh-setup", endpoint: net.JoinHostPort("127.0.0.1", strconv.Itoa(req.BridgePort)),
+				provider: sshPairRoute{connection: cl},
+			})
+		}
 		if len(targets) == 0 {
 			return res, errors.New("cannot determine reachable DeviceBridge endpoint (LAN, Tailscale, or WireGuard) for auto-pairing")
 		}
 		var inv protocol.Invitation
 		if !existing {
-			invRaw, details, err := runSSH(cl, remoteCommand+"invite", "")
+			invRaw, details, err := runUser(remoteCommand+"invite", "")
 			if err != nil {
 				return res, fmt.Errorf("remote invite failed: %w (%s)", err, details)
 			}
@@ -1292,7 +1340,7 @@ ufw allow in on %s from %s to any port %d proto tcp comment 'DeviceBridge agent'
 					roots = "home"
 				}
 				appCmd := remoteCommand + fmt.Sprintf("approve %s %s 8760h 1099511627776", shellQuote(id.ID), roots)
-				if _, details, err = runSSH(cl, appCmd, ""); err != nil {
+				if _, details, err = runUser(appCmd, ""); err != nil {
 					pc.Close()
 					return res, fmt.Errorf("remote approve failed: %w (%s)", err, details)
 				}
@@ -1308,19 +1356,19 @@ ufw allow in on %s from %s to any port %d proto tcp comment 'DeviceBridge agent'
 			}
 			if isTermux && req.AllowTermuxFiles {
 				command := remoteCommand + "termux-files-access " + shellQuote(id.ID) + " allow"
-				if _, details, e := runSSH(cl, command, ""); e != nil {
+				if _, details, e := runUser(command, ""); e != nil {
 					return res, fmt.Errorf("Termux file management approval failed: %w (%s)", e, details)
 				}
 			}
 
 			if req.AllowSyncControl {
 				command := remoteCommand + "sync-control-access " + shellQuote(id.ID) + " allow"
-				if _, details, e := runSSH(cl, command, ""); e != nil {
+				if _, details, e := runUser(command, ""); e != nil {
 					return res, fmt.Errorf("sync control approval failed: %w (%s)", e, details)
 				}
 				if req.AllowSyncRemote {
 					command = remoteCommand + "sync-remote-access " + shellQuote(id.ID) + " allow"
-					if _, details, e := runSSH(cl, command, ""); e != nil {
+					if _, details, e := runUser(command, ""); e != nil {
 						return res, fmt.Errorf("remote sync route approval failed: %w (%s)", e, details)
 					}
 				}
@@ -1341,10 +1389,14 @@ ufw allow in on %s from %s to any port %d proto tcp comment 'DeviceBridge agent'
 					return res, err
 				}
 			} else {
+				activeRoute, activeEndpoint := t.route, t.endpoint
+				if activeRoute == "ssh-setup" {
+					activeRoute, activeEndpoint = "lan", ""
+				}
 				_, _ = s.Connection(remote.ID, &storage.Connection{
-					Transport:          t.route,
+					Transport:          activeRoute,
 					PreferredTransport: "auto",
-					Endpoint:           t.endpoint,
+					Endpoint:           activeEndpoint,
 					LanEndpoint:        lanEp,
 					TailnetEndpoint:    tsEp,
 					WireGuardEndpoint:  wgEp,

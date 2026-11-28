@@ -12,6 +12,7 @@ import (
 
 // SSHHost is persistent trust metadata. Session credentials are never stored here.
 type SSHHost struct {
+	ServiceUser    string `json:"agent_service_user,omitempty"`
 	AgentPeerID    string `json:"agent_peer_id,omitempty"`
 	Transport      string `json:"transport,omitempty"`
 	RemoteApproved bool   `json:"remote_approved,omitempty"`
@@ -96,10 +97,10 @@ func (s *Store) SaveSSHHost(ctx context.Context, h SSHHost) (SSHHost, error) {
 		if err := json.Unmarshal([]byte(raw), &existing); err != nil {
 			return h, err
 		}
-		h.AgentPeerID = ""
+		h.AgentPeerID, h.ServiceUser = "", ""
 		if h.Host == existing.Host && h.Port == existing.Port && h.User == existing.User &&
 			h.Fingerprint == existing.Fingerprint {
-			h.AgentPeerID = existing.AgentPeerID
+			h.AgentPeerID, h.ServiceUser = existing.AgentPeerID, existing.ServiceUser
 		} else if _, err := tx.ExecContext(ctx, "DELETE FROM preferences WHERE key GLOB 'ssh-method-v1:*' AND value=?", "ssh:"+h.ID); err != nil {
 			return h, err
 		}
@@ -137,14 +138,18 @@ func (s *Store) RemoveSSHHost(ctx context.Context, id string) error {
 }
 
 func (s *Store) AssociateSSHHost(ctx context.Context, id, peer string) (SSHHost, error) {
-	return s.associateSSHHost(ctx, id, peer, nil)
+	return s.associateSSHHost(ctx, id, peer, nil, "")
 }
 
-func (s *Store) AssociateUpgradedSSHHost(ctx context.Context, verified SSHHost, peer string) (SSHHost, error) {
-	return s.associateSSHHost(ctx, verified.ID, peer, &verified)
+func (s *Store) AssociateUpgradedSSHHost(ctx context.Context, verified SSHHost, peer string, serviceUser ...string) (SSHHost, error) {
+	var user string
+	if len(serviceUser) > 0 {
+		user = serviceUser[0]
+	}
+	return s.associateSSHHost(ctx, verified.ID, peer, &verified, user)
 }
 
-func (s *Store) associateSSHHost(ctx context.Context, id, peer string, verified *SSHHost) (SSHHost, error) {
+func (s *Store) associateSSHHost(ctx context.Context, id, peer string, verified *SSHHost, serviceUser string) (SSHHost, error) {
 	var h SSHHost
 	if !validSSHHostID(id) {
 		return h, ErrDenied
@@ -172,6 +177,9 @@ func (s *Store) associateSSHHost(ctx context.Context, id, peer string, verified 
 		}
 	}
 	h.AgentPeerID = peer
+	if serviceUser != "" {
+		h.ServiceUser = serviceUser
+	}
 	data, err := json.Marshal(h)
 	if err != nil {
 		return h, err

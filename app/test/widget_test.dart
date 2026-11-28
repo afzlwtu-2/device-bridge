@@ -1010,7 +1010,7 @@ void main() {
   testWidgets(
     'Add Device opens pairing, SSH-only, and SSH agent deployment over available transports with .ssh import and Tailscale setup',
     (tester) async {
-      final core = FakeCore();
+      final core = FakeCore()..tailnetReachable = true;
       await tester.pumpWidget(DeviceBridgeApp(core: core));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Devices').last);
@@ -1032,22 +1032,30 @@ void main() {
 
       await tester.tap(find.byKey(const ValueKey('devices-add-device-button')));
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('add-device-sheet')), findsOneWidget);
       expect(find.text('Scan or enter invitation'), findsOneWidget);
       expect(find.text('Show my invitation'), findsOneWidget);
-      expect(find.text('Add SSH Device only (no agent)'), findsOneWidget);
-      expect(find.text('Add agent via SSH'), findsOneWidget);
-
-      await tester.ensureVisible(find.text('Add agent via SSH'));
-      await tester.tap(find.text('Add agent via SSH'));
+      expect(find.text('SSH Only Device'), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('add-device-method')));
       await tester.pumpAndSettle();
-      expect(find.text('Setup & auto-pair via SSH'), findsOneWidget);
-      expect(find.byKey(const ValueKey('ssh-transport-dropdown')), findsOneWidget);
+      expect(find.text('Agent'), findsOneWidget);
+      expect(find.text('SSH Only Device'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('add-device-ssh-agent')));
+      await tester.pumpAndSettle();
+      expect(find.text('Agent via SSH'), findsOneWidget);
+      expect(find.text('SSH password'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('ssh-transport-dropdown')));
       await tester.pumpAndSettle();
-      expect(find.text('Direct TCP').last, findsOneWidget);
-      expect(find.text('Tailscale — sign-in required').last, findsOneWidget);
-      expect(find.text('WireGuard — configuration required').last, findsOneWidget);
+      await tester.tap(find.text('Tailscale').last);
+      await tester.pumpAndSettle();
+      expect(find.text('SSH credentials (optional)'), findsOneWidget);
+      expect(find.text('SSH password'), findsNothing);
+      final peerPicker = find.byKey(const ValueKey('tailnet-device-picker'));
+      await tester.ensureVisible(peerPicker);
+      await tester.tap(peerPicker);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Laptop · 100.64.0.9').last);
+      await tester.pumpAndSettle();
+      expect(find.text('100.64.0.9'), findsOneWidget);
       await tester.tap(find.text('Cancel').last);
       await tester.pumpAndSettle();
 
@@ -1105,24 +1113,6 @@ void main() {
         findsOneWidget,
       );
 
-      // Open SSH tab, browse Tailscale SSH on demand, and open Add SSH device preselected with Tailscale.
-      await tester.pumpWidget(DeviceBridgeApp(core: core));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Devices').last);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('SSH'));
-      await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('devices-browse-tailscale-ssh')), findsOneWidget);
-      expect(find.text('probook'), findsNothing);
-      await tester.tap(find.byKey(const ValueKey('devices-browse-tailscale-ssh')));
-      await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('tailscale-ssh-picker-dialog')), findsOneWidget);
-      expect(find.byKey(const ValueKey('tailscale-ssh-device-probook')), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('tailscale-ssh-device-probook')));
-      await tester.pumpAndSettle();
-      expect(find.text('Add SSH device'), findsOneWidget);
-      expect(find.text('probook'), findsOneWidget);
-      expect(find.text('Tailscale — sign-in required'), findsOneWidget);
     },
   );
 
@@ -5476,13 +5466,11 @@ void registerNetworkRefactorTests() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Add Device'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Add SSH Device only (no agent)'));
+      await tester.tap(find.byKey(const ValueKey('add-device-method')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('SSH Only Device'));
       await tester.pumpAndSettle();
       expect(find.text('Install DeviceBridge agent'), findsNothing);
-      await tester.enterText(
-        find.widgetWithText(TextField, 'Device name'),
-        'SSH fixture',
-      );
       await tester.enterText(
         find.widgetWithText(TextField, 'SSH host'),
         '192.168.50.10',
@@ -5509,6 +5497,14 @@ void registerNetworkRefactorTests() {
       );
       await tester.tap(save);
       await tester.pumpAndSettle();
+      expect(find.textContaining('Direct SSH requires'), findsOneWidget);
+      expect(core.hosts, isEmpty);
+      final password = find.widgetWithText(TextField, 'SSH password');
+      await tester.ensureVisible(password);
+      await tester.enterText(password, 'fixture-password');
+      await tester.ensureVisible(save);
+      await tester.tap(save);
+      await tester.pumpAndSettle();
       expect(core.hosts.single['expected_host_key'], 'SHA256:verified-fixture');
       expect(core.calls.any((a) => a.contains('ssh-bootstrap')), isFalse);
       expect(find.byKey(const ValueKey('ssh-host-terminal')), findsOneWidget);
@@ -5533,7 +5529,7 @@ void registerNetworkRefactorTests() {
       await tester.pageBack();
       await tester.pumpAndSettle();
       expect(find.text('SSH devices'), findsOneWidget);
-      expect(find.text('SSH fixture'), findsOneWidget);
+      expect(find.text('192.168.50.10'), findsOneWidget);
       expect(
         find.byKey(ValueKey('ssh-device-upgrade-${core.hosts.single['id']}')),
         findsOneWidget,
@@ -5542,8 +5538,8 @@ void registerNetworkRefactorTests() {
         find.byKey(ValueKey('ssh-device-upgrade-${core.hosts.single['id']}')),
       );
       await tester.pumpAndSettle();
-      expect(find.text('Setup & auto-pair via SSH'), findsOneWidget);
-      expect(find.text('192.168.50.10'), findsOneWidget);
+      expect(find.text('Agent via SSH'), findsOneWidget);
+      expect(find.descendant(of: find.byType(AlertDialog), matching: find.text('192.168.50.10')), findsOneWidget);
       expect(find.text('guest'), findsOneWidget);
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();

@@ -6,6 +6,9 @@ import 'package:material_ui/material_ui.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../core/bridge.dart';
+import 'tailnet_device_picker.dart';
+
 Map<String, dynamic>? decodePairInvitation(String text) {
   if (utf8.encode(text).length > 4096) return null;
   try {
@@ -93,26 +96,38 @@ class PairInvitationResult {
 class PairInvitationDialog extends StatefulWidget {
   const PairInvitationDialog({
     super.key,
-    this.tailnetPeers = const [],
+    required this.core,
     this.peerName,
+    this.agent = false,
+    this.directAllowed = true,
+    this.tailnetAllowed = true,
   });
-  final List<Map<String, dynamic>> tailnetPeers;
+  final CoreBridge core;
   final String? peerName;
+  final bool agent, directAllowed, tailnetAllowed;
   @override
   State<PairInvitationDialog> createState() => _PairInvitationDialogState();
 }
 
 class _PairInvitationDialogState extends State<PairInvitationDialog> {
   final controller = TextEditingController();
-  String? selectedTailnetEndpoint;
+  final endpoint = TextEditingController();
+  late bool useTailnet = !widget.directAllowed && widget.tailnetAllowed;
+  String? error;
 
   void _review(String invitation) {
+    final address = InternetAddress.tryParse(endpoint.text.trim());
+    if (useTailnet &&
+        (address == null || address.type != InternetAddressType.IPv4)) {
+      setState(() => error = 'Enter the receiver’s Tailscale IPv4 address.');
+      return;
+    }
     FocusScope.of(context).unfocus();
     Navigator.pop(
       context,
       PairInvitationResult(
         invitation,
-        tailnetEndpoint: selectedTailnetEndpoint,
+        tailnetEndpoint: useTailnet ? '${address!.address}:8731' : null,
       ),
     );
   }
@@ -128,29 +143,14 @@ class _PairInvitationDialogState extends State<PairInvitationDialog> {
   @override
   void dispose() {
     controller.dispose();
+    endpoint.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final peerItems = <DropdownMenuItem<String?>>[
-      const DropdownMenuItem(
-        value: null,
-        child: Text('Direct local network (Wi-Fi / Hotspot LAN)'),
-      ),
-      for (final node in widget.tailnetPeers)
-        for (final ip in (node['ips'] as List? ?? const []))
-          if (!(ip as String).contains(':'))
-            DropdownMenuItem(
-              value: '$ip:8731',
-              child: Text(
-                'Tailscale · ${node['name']} · $ip${node['online'] == true ? '' : ' (offline)'}',
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-    ];
     return AlertDialog(
-      title: const Text('Pair with a device'),
+      title: Text(widget.agent ? 'Add running agent' : 'Pair with a device'),
       content: SizedBox(
         width: 440,
         child: SingleChildScrollView(
@@ -162,23 +162,51 @@ class _PairInvitationDialogState extends State<PairInvitationDialog> {
                     ? 'Create an invitation on your other device, then scan its QR or paste its code.'
                     : 'Create an invitation on ${widget.peerName}, then scan its QR or paste its code.',
               ),
-              if (peerItems.length > 1) ...[
-                const SizedBox(height: 12),
-                DropdownButtonFormField<String?>(
-                  initialValue: selectedTailnetEndpoint,
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Connect via',
-                    border: OutlineInputBorder(),
+              const SizedBox(height: 12),
+              if (widget.directAllowed || widget.tailnetAllowed)
+                DropdownButtonFormField<bool>(
+                  key: const ValueKey('invitation-transport'),
+                  initialValue: useTailnet,
+                  decoration: const InputDecoration(labelText: 'Connect via'),
+                  items: [
+                    if (widget.directAllowed)
+                      const DropdownMenuItem(
+                        value: false,
+                        child: Text('Direct'),
+                      ),
+                    if (widget.tailnetAllowed)
+                      const DropdownMenuItem(
+                        value: true,
+                        child: Text('Tailscale'),
+                      ),
+                  ],
+                  onChanged: (value) => setState(() {
+                    useTailnet = value ?? false;
+                    error = null;
+                  }),
+                )
+              else
+                const Text('Enable Direct or Tailscale in Networks.'),
+              if (useTailnet) ...[
+                TailnetDevicePicker(
+                  core: widget.core,
+                  onSelected: (ip) => endpoint.text = ip,
+                ),
+                TextField(
+                  controller: endpoint,
+                  keyboardType: TextInputType.url,
+                  decoration: InputDecoration(
+                    labelText: 'Tailscale IPv4 address',
+                    errorText: error,
                   ),
-                  items: peerItems,
-                  onChanged: (v) => setState(() => selectedTailnetEndpoint = v),
                 ),
               ],
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               if (Platform.isAndroid) ...[
                 OutlinedButton.icon(
-                  onPressed: _scan,
+                  onPressed: widget.directAllowed || widget.tailnetAllowed
+                      ? _scan
+                      : null,
                   icon: const Icon(Icons.qr_code_scanner),
                   label: const Text('Scan QR code'),
                 ),
@@ -204,7 +232,9 @@ class _PairInvitationDialogState extends State<PairInvitationDialog> {
           child: const Text('Cancel'),
         ),
         FilledButton(
-          onPressed: () => _review(controller.text),
+          onPressed: widget.directAllowed || widget.tailnetAllowed
+              ? () => _review(controller.text)
+              : null,
           child: const Text('Review'),
         ),
       ],

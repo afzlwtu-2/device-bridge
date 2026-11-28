@@ -443,7 +443,7 @@ func TestBootstrapUploadsBundledPlatformBinaries(t *testing.T) {
 	}
 	cfg := &ssh.ServerConfig{
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-			if c.User() == "afzl" && string(pass) == "secret" {
+			if (c.User() == "afzl" || c.User() == "root") && string(pass) == "secret" {
 				return nil, nil
 			}
 			return nil, fmt.Errorf("denied")
@@ -458,6 +458,8 @@ func TestBootstrapUploadsBundledPlatformBinaries(t *testing.T) {
 
 	var mu sync.Mutex
 	uploaded := 0
+	elevated := 0
+	userUploads := 0
 	go func() {
 		for {
 			raw, err := ln.Accept()
@@ -485,18 +487,26 @@ func TestBootstrapUploadsBundledPlatformBinaries(t *testing.T) {
 						for r := range creqs {
 							if r.Type == "exec" && len(r.Payload) >= 4 {
 								cmd := string(r.Payload[4:])
+								if strings.Contains(cmd, "loginctl enable-linger") {
+									mu.Lock()
+									elevated++
+									mu.Unlock()
+								}
 								if strings.Contains(cmd, "devicebridge/bin/") {
 									_ = r.Reply(true, nil)
 									buf, _ := io.ReadAll(channel)
 									mu.Lock()
 									if len(buf) > 0 {
 										uploaded++
+										if strings.HasPrefix(cmd, "runuser -u ") {
+											userUploads++
+										}
 									}
 									mu.Unlock()
 									_, _ = channel.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
 									return
 								}
-								_, _ = channel.Write([]byte("HOST=probook\nHOME=/home/afzl\nTARGET_PLATFORM=Linux/x86_64\nHAS_AGENT=0\nHAS_CLI=0\n"))
+								_, _ = channel.Write([]byte("HOST=probook\nHOME=/home/afzl\nUSER=afzl\nSSH_UID=1000\nTARGET_PLATFORM=Linux/x86_64\nHAS_AGENT=0\nHAS_CLI=0\n"))
 								_, _ = channel.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
 								_ = r.Reply(true, nil)
 								return
@@ -526,22 +536,20 @@ func TestBootstrapUploadsBundledPlatformBinaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := Bootstrap(context.Background(), nil, nil, Request{
-		Host:            "127.0.0.1",
-		Port:            addr.Port,
-		User:            "afzl",
-		Password:        "secret",
-		ExpectedHostKey: probe.HostKeySHA256,
-		LocalArtifacts:  arts,
-		InstallSystemd:  true,
-	})
-	if err != nil {
-		t.Fatalf("Bootstrap with bundled artifacts failed: %v", err)
+	for _, account := range []string{"afzl", "root"} {
+		res, err := Bootstrap(context.Background(), nil, nil, Request{
+			Host: "127.0.0.1", Port: addr.Port, User: account, Password: "secret",
+			ExpectedHostKey: probe.HostKeySHA256, LocalArtifacts: arts,
+			InstallSystemd: true, PrivilegedSetup: true, AutoPair: true, ServiceUser: "afzl",
+		})
+		if err != nil || !res.AgentInstalled || !strings.HasPrefix(res.SystemdStatus, "active") {
+			t.Fatalf("elevated bootstrap as %s: result=%+v error=%v", account, res, err)
+		}
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if !res.AgentInstalled || uploaded != 2 {
-		t.Fatalf("expected 2 uploaded binaries, got uploaded=%d res=%+v", uploaded, res)
+	if elevated != 2 || uploaded != 4 || userUploads != 2 {
+		t.Fatalf("elevated commands=%d, uploaded=%d, uploads using runuser=%d", elevated, uploaded, userUploads)
 	}
 }
 

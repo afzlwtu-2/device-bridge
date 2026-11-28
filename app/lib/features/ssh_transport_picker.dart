@@ -14,6 +14,7 @@ class SshTransportSelector extends StatelessWidget {
     required this.onRemoteApprovedChanged,
     this.enabled = true,
     this.allowAuto = true,
+    this.compact = false,
     this.approvalTitle =
         'Allow this SSH connection to use the selected overlay',
   });
@@ -25,28 +26,28 @@ class SshTransportSelector extends StatelessWidget {
   final ValueChanged<String> onTransportChanged;
   final ValueChanged<bool> onRemoteApprovedChanged;
   final bool enabled;
-  final bool allowAuto;
+  final bool allowAuto, compact;
   final String approvalTitle;
 
   @override
   Widget build(BuildContext context) {
     final usbConnected = (runtime['usb'] as Map?)?['usb_adb_connected'] == true;
     final items = <DropdownMenuItem<String>>[
-      if (allowAuto || transport == 'auto')
+      if (allowAuto ||
+          transport == 'auto' ||
+          (!rules.allows('direct') && !rules.allows('tailnet') && compact))
         const DropdownMenuItem(value: 'auto', child: Text('Automatic')),
       if (rules.allows('direct') || transport == 'direct')
-        const DropdownMenuItem(value: 'direct', child: Text('Direct TCP')),
+        const DropdownMenuItem(value: 'direct', child: Text('Direct')),
       if (rules.allows('tailnet') || transport == 'tailnet')
-        const DropdownMenuItem(
-          value: 'tailnet',
-          child: Text('Tailscale — sign-in required'),
-        ),
-      if (rules.allows('wireguard') || transport == 'wireguard')
+        const DropdownMenuItem(value: 'tailnet', child: Text('Tailscale')),
+      if ((!compact && rules.allows('wireguard')) || transport == 'wireguard')
         const DropdownMenuItem(
           value: 'wireguard',
           child: Text('WireGuard — configuration required'),
         ),
-      if ((rules.allows('adb') && usbConnected) || transport == 'adb')
+      if ((!compact && rules.allows('adb') && usbConnected) ||
+          transport == 'adb')
         const DropdownMenuItem(
           value: 'adb',
           child: Text('ADB — loopback port mapping'),
@@ -69,9 +70,10 @@ class SshTransportSelector extends StatelessWidget {
                   if (value != null) onTransportChanged(value);
                 },
         ),
-        if (current == 'tailnet' ||
-            current == 'wireguard' ||
-            (current == 'auto' && rules.allows('tailnet')))
+        if (!compact &&
+            (current == 'tailnet' ||
+                current == 'wireguard' ||
+                (current == 'auto' && rules.allows('tailnet'))))
           CheckboxListTile(
             key: const ValueKey('ssh-transport-remote-approval'),
             contentPadding: EdgeInsets.zero,

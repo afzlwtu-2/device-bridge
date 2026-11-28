@@ -396,7 +396,7 @@ func run() error {
 
 	if a[0] == "termux-setup" {
 		setup := flag.NewFlagSet("termux-setup", flag.ContinueOnError)
-		mode := setup.String("mode", "base", "base, tools, or openssh")
+		mode := setup.String("mode", "base", "base, tools, ssh-client, or openssh")
 		archive := setup.String("archive", "", "verified upstream release archive")
 		digest := setup.String("release-sha256", "", "published upstream archive digest")
 		if err := setup.Parse(a[1:]); err != nil {
@@ -1082,6 +1082,7 @@ func run() error {
 				return errors.New("SSH agent maintenance requires the verified saved account")
 			}
 			if req.Reinstall {
+				req.ServiceUser = host.ServiceUser
 				req.Transport, req.RemoteApproved = host.Transport, host.RemoteApproved
 			}
 			upgrade = &host
@@ -1103,7 +1104,9 @@ func run() error {
 		if re != nil {
 			return re
 		}
-		res, be := bootstrap.Bootstrap(context.Background(), s, id, req)
+		setupCtx, cancelSetup := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancelSetup()
+		res, be := bootstrap.Bootstrap(setupCtx, s, id, req)
 		if be != nil {
 			if !res.AgentInstalled {
 				return be
@@ -1135,6 +1138,7 @@ func run() error {
 				return err
 			}
 			req.Host, req.Port, req.User, req.ExpectedHostKey = host.Host, host.Port, host.User, host.Fingerprint
+			req.ServiceUser = host.ServiceUser
 			req.Transport, req.RemoteApproved = host.Transport, host.RemoteApproved
 		} else if _, err := s.Peer(a[1]); err != nil {
 			return err

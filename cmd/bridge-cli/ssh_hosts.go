@@ -130,7 +130,7 @@ func sshOptions(ctx context.Context, s *storage.Store, opts bootstrap.TailnetOpt
 
 func recordBootstrapSSHAccount(ctx context.Context, s *storage.Store, req bootstrap.Request, res bootstrap.Result, upgrade *storage.SSHHost) error {
 	if upgrade != nil {
-		_, err := s.AssociateUpgradedSSHHost(ctx, *upgrade, res.PairedPeerID)
+		_, err := s.AssociateUpgradedSSHHost(ctx, *upgrade, res.PairedPeerID, req.ServiceUser)
 		return err
 	}
 	hosts, err := s.SSHHosts(ctx)
@@ -140,13 +140,13 @@ func recordBootstrapSSHAccount(ctx context.Context, s *storage.Store, req bootst
 	for _, host := range hosts {
 		if host.Host == req.Host && host.Port == req.Port && host.User == req.User &&
 			host.Fingerprint == res.HostKeySHA256 {
-			if host.AgentPeerID == res.PairedPeerID {
+			if host.AgentPeerID == res.PairedPeerID && (req.ServiceUser == "" || host.ServiceUser == req.ServiceUser) {
 				return nil
 			}
-			if host.AgentPeerID != "" {
+			if host.AgentPeerID != "" && host.AgentPeerID != res.PairedPeerID {
 				return errors.New("this SSH account is associated with another DeviceBridge identity")
 			}
-			_, err := s.AssociateUpgradedSSHHost(ctx, host, res.PairedPeerID)
+			_, err := s.AssociateUpgradedSSHHost(ctx, host, res.PairedPeerID, req.ServiceUser)
 			return err
 		}
 	}
@@ -157,7 +157,7 @@ func recordBootstrapSSHAccount(ctx context.Context, s *storage.Store, req bootst
 	_, err = s.SaveSSHHost(ctx, storage.SSHHost{
 		Version: 1, Name: res.RemoteHostname, Host: req.Host, Port: req.Port, User: req.User,
 		Fingerprint: res.HostKeySHA256, Transport: req.Transport, RemoteApproved: req.RemoteApproved,
-		AgentPeerID: res.PairedPeerID,
+		AgentPeerID: res.PairedPeerID, ServiceUser: req.ServiceUser,
 	})
 	return err
 }

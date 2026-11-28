@@ -7,7 +7,9 @@ import 'package:material_ui/material_ui.dart';
 import '../core/bridge.dart';
 import 'network_rules.dart';
 import 'ssh_key_picker.dart';
+import 'ssh_credentials_fields.dart';
 import 'ssh_transport_picker.dart';
+import 'tailnet_device_picker.dart';
 
 enum SshAgentMaintenance { reinstall, uninstall }
 
@@ -17,6 +19,8 @@ class SshBootstrapDialog extends StatefulWidget {
     super.key,
     required this.core,
     this.initialHost,
+    this.compactSetup = false,
+    this.initialServiceUser,
     this.initialPort,
     this.initialUser,
     this.initialExpectedHostKey,
@@ -35,7 +39,8 @@ class SshBootstrapDialog extends StatefulWidget {
   });
 
   final CoreBridge core;
-  final String? initialHost;
+  final String? initialHost, initialServiceUser;
+  final bool compactSetup;
   final int? initialPort;
   final String? initialUser;
   final String? initialExpectedHostKey;
@@ -62,6 +67,9 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
   final passCtrl = TextEditingController();
   final keyCtrl = TextEditingController();
   final sudoCtrl = TextEditingController();
+  late final serviceUserCtrl = TextEditingController(
+    text: widget.initialServiceUser,
+  );
   final keyPassphraseCtrl = TextEditingController();
 
   bool installSystemd = true;
@@ -88,6 +96,12 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
   bool get uninstall => uninstallSaved || widget.uninstallPeerId != null;
   bool get savedTarget => widget.associateSshHostId != null;
   bool get upgrade => savedTarget && widget.maintenance == null;
+  bool get compact =>
+      (widget.compactSetup || upgrade) &&
+      !uninstall &&
+      !reinstall &&
+      !widget.termuxCompanion;
+  bool get tailnet => _transport == 'tailnet';
 
   String _friendlyError(Object e) {
     final s = e.toString();
@@ -102,6 +116,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
   void initState() {
     super.initState();
     if (reinstall) autoPair = false;
+    if (compact) _transport = 'direct';
     if (widget.termuxCompanion) {
       installSystemd = false;
       openFirewall = false;
@@ -139,7 +154,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
     _loadProviders();
     if (widget.uninstallPeerId != null) {
       _loadSavedHostSsh(hostCtrl.text.trim(), peerId: widget.uninstallPeerId);
-    } else if (!savedTarget) {
+    } else if (!savedTarget && !compact) {
       _loadSavedHostSsh(hostCtrl.text.trim());
     }
     if (widget.autoProbe && (widget.initialHost ?? '').trim().isNotEmpty) {
@@ -233,6 +248,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
     passCtrl.dispose();
     keyCtrl.dispose();
     sudoCtrl.dispose();
+    serviceUserCtrl.dispose();
     keyPassphraseCtrl.dispose();
     super.dispose();
   }
@@ -240,6 +256,10 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
   Future<void> probeHostKey() async {
     final host = hostCtrl.text.trim();
     final port = portCtrl.text.trim().isEmpty ? '22' : portCtrl.text.trim();
+    if (_setupError() case final String message) {
+      setState(() => error = message);
+      return;
+    }
     if (host.isEmpty) {
       setState(() => error = 'Enter target host / Tailscale hostname / LAN IP');
       return;
@@ -266,7 +286,7 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
           resolvedHost = res['resolved_host'] as String?;
           viaTailnet = res['via_tailnet'] == true;
         });
-        if (!uninstall && !upgrade) await _loadSavedHostSsh(host);
+        if (!compact && !uninstall && !upgrade) await _loadSavedHostSsh(host);
       }
     } catch (e) {
       if (mounted) {
@@ -378,7 +398,29 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
     }
   }
 
+  String? _setupError() {
+    if (!compact) return null;
+    final port = int.tryParse(portCtrl.text.trim());
+    if (hostCtrl.text.trim().isEmpty || userCtrl.text.trim().isEmpty) {
+      return 'Enter the SSH host and username.';
+    }
+    if (port == null || port < 1 || port > 65535) {
+      return 'Enter a valid SSH port.';
+    }
+    if (!tailnet && passCtrl.text.isEmpty && keyCtrl.text.trim().isEmpty) {
+      return 'Direct SSH requires a password or private key.';
+    }
+    if (userCtrl.text.trim() == 'root' && serviceUserCtrl.text.trim().isEmpty) {
+      return 'Enter an existing unprivileged Linux account to run the agent.';
+    }
+    return null;
+  }
+
   Future<void> runBootstrap() async {
+    if (_setupError() case final String message) {
+      setState(() => error = message);
+      return;
+    }
     if (hostFingerprint == null || hostFingerprint!.isEmpty) {
       await probeHostKey();
       return;
@@ -435,6 +477,9 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
           'key_passphrase': keyPassphraseCtrl.text,
         if (savedTarget) 'ssh_host_id': widget.associateSshHostId,
         if (reinstall) 'reinstall': true,
+        if (compact) 'privileged_setup': true,
+        if (compact && user == 'root')
+          'service_user': serviceUserCtrl.text.trim(),
         if (sudoCtrl.text.isNotEmpty) 'sudo_password': sudoCtrl.text,
         if (_transport != 'auto') 'transport': _transport,
         if (_remoteApproved) 'remote_approved': true,
@@ -455,6 +500,14 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
         '-',
       ], input: jsonEncode(payload));
       final parsed = Map<String, dynamic>.from(res as Map);
+      if (mounted &&
+          compact &&
+          parsed['setup_error'] == null &&
+          parsed['association_error'] == null &&
+          parsed['paired_peer_id'] is String) {
+        Navigator.pop(context, true);
+        return;
+      }
       if (mounted) {
         setState(() {
           result = parsed;
@@ -552,8 +605,141 @@ class _SshBootstrapDialogState extends State<SshBootstrapDialog> {
     }
   }
 
+  Widget _compactSetup(BuildContext context) {
+    final root = userCtrl.text.trim() == 'root';
+    return AlertDialog(
+      title: const Text('Agent via SSH'),
+      content: SizedBox(
+        width: 440,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (busy) const LinearProgressIndicator(),
+              if (!savedTarget)
+                SshTransportSelector(
+                  transport: _transport,
+                  remoteApproved: _remoteApproved,
+                  rules: _rules,
+                  runtime: _runtime,
+                  compact: true,
+                  allowAuto: false,
+                  enabled: !busy,
+                  onTransportChanged: (value) {
+                    setState(() {
+                      _transport = value;
+                      _remoteApproved = value == 'tailnet';
+                    });
+                    _invalidateProbe();
+                  },
+                  onRemoteApprovedChanged: (_) {},
+                ),
+              if (tailnet && !savedTarget)
+                TailnetDevicePicker(
+                  core: widget.core,
+                  enabled: !busy,
+                  onSelected: (ip) => hostCtrl.text = ip,
+                ),
+              Row(
+                children: [
+                  Expanded(
+                    flex: 3,
+                    child: TextField(
+                      key: const ValueKey('ssh-agent-host'),
+                      controller: hostCtrl,
+                      enabled: !busy,
+                      readOnly: savedTarget,
+                      decoration: InputDecoration(
+                        labelText: tailnet ? 'Tailscale host' : 'SSH host',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextField(
+                      key: const ValueKey('ssh-agent-port'),
+                      controller: portCtrl,
+                      enabled: !busy,
+                      readOnly: savedTarget,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Port'),
+                    ),
+                  ),
+                ],
+              ),
+              TextField(
+                key: const ValueKey('ssh-agent-user'),
+                controller: userCtrl,
+                enabled: !busy,
+                readOnly: savedTarget,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(labelText: 'SSH username'),
+              ),
+              const SizedBox(height: 12),
+              SshCredentialsFields(
+                password: passCtrl,
+                passphrase: keyPassphraseCtrl,
+                hasKey: keyCtrl.text.isNotEmpty,
+                chooseKey: _browseKeyFile,
+                enabled: !busy,
+                tailnet: tailnet,
+              ),
+              if (root)
+                TextField(
+                  controller: serviceUserCtrl,
+                  enabled: !busy,
+                  decoration: const InputDecoration(
+                    labelText: 'Run agent as Linux user',
+                  ),
+                )
+              else
+                TextField(
+                  controller: sudoCtrl,
+                  enabled: !busy,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Sudo password (optional)',
+                  ),
+                ),
+              const SizedBox(height: 10),
+              const Text(
+                'Uses sudo or root to enable the Linux user service, then pairs automatically.',
+              ),
+              if (hostFingerprint case final String fingerprint) ...[
+                const SizedBox(height: 8),
+                const Text(
+                  'Compare the SSH host fingerprint before installing.',
+                ),
+                SelectableText(fingerprint),
+              ],
+              if (error case final String message)
+                Text(
+                  message,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: busy ? null : () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: busy ? null : runBootstrap,
+          child: Text(
+            hostFingerprint == null ? 'Verify host key' : 'Install and pair',
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (compact) return _compactSetup(context);
     final isTailnet = viaTailnet || widget.tailscaleSsh;
     final dialog = AlertDialog(
       title: Text(

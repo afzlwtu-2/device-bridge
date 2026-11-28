@@ -8,6 +8,8 @@ import 'guest_terminal.dart';
 import 'ssh_bootstrap.dart';
 import 'ssh_key_picker.dart';
 import 'ssh_transport_picker.dart';
+import 'tailnet_device_picker.dart';
+import 'ssh_credentials_fields.dart';
 import 'network_rules.dart';
 
 /// Saved SSH identity and account; secrets live only for this screen/session.
@@ -83,6 +85,12 @@ class _SshHostScreenState extends State<SshHostScreen> {
       _transport = h['transport'] as String? ?? 'auto';
       _remoteApproved = h['remote_approved'] == true;
     }
+    _host.addListener(_invalidatePin);
+    _port.addListener(_invalidatePin);
+  }
+
+  void _invalidatePin() {
+    if (_pin.text.isNotEmpty) setState(_pin.clear);
   }
 
   @override
@@ -163,6 +171,10 @@ class _SshHostScreenState extends State<SshHostScreen> {
     if (accepted == true && mounted) setState(() => _pin.text = fingerprint);
   });
   Future<void> _save() => _perform(() async {
+    if (_user.text.trim().isEmpty) throw StateError('Enter the SSH username.');
+    if (_transport != 'tailnet' && _password.text.isEmpty && _key.isEmpty) {
+      throw StateError('Direct SSH requires a password or private key.');
+    }
     if (_pin.text.trim().isEmpty) {
       throw StateError('Verify the SSH host key first.');
     }
@@ -272,7 +284,9 @@ class _SshHostScreenState extends State<SshHostScreen> {
   }) => Padding(
     padding: const EdgeInsets.only(bottom: 12),
     child: TextField(
+      key: ValueKey('ssh-host-field-$label'),
       controller: controller,
+      enabled: !_busy,
       obscureText: secret,
       readOnly: readOnly,
       decoration: InputDecoration(labelText: label),
@@ -290,6 +304,7 @@ class _SshHostScreenState extends State<SshHostScreen> {
         initialHost: '${saved['host'] ?? ''}',
         initialPort: (saved['port'] as num?)?.toInt() ?? 22,
         initialUser: '${saved['user'] ?? ''}',
+        initialServiceUser: saved['agent_service_user'] as String?,
         initialExpectedHostKey: '${saved['expected_host_key'] ?? ''}',
         initialTransport: '${saved['transport'] ?? ''}',
         initialRemoteApproved: saved['remote_approved'] == true,
@@ -345,35 +360,49 @@ class _SshHostScreenState extends State<SshHostScreen> {
               ),
             ),
           if (saved == null || _editing) ...[
-            const Text(
-              'Use the device’s LAN address or hostname and verify its SSH host key. Adding it here requires no DeviceBridge agent.',
-            ),
-            const SizedBox(height: 16),
             SshTransportSelector(
               transport: _transport,
               remoteApproved: _remoteApproved,
               rules: _rules,
               runtime: _runtime,
               allowAuto: _transport == 'auto',
+              compact: saved == null,
               enabled: !_busy,
               onTransportChanged: (value) => setState(() {
                 _transport = value;
+                _remoteApproved = value == 'tailnet' || value == 'wireguard';
                 _pin.clear();
               }),
               onRemoteApprovedChanged: (value) =>
                   setState(() => _remoteApproved = value),
             ),
-            const SizedBox(height: 12),
-            _field(_name, 'Device name'),
-            _field(_host, 'SSH host'),
-            _field(_port, 'Port'),
+            if (_transport == 'tailnet')
+              TailnetDevicePicker(
+                core: widget.core,
+                enabled: !_busy,
+                onSelected: (ip) => _host.text = ip,
+              ),
+            if (saved != null) _field(_name, 'Device name'),
+            Row(
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: _field(
+                    _host,
+                    _transport == 'tailnet' ? 'Tailscale host' : 'SSH host',
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(child: _field(_port, 'Port')),
+              ],
+            ),
             _field(_user, 'Username'),
             OutlinedButton.icon(
               onPressed: _busy ? null : _inspect,
               icon: const Icon(Icons.verified_user_outlined),
               label: const Text('Verify host key'),
             ),
-            _field(_pin, 'Verified fingerprint', readOnly: true),
+            if (_pin.text.isNotEmpty) SelectableText(_pin.text),
           ] else ...[
             ListTile(
               contentPadding: EdgeInsets.zero,
@@ -405,19 +434,17 @@ class _SshHostScreenState extends State<SshHostScreen> {
             ),
           ],
           const SizedBox(height: 12),
-          _field(_password, 'Password (optional)', secret: true),
-          OutlinedButton.icon(
-            key: const ValueKey('ssh-host-choose-key'),
-            onPressed: _busy
-                ? null
-                : () => _perform(() async {
-                    final key = await pickSshPrivateKey(context, widget.core);
-                    if (mounted && key != null) setState(() => _key = key);
-                  }),
-            icon: const Icon(Icons.key),
-            label: Text(_key.isEmpty ? 'Choose SSH key' : 'SSH key selected'),
+          SshCredentialsFields(
+            password: _password,
+            passphrase: _passphrase,
+            hasKey: _key.isNotEmpty,
+            chooseKey: () => _perform(() async {
+              final key = await pickSshPrivateKey(context, widget.core);
+              if (mounted && key != null) setState(() => _key = key);
+            }),
+            enabled: !_busy,
+            tailnet: _transport == 'tailnet',
           ),
-          _field(_passphrase, 'Key passphrase (optional)', secret: true),
           if (saved == null || _editing)
             FilledButton(
               onPressed: _busy ? null : _save,

@@ -28,7 +28,11 @@ type Client struct {
 	Store            *storage.Store
 }
 
-func New(id *auth.Identity, s *storage.Store, p transport.Provider, c transport.Candidate) *Client {
+type streamDialer interface {
+	Dial(context.Context, transport.Candidate) (net.Conn, error)
+}
+
+func New(id *auth.Identity, s *storage.Store, p streamDialer, c transport.Candidate) *Client {
 	h := &http.Transport{Proxy: nil, TLSClientConfig: id.ClientTLS(c.DeviceID), ForceAttemptHTTP2: false, MaxIdleConnsPerHost: 2, IdleConnTimeout: 15 * time.Second, ResponseHeaderTimeout: 30 * time.Second, ExpectContinueTimeout: 2 * time.Second, DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 		if addr != c.Endpoint {
 			return nil, errors.New("endpoint redirect denied")
